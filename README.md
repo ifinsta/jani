@@ -46,6 +46,19 @@ enterprise-ready release.
 - Children run with argv only (no shell), bounded time and output, and without the provider API key in their environment.
 - `git commit` refuses pre-staged files outside the approved edit scope.
 
+## Standalone agent lifecycle and alert inbox (initial implementation)
+
+Jani now supports a local, durable agent lifecycle and attention protocol with
+`agent register|status|sleep|wake`, `alerts send|list|claim|accept|retry|resolve`
+and `wake poll|once|watch`. Its alert store is independent of all coordinators.
+Wake is deliberately separated from model execution; alerts **never** authorize
+or automatically launch tools. Delivery leases, replay-safe publish keys and
+policy checks are enforced by Jani itself.
+
+Read [ATTENTION_PROTOCOL.md](docs/ATTENTION_PROTOCOL.md) for commands,
+trust boundaries and production limitations. It is not yet a multi-host broker,
+durable model checkpoint system or unattended banking operator.
+
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.
@@ -118,7 +131,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/TESTING.md](docs/TESTIN
   [docs/schemas/README.md](docs/schemas/README.md).
 - Even an allowlisted `cargo test`, `pytest`, `go test` or `npm test` can run malicious build scripts or test code. Use container sandboxing with restricted secrets and a disposable checkout.
 - Path protections are vulnerable to a hostile process racing file replacement; use a sandbox or OS ACLs for isolation.
-- This release uses single-run model context; recovery is reconstructible from repository state, not an automatically replayed Jani conversation transcript. There are no checkpoints or leases.
+- Model context is still single-run and no automatic conversation checkpoint replay exists. Alert delivery has short local leases, but these are **not** durable task or process-ownership leases.
 - `--max-steps` is a turn ceiling. Budgets bound tool calls, time, tokens and
   policy-priced USD, but provider billing is authoritative and is not reconciled
   after the run.

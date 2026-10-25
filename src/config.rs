@@ -83,6 +83,12 @@ USAGE:
   jani budget show [--task TASK_ID] [OPTIONS]
   jani identity whoami [OPTIONS]
   jani contract validate FILE [OPTIONS]
+  jani agent register|status|sleep|wake AGENT [OPTIONS]
+  jani alerts send AGENT EVENT SOURCE REFERENCE SEVERITY DEDUPE_KEY [OPTIONS]
+  jani alerts list|claim AGENT [OPTIONS]
+  jani alerts accept|retry AGENT ALERT_ID RECEIPT [OPTIONS]
+  jani alerts resolve AGENT ALERT_ID EVIDENCE_REF [OPTIONS]
+  jani wake poll|once|watch AGENT [OPTIONS]
 
 Jani has no embedded coordination engine. It works directly in a Git
 worktree. Skills are advisory. Every tool call passes through a Rust
@@ -264,7 +270,7 @@ impl Config {
                     cfg.prompt = Some(value);
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "approvals" | "budget"
-                | "identity" | "contract" => {
+                | "identity" | "contract" | "agent" | "alerts" | "wake" => {
                     cfg.command = a.into();
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {

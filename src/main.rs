@@ -1,4 +1,5 @@
 mod agent;
+mod attention;
 mod approvals;
 mod broker;
 mod budget;
@@ -77,6 +78,7 @@ fn run() -> JResult<()> {
         "budget" => budget_command(&cfg),
         "identity" => identity_command(&cfg),
         "contract" => contract_command(&cfg),
+        "agent" | "alerts" | "wake" => print_json(&attention::command(&cfg)?),
         _ => Err("unrecognized command".into()),
     }
 }
