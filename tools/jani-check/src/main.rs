@@ -30,8 +30,23 @@ fn check(root: &Path) -> Result<(), String> {
             }
         }
     }
-    let src = fs::read_to_string(root.join("src/attention.rs")).map_err(|e| e.to_string())?;
-    if !src.contains("use jani_contract::") || !src.contains("use jani_store::") {
+
+    if root.join("src").exists() || root.join("crates").exists() {
+        return Err("root-level src/ and crates/ are forbidden: packages belong under backend/".into());
+    }
+    for member in ["backend/core", "backend/store", "backend/server", "tools/jani-check"] {
+        let path = root.join(member).join("Cargo.toml");
+        let manifest = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if manifest.contains("hivewire") || manifest.contains("agents-collaboration") {
+            return Err(format!("{member} must not require a coordinator"));
+        }
+    }
+    let kernel = fs::read_to_string(root.join("backend/core/Cargo.toml")).map_err(|e| e.to_string())?;
+    if kernel.contains("jani-server") || kernel.contains("jani-agent") || kernel.contains("jani-store") {
+        return Err("jani-core may not depend on higher layers".into());
+    }
+    let src = fs::read_to_string(root.join("backend/server/src/attention.rs")).map_err(|e| e.to_string())?;
+    if !src.contains("use jani_core::contract::") || !src.contains("use jani_store::") {
         return Err("attention must use generated contracts and transactional store".into());
     }
     Ok(())

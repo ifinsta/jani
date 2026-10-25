@@ -40,6 +40,7 @@ fn print_does_not_accept_an_option_as_prompt() {
 #[test]
 fn shipped_work_contract_example_validates() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
         .join("docs")
         .join("schemas")
         .join("work-contract.example.json");

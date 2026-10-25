@@ -1,34 +1,81 @@
-# Jani workspace refactor — first implementation
+# Jani — workspace architecture (modeled on ifinpay)
 
-The executable remains **`jani`**, with no Hivewire or other coordinator requirement.
+**Status:** implemented structural migration on PR #2; build and integration verification pending.
 
-## Packages
+Jani intentionally uses the same top-level vocabulary as ifinpay: `backend/`, `contract/`, `tools/`, and `docs/`. Rust's conventional `src/` directory remains **inside each package only**. `Cargo.toml` at the root is a virtual workspace.
 
-- `jani`: existing governed CLI, model loop, broker, sandbox, identity and policy.
-- `jani-contract`: generates closed lifecycle/alert enums and transition checks from versioned JSON contracts.
-- `jani-store`: SQLite transaction wrapper, attention state, schema migration ledger and transactional event outbox.
-- `jani-check`: independent architecture/contract consistency gate.
+```text
+jani/
+├── Cargo.toml                  # virtual Cargo workspace
+├── Cargo.lock
+├── rust-toolchain.toml
+├── contract/                   # closed lifecycle/alert state vocabularies
+│   ├── VERSION
+│   ├── lifecycle/states.json
+│   └── alerts/states.json
+├── backend/
+│   ├── core/
+│   │   ├── Cargo.toml          # jani-core
+│   │   ├── build.rs            # generates typed contract transitions
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── contract.rs
+│   │       ├── policy.rs
+│   │       ├── identity.rs
+│   │       ├── types.rs
+│   │       ├── data.rs
+│   │       ├── approvals.rs
+│   │       ├── budget.rs
+│   │       ├── journal.rs
+│   │       └── ...
+│   ├── store/
+│   │   ├── Cargo.toml          # jani-store
+│   │   └── src/lib.rs          # SQLite attention + transactional outbox
+│   └── server/
+│       ├── Cargo.toml          # jani binary package
+│       ├── src/
+│       │   ├── main.rs
+│       │   ├── agent.rs
+│       │   ├── attention.rs
+│       │   ├── broker.rs
+│       │   ├── gateway.rs
+│       │   ├── model.rs
+│       │   ├── plugins.rs
+│       │   ├── sandbox.rs
+│       │   └── ...
+│       └── tests/
+│           ├── cli.rs
+│           └── e2e.rs
+├── tools/
+│   └── jani-check/
+└── docs/
+```
 
-The contract files are the authority for lifecycle and alert vocabulary. Future extractable security crates must not depend on the CLI or on the model client.
+## Dependency boundaries
 
-## Migration
+1. `jani-core` depends on no server, model orchestration, plugin executor, or coordinator.
+2. `jani-store` is an independent storage primitive.
+3. `jani` composes the trusted core, storage, tool broker and model runtime. It remains the only user-facing executable.
+4. The core's build script generates Rust state enums/transitions from `contract/`; do not introduce competing local vocabularies.
+5. No Hivewire or mandatory multi-agent framework dependency. A future coordinator may call the CLI using an optional adapter.
 
-The first access to the attention store imports `.jani/attention/state.json` if no SQLite snapshot exists. Migration is validated and transactional; corrupt/oversized JSON is refused, not discarded. The old JSON file remains untouched as an operator backup. After a committed SQLite snapshot, it is authoritative; do not edit both stores. The new database is `.jani/attention/state.sqlite3`.
+## Compatibility
 
-The state and outbox event are committed together. The existing global JSONL audit journal remains separate and is **not** an atomic part of this transaction. Outbox events can be used for future audit projection; this release does not implement that projection. SQLite does not make external effects exactly-once.
+Running `cargo run -- --version` at repository root still works via `default-members = ["backend/server"]`. The Rust binary remains `jani`. The existing CLI commands remain available. Core imports in the executable are compatibility re-exports from `jani-core`; new code should depend directly on shared core contracts where possible.
+
+Existing alert state at `.jani/attention/state.json` imports into `.jani/attention/state.sqlite3` on first access, provided it is valid. The old JSON remains as an operator backup. The SQLite snapshot is authoritative after the import; do not mutate both.
+
+The attention snapshot and outbox event commit in one SQLite transaction. The existing global JSONL audit journal, approvals and budgets remain on separate persistence and must not be presented as atomic with the attention store.
 
 ## Verification
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p jani-check
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p jani
+cargo run -- --version
 ```
 
-This is a **foundation** rather than a complete multi-tenant runtime. A major future phase will move per-task budgets, approvals and audit into transactional storage, then introduce real process supervision and model checkpoints. Plugins still register signed manifests only and do not execute.
-
-### Production blockers
-
-Cross-host consistency, tenant-isolated encryption, backed-up database verification, durable background job supervision, documented outage recovery, and externally verifiable event projections require additional implementation and testing. Keep banking actions approval-gated and disabled by default.
+Outstanding scope: real supervised model checkpoint/resume, persistent per-task transactional governance, externally validated evidence, runnable plugin isolation, and distributed multi-tenant deployment. No production-readiness claim is made.

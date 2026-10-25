@@ -6,7 +6,7 @@ use crate::config::{Config, JResult};
 use crate::identity;
 use crate::policy::PolicyEngine;
 use crate::types::{new_id, now_unix, sha256_hex, ActionRequest, Decision, Effect, RiskTier};
-use jani_contract::{AgentPhase as Phase, AlertPhase};
+use jani_core::contract::{AgentPhase as Phase, AlertPhase};
 use jani_store::{Store, TransitionEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
