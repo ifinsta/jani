@@ -72,7 +72,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TESTING.md](docs/TES
 
 ## Security limitations
 
-- Jani is not an OS sandbox and does not prevent arbitrary processes from modifying files outside its guarded interfaces. Use OS/container isolation for untrusted code.
+- Jani is not an OS sandbox and does not prevent arbitrary processes from modifying files outside its guarded interfaces. Use OS/container isolation for untrusted code. See [docs/SANDBOX_PROPOSAL.md](docs/SANDBOX_PROPOSAL.md) for a proposed optional OS-level sandbox.
 - Even an allowlisted `cargo test`, `pytest`, `go test` or `npm test` can run malicious build scripts or test code. Use container sandboxing with restricted secrets and a disposable checkout.
 - Path protections are vulnerable to a hostile process racing file replacement; use a sandbox or OS ACLs for isolation.
 - This release uses single-run model context; recovery is reconstructible from repository state, not an automatically replayed Jani conversation transcript.
