@@ -2,6 +2,8 @@
 Description=Jani Sentinel experimental telemetry gateway
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -11,8 +13,6 @@ EnvironmentFile=/etc/jani/gateway.env
 ExecStart=/usr/local/bin/jani-gateway --bind ${JANI_BIND} --allow-remote --ca /etc/jani/pki/ca.pem --cert /etc/jani/pki/server.pem --key /etc/jani/pki/server-key.pem --registry /etc/jani/devices.json --db /var/lib/jani-gateway/telemetry.sqlite --retain-days 7 --rate-per-minute 120
 Restart=always
 RestartSec=10s
-StartLimitIntervalSec=300
-StartLimitBurst=6
 StateDirectory=jani-gateway
 StateDirectoryMode=0700
 UMask=0077

@@ -2,6 +2,8 @@
 Description=Jani Sentinel read-only telemetry probe
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -11,8 +13,6 @@ EnvironmentFile=/etc/jani/probe.env
 ExecStart=/usr/local/bin/jani-probe --gateway ${JANI_GATEWAY} --tenant ${JANI_TENANT} --device ${JANI_DEVICE} --spool /var/lib/jani-probe/spool.sqlite --sources /etc/jani/services.json --ca /etc/jani/pki/ca.pem --cert /etc/jani/pki/probe.pem --key /etc/jani/pki/probe-key.pem --watch
 Restart=always
 RestartSec=15s
-StartLimitIntervalSec=300
-StartLimitBurst=6
 StateDirectory=jani-probe
 StateDirectoryMode=0700
 UMask=0077
