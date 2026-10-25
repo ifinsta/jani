@@ -130,6 +130,7 @@ Even if a trusted issuer signs a grant containing \`records.update\`, Jani refus
 ## Current security and reliability limitations
 
 - Cryptographic identity and delegation are required even in local-unmanaged mode; enterprise additionally requires signed organizational policy rules for \`mcp.<operation>\` with resource \`mcp:<server-id>:<exact-resource>\`.
+- **Trust roots are currently supplied using CLI flags, not pinned to an immutable administrator-controlled store.** A malicious local operator could supply their own public keys. Regulated deployments must lock trusted issuers through a managed host/credential broker and independently enforce source-system OAuth, user subject, scopes, revocation and row-level authorization.
 - The agent binding is currently a signed **logical agent identifier**. A distinct attested process identity, issuer trust partitioning, authorization revocation lookup, certificate pinning and task-owner lease fencing need a later hardening phase.
 - Jani verifies the issuer-provided role/entitlement **assertion**, not the organization's live HR/permission database. The trusted issuer must guarantee that it is current. Grants expire within one hour; hard revocation requires an authorization-service check not yet implemented.
 - The operation's \`prepare\` mode is certified by a trusted contract, but only the source can guarantee that its tool is truly non-mutating. Certified server conformance and integration security testing are still required.

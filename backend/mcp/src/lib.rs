@@ -152,7 +152,8 @@ impl McpContract {
         let url = reqwest::Url::parse(&self.server.endpoint)
             .map_err(|_| "CONTRACT_ENDPOINT_INVALID".to_string())?;
         if url.scheme() != "https" || url.host_str().is_none()
-            || url.username() != "" || url.password().is_some() || url.fragment().is_some() {
+            || url.username() != "" || url.password().is_some()
+            || url.fragment().is_some() || url.query().is_some() {
             return Err("CONTRACT_ENDPOINT_MUST_USE_HTTPS".into());
         }
         if self.server.audience != self.server.endpoint {
@@ -198,6 +199,7 @@ impl Delegation {
         }
         if self.issued_at > context.now.saturating_add(30) ||
            self.expires_at <= context.now ||
+           self.expires_at <= self.issued_at ||
            self.expires_at.saturating_sub(self.issued_at) > 3600 {
             return Err("DELEGATION_EXPIRED_OR_INVALID".into());
         }
@@ -205,7 +207,7 @@ impl Delegation {
             || self.resources.is_empty() || self.operations.is_empty()
             || self.roles.iter().any(|x| !identifier(x))
             || self.entitlements.iter().any(|x| !identifier(x))
-            || self.resources.iter().any(|x| x.is_empty() || x.len() > 180 || x == "*")
+            || self.resources.iter().any(|x| x.is_empty() || x.len() > 180 || x.contains('*'))
             || self.operations.iter().any(|x| !identifier(x)) {
             return Err("DELEGATION_ENTITLEMENT_PROOF_MISSING".into());
         }
@@ -282,7 +284,7 @@ pub fn authorize(
     if object.get("resource").and_then(Value::as_str) != Some(resource) {
         return Err("CONTRACT_RESOURCE_ARGUMENT_MISMATCH".into());
     }
-    if resource.is_empty() || resource.len() > 180 || resource == "*" {
+    if resource.is_empty() || resource.len() > 180 || resource.contains('*') {
         return Err("CONTRACT_RESOURCE_INVALID".into());
     }
     let mut call = AuthorizedCall {
