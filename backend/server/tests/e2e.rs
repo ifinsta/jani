@@ -12,7 +12,7 @@ fn temp_root() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("jani-e2e-{}-{stamp}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("jani-e2e-{}-{stamp:x}", std::process::id()));
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/one.txt"), "hello\n").unwrap();
     root

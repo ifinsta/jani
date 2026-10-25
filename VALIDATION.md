@@ -22,7 +22,7 @@ Snapshot: 2026-10-25, Windows `x86_64-pc-windows-msvc`, Rust 1.95.0 pinned by `r
 | --- | --- | --- |
 | Formatting | `cargo fmt --all -- --check` | Clean |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | Zero warnings |
-| Tests | `cargo test --workspace --all-targets` | 170 passed, 0 failed: 147 unit, 21 CLI/integration, 2 fake-provider E2E |
+| Tests | `cargo test --workspace --all-targets` | 179 passed, 0 failed: 156 unit, 21 CLI/integration, 2 fake-provider E2E |
 | Release build | `cargo build --release -p jani` | Succeeds; `jani --version` and `jani --help` run |
 | CLI smoke | `jani doctor`, `jani sandbox doctor` | Report worktree, skills, model, settings source, permissions and sandbox support |
 | Architecture gate | `cargo run -p jani-check` | Passes |

@@ -57,7 +57,10 @@ pub struct Ack {
     pub duplicate: bool,
 }
 pub fn identity_ok(v: &str) -> bool {
-    !v.is_empty() && v.len() <= 96 && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    !v.is_empty()
+        && v.len() <= 96
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 pub fn metric_unit(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -84,34 +87,56 @@ pub fn validate(body: &[u8]) -> Result<(Envelope, Vec<u8>, String), String> {
     }
     let raw: Value = serde_json::from_slice(body).map_err(|_| "invalid_json")?;
     let env: Envelope = serde_json::from_value(raw.clone()).map_err(|_| "invalid_envelope")?;
-    if env.version != VERSION || !identity_ok(&env.tenant_id) || !identity_ok(&env.device_id)
-        || env.sequence < 1 || env.observed_at.is_empty() || env.observed_at.len() > 64
-        || env.metrics.len() > MAX_METRICS || env.logs.len() > MAX_LOGS
+    if env.version != VERSION
+        || !identity_ok(&env.tenant_id)
+        || !identity_ok(&env.device_id)
+        || env.sequence < 1
+        || env.observed_at.is_empty()
+        || env.observed_at.len() > 64
+        || env.metrics.len() > MAX_METRICS
+        || env.logs.len() > MAX_LOGS
         || env.coverage.len() > MAX_COVERAGE
     {
         return Err("invalid_envelope".into());
     }
     for metric in &env.metrics {
         if metric_unit(&metric.name) != Some(metric.unit.as_str())
-            || !metric.value.is_finite() || !labels_ok(&metric.attributes) {
+            || !metric.value.is_finite()
+            || !labels_ok(&metric.attributes)
+        {
             return Err("invalid_metric".into());
         }
     }
     for log in &env.logs {
-        if log.time_unix_nano < 0 || !matches!(log.severity_text.as_str(), "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL")
-            || log.body.chars().count() > 4096 || !redacted(&log.body)
+        if log.time_unix_nano < 0
+            || !matches!(
+                log.severity_text.as_str(),
+                "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL"
+            )
+            || log.body.chars().count() > 4096
+            || !redacted(&log.body)
             || log.resource.len() != 1
-            || !log.resource.get("service.name").is_some_and(|s| !s.is_empty() && s.len() <= 100
-                && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'@')))
+            || !log.resource.get("service.name").is_some_and(|s| {
+                !s.is_empty()
+                    && s.len() <= 100
+                    && s.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'@')
+                    })
+            })
             || !labels_ok(&log.attributes)
         {
             return Err("invalid_log".into());
         }
     }
     for item in &env.coverage {
-        if !matches!(item.status.as_str(), "covered" | "partial" | "missing" | "permission_denied" | "unsupported")
-            || item.service.len() > 160 || item.service.is_empty() || item.source.len() > 160
-            || item.reason.len() > 160 {
+        if !matches!(
+            item.status.as_str(),
+            "covered" | "partial" | "missing" | "permission_denied" | "unsupported"
+        ) || item.service.len() > 160
+            || item.service.is_empty()
+            || item.source.len() > 160
+            || item.reason.len() > 160
+        {
             return Err("invalid_coverage".into());
         }
     }
@@ -123,28 +148,57 @@ pub fn validate(body: &[u8]) -> Result<(Envelope, Vec<u8>, String), String> {
     Ok((env, serialized, hash))
 }
 pub fn labels_ok(v: &BTreeMap<String, String>) -> bool {
-    v.len() <= 8 && v.iter().all(|(k, val)| !k.is_empty() && k.len() <= 100 && val.len() <= 100)
+    v.len() <= 8
+        && v.iter()
+            .all(|(k, val)| !k.is_empty() && k.len() <= 100 && val.len() <= 100)
 }
 pub fn redacted(v: &str) -> bool {
     let lower = v.to_ascii_lowercase();
     // Defense-in-depth only: use full privacy filtering before ingesting real logs.
-    for marker in ["password=", "password:", "token=", "token:", "secret=", "secret:",
-        "api_key=", "apikey=", "authorization: bearer ", "authorization=bearer "] {
+    for marker in [
+        "password=",
+        "password:",
+        "token=",
+        "token:",
+        "secret=",
+        "secret:",
+        "api_key=",
+        "apikey=",
+        "authorization: bearer ",
+        "authorization=bearer ",
+    ] {
         let mut remaining = lower.as_str();
         while let Some(at) = remaining.find(marker) {
             let following = &remaining[at + marker.len()..];
-            if !following.trim_start().starts_with("[redacted]") { return false; }
-            remaining = &following[following.find("[redacted]").unwrap_or(0) + "[redacted]".len()..];
+            if !following.trim_start().starts_with("[redacted]") {
+                return false;
+            }
+            remaining =
+                &following[following.find("[redacted]").unwrap_or(0) + "[redacted]".len()..];
         }
     }
     true
 }
-pub fn create_envelope(tenant: &str, device: &str, sequence: i64, observed_at: String,
-    metrics: Vec<Metric>, logs: Vec<Log>, coverage: Vec<Coverage>) -> Result<(Vec<u8>, String), String> {
+pub fn create_envelope(
+    tenant: &str,
+    device: &str,
+    sequence: i64,
+    observed_at: String,
+    metrics: Vec<Metric>,
+    logs: Vec<Log>,
+    coverage: Vec<Coverage>,
+) -> Result<(Vec<u8>, String), String> {
     let v = serde_json::to_value(Envelope {
-        version: VERSION.into(), tenant_id: tenant.into(), device_id: device.into(),
-        sequence, observed_at, metrics, logs, coverage,
-    }).map_err(|e| e.to_string())?;
+        version: VERSION.into(),
+        tenant_id: tenant.into(),
+        device_id: device.into(),
+        sequence,
+        observed_at,
+        metrics,
+        logs,
+        coverage,
+    })
+    .map_err(|e| e.to_string())?;
     let bytes = canonical(&v)?;
     let (_, canonical_bytes, hash) = validate(&bytes)?;
     Ok((canonical_bytes, hash))
@@ -159,19 +213,34 @@ mod tests {
     }
     #[test]
     fn reject_secret_and_invalid_unit() {
-        let mut log = Log { time_unix_nano: 1, severity_text: "ERROR".into(), body: "password=hi".into(),
-            resource: BTreeMap::from([("service.name".into(), "api".into())]), attributes: BTreeMap::new() };
-        let metric = Metric { name: "system.uptime".into(), unit: "By".into(), value: 5.0, attributes: BTreeMap::new() };
-        assert!(create_envelope("t","d",1,"now".into(),vec![metric],vec![],vec![]).is_err());
-        assert!(create_envelope("t","d",1,"now".into(),vec![],vec![log.clone()],vec![]).is_err());
+        let mut log = Log {
+            time_unix_nano: 1,
+            severity_text: "ERROR".into(),
+            body: "password=hi".into(),
+            resource: BTreeMap::from([("service.name".into(), "api".into())]),
+            attributes: BTreeMap::new(),
+        };
+        let metric = Metric {
+            name: "system.uptime".into(),
+            unit: "By".into(),
+            value: 5.0,
+            attributes: BTreeMap::new(),
+        };
+        assert!(create_envelope("t", "d", 1, "now".into(), vec![metric], vec![], vec![]).is_err());
+        assert!(
+            create_envelope("t", "d", 1, "now".into(), vec![], vec![log.clone()], vec![]).is_err()
+        );
         log.body = "redacted".into();
-        assert!(create_envelope("t","d",1,"now".into(),vec![],vec![log],vec![]).is_ok());
+        assert!(create_envelope("t", "d", 1, "now".into(), vec![], vec![log], vec![]).is_ok());
     }
     #[test]
     fn interop_vector_matches_python_reference() {
         let v = include_bytes!("../../../protocol/jsmt/v1/vectors/basic.json");
         let (_, _, hash) = validate(v).unwrap();
-        assert_eq!(hash, "ee12c79dc0c57a15ca58bdb663ff2c7d1c1bd72acef2cee173a609d6de0bf405");
+        assert_eq!(
+            hash,
+            "ee12c79dc0c57a15ca58bdb663ff2c7d1c1bd72acef2cee173a609d6de0bf405"
+        );
     }
     #[test]
     fn digest_is_consistent_for_key_order() {

@@ -1,5 +1,5 @@
 ---
-id: JANI-OPS-008
+id: JANI-OPS-010
 title: "Sentinel service operations, compliance and release evidence"
 status: implemented-partial
 owner: backend/monitoring
