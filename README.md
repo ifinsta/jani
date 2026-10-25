@@ -115,6 +115,20 @@ review candidates that **never** count as verified facts automatically.
 Run `cargo run -p jani-claims -- sync` to refresh claims, and `-- check` to
 verify freshness in CI. See [Docs Claims Auditor](docs/CLAIMS.md).
 
+## Synthetic fault and resilience corpus
+
+`synthetic/` provides a deterministic 5-million-case fault-injection fixture
+generator spanning 23 Jani subsystem domains, 371 failure hooks, 32 mutation
+variants and 17 profiles. Sharded compressed JSONL outputs include a SHA-256
+manifest and coverage summary; generated files stay outside Git history.
+
+Run `python -m synthetic.generate generate --output synthetic/generated/full_5m`
+and then `python -m synthetic.generate verify --output synthetic/generated/full_5m`.
+CI exercises a smaller deterministic sample plus the generator unit tests.
+**Generating and verifying inputs does not count as executing Jani.** Use the
+readiness evaluator in `synthetic/readiness.py` with independent test receipts.
+See [Synthetic corpus guide](synthetic/README.md).
+
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.

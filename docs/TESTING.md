@@ -71,3 +71,26 @@ An allowlisted test runner can still execute malicious project code. Use a
 disposable checkout and OS/container isolation for untrusted repositories. On
 Windows, Job Objects bound the process tree only; do not represent that as
 filesystem or network confinement. macOS has no backend in this build.
+
+## Adversarial synthetic corpus and production readiness
+
+The `synthetic/` package maps 371 failure hooks to Jani source domains and generates
+5,000,000 deterministic scenario descriptors across security, permissions,
+MCP, model gateways, tools, process confinement, storage, recovery and claims.
+Full-corpus generation is run separately from pull-request CI; PR CI uses a
+small sample for schema, determinism, checksum and fault-distribution tests.
+
+```bash
+python -m unittest discover -s synthetic/tests -v
+python -m synthetic.generate generate --output synthetic/generated/full_5m --count 5000000
+python -m synthetic.generate verify --output synthetic/generated/full_5m
+python -m synthetic.readiness --corpus synthetic/generated/full_5m
+```
+
+A corpus is **not** a passing runtime test. Do not mark any scenario passed
+without executing the Jani binary or directly instrumented Rust subsystem and
+recording a verifiable oracle receipt. The initial supported CLI probe adapter
+is in `synthetic/runner.py`; unsupported hooks are explicitly SKIPPED. A
+production readiness verdict requires all mandatory gates plus actual full
+runtime evaluation and independent security signoff; the baseline evaluator
+returns nonzero when evidence is absent.

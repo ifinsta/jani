@@ -1,0 +1,52 @@
+"""Jani synthetic corpus failure-mode catalogue (not real user data)."""
+from __future__ import annotations
+
+FAULTS = {
+    "identity": "unsigned_identity expired_identity future_issued_identity wrong_tenant wrong_principal subject_type_spoof forged_signature unknown_issuer rotated_key nonce_reuse duplicate_claims missing_subject invalid_unicode_principal oversized_assertion clock_skew identity_revoked_during_task",
+    "delegation": "unsigned_grant expired_grant wrong_initiator wrong_agent wrong_purpose wrong_task role_missing entitlement_missing wildcard_resource cross_tenant_resource delegated_update_permission grant_expands_rights forged_entitlement replayed_grant revoked_initiator user_commit_delegated",
+    "policy": "default_allow explicit_deny_overridden bad_rule_pattern revoked_policy stale_revision wrong_risk_tier wrong_effect classification_downgrade untrusted_override missing_policy signature_swap resource_match_bypass missing_permission offline_policy_expiry role_claim_without_proof policy_reload_race",
+    "mcp": "missing_contract unsigned_contract tampered_contract missing_operation forged_role missing_entitlement incorrect_audience unsafe_redirect malformed_json_rpc response_missing_receipt signed_wrong_payload expired_receipt user_commit_call cross_tenant_result schema_bypass prepare_side_effect ambiguous_timeout",
+    "data_governance": "unknown_classification silent_label_downgrade secret_in_nested_json valid_payment_card email_in_metadata prompt_injection_file cross_tenant_cache pii_in_tool_output confidential_model_egress region_mismatch restricted_summary_leak encrypted_file_unlabeled absent_provenance signed_false_classification mixed_sensitive_sources",
+    "model_gateway": "model_408 model_429 model_500 model_502 model_503 model_504 model_timeout partial_stream malformed_completion tool_call_json_injection unbounded_retry credential_exposure unapproved_provider model_region_forged exhausted_tokens response_secret_echo",
+    "tool_broker": "unknown_tool malformed_tool_args tool_name_confusion write_without_grant command_without_grant mutated_arguments_after_approval stale_work_contract concurrent_tool_calls repeated_denial shell_injection conflicting_tool_receipt duplicate_tool_id unauthorized_capability escaped_resource staged_outside_scope hidden_tool_call",
+    "workspace": "dotdot_traversal symlink_escape nested_symlink_case unicode_confusable_path windows_unc_path protected_env_path git_metadata_write oversized_file atomic_rename_failure hardlink_alias case_insensitive_collision read_race staged_foreign_file untracked_secret_file git_no_index command_path_override",
+    "sandbox": "bwrap_unavailable windows_false_confinement macos_unavailable network_leak disallowed_mount child_process_escape namespace_failure unconfined_fallback readonly_overlay_escape proc_mount_leak device_mount_access outbound_dns_leak sandbox_receipt_lie nested_process_tree linux_capability_leak environment_secret_leak",
+    "process": "timeout_ignored child_survives_parent process_group_escape killed_mid_write stdout_flood stderr_flood zombie_process pid_reuse cancellation_race signal_ignored cpu_limit_exceeded memory_limit_exceeded fd_exhaustion command_whitelist_bypass wrong_platform_tool tool_path_shadowing",
+    "plugins": "unsigned_manifest tampered_manifest native_runtime_requested unexpected_capability plugin_version_downgrade publisher_key_rotated plugin_wrong_tenant malicious_manifest_path dynamic_library_load dependency_conflict capability_shadow unsigned_update broken_schema expired_plugin trust_root_swap plugin_network_bypass",
+    "budget": "tool_limit_crossed token_limit_crossed spend_limit_crossed deadline_expired negative_cost overflow_counter concurrent_reservation double_charge stale_budget_reset new_lower_limit_ignored budget_ledger_corrupt partial_ledger_write currency_precision_error zero_budget bypass_via_restarts unbounded_retry_cost",
+    "approvals": "self_approval expired_approval wrong_approver_role wrong_resource wrong_payload replay_receipt used_twice approval_revoked stale_record_version approval_other_tenant race_approval_consume absent_approval dual_control_missing overlapping_approvals forged_signature approval_wrong_risk",
+    "audit": "corrupt_hash_chain deleted_event inserted_event reordered_events hash_collision_claim crash_before_journal incomplete_jsonl concurrent_append mixed_tenant_history forgery_of_actor journal_write_failure logging_secrets wrong_timestamp nondeterministic_digest truncated_tail audit_not_reconciled",
+    "storage": "wal_corruption disk_full fsync_failure schema_mismatch interrupted_migration sqlite_busy state_json_corrupt stale_lease_write rollback_failure journal_outbox_split duplicate_migration wrong_tenant_partition sqlite_lock_timeout unsafe_symlink_db simultaneous_writers backup_restore_stale",
+    "lifecycle": "sleep_while_running wake_from_quarantine wake_from_pause duplicate_wake crashed_checkpoint stale_checkpoint replayed_task ownership_revoked_after_sleep waker_spoof wake_storm lost_notification shutdown_mid_transition invalid_state_transition priority_inversion timer_wrap clock_jump",
+    "alerts": "duplicate_event missing_receipt expired_lease double_claim wrong_consumer_ack wrong_tenant_alert failed_wake_hint alert_spam queue_overflow malformed_severity unsupported_event wrong_dedupe_content retry_hotloop lost_ack after_effect_before_ack poisoned_payload altered_receipt",
+    "mirror": "incomplete_run_false_success untrusted_journal corrupted_history cross_tenant_review speculative_root_cause redaction_missing duplicate_suggestion unsupported_evidence review_budget_spike outcome_misclassification timeline_overflow outdated_recommendation contradictory_runs unapproved_autoapply stale_comparison agent_self_certifies",
+    "claims": "broken_markdown_link missing_source_file undocumented_mcp_change stale_claim_register forged_ai_citation wrong_line_number proposal_treated_as_implemented missing_claim_annotation false_source_contains source_symbol_not_behavior markdown_code_fence_confusion symlinked_document malicious_link encoding_edge duplicate_claim_id source_changed_after_review",
+    "contracts": "unknown_contract_version illegal_transition missing_required_field schema_unknown_property malformed_json_schema invalid_signature expired_contract type_confusion backward_incompatible_enum unsupported_operation missing_kind untrusted_import version_downgrade missing_migration invalid_state_loop contract_drift",
+    "cli": "missing_argument invalid_utf8 huge_argument env_flag_override unexpected_subcommand flag_injection duplicate_option secret_echo help_requires_key unexpected_cwd windows_quoting macos_path_unicode stdout_broken_pipe unknown_mode oversized_config conflicting_flags unsafe_default",
+    "operations": "disk_pressure memory_pressure network_partition dns_failure platform_mismatch clock_rollback offline_start incomplete_backup restored_old_database logging_unavailable credential_rotation dependency_outage mixed_version_deployment file_permission_change readonly_volume no_operator_approval release_rollback",
+    "cross_system": "revocation_during_mcp_call alert_wake_after_policy_change mirror_reads_pending_outbox approval_after_record_modified budget_expired_during_retry alert_duplicate_after_crash tool_effect_before_audit evidence_claim_after_source_change symlink_after_path_check stale_permission_cached audit_truncated_during_mirror plugin_removed_during_tool data_label_lost_at_handoff user_commit_via_indirect_tool storage_full_during_checkpoint multi_tenant_race",
+}
+FAULTS = {domain: items.split() for domain, items in FAULTS.items()}
+PROFILES = "local_enterprise regulated_banking read_only_high_sensitivity offline_recovery low_budget high_concurrency degraded_network cold_start linux_secure windows_limited macos_limited malicious_repository external_mcp multi_tenant_crossing long_running chaotic_clock disaster_recovery".split()
+VARIANTS = "baseline clean_valid_context invalid_json unicode_edge boundary_zero boundary_max just_before_expiry just_after_expiry stale_version duplicate_request parallel_tenants replay_after_restart delayed_ack partial_write lost_response changed_resource changed_role changed_purpose signature_corruption out_of_order nested_payload high_volume race_precondition low_memory network_partition sandbox_bypass source_conflict approval_forged report_forged ambiguous_effect quota_exhaustion clock_rollover".split()
+OUTCOMES = ("DENY", "QUARANTINE", "RETRY", "AWAIT_HUMAN", "RECONCILE", "FAIL_CLOSED")
+DOMAIN_INVARIANT = {
+ "identity":"verified_identity_required", "delegation":"least_privilege_intersection", "policy":"deny_overrides_allow",
+ "mcp":"user_only_commit_unreachable", "data_governance":"no_unapproved_egress", "model_gateway":"no_secrets_to_provider",
+ "tool_broker":"broker_mediates_effects", "workspace":"no_filesystem_escape", "sandbox":"no_false_confinement_claim",
+ "process":"bounded_child_lifetime", "plugins":"unsigned_plugins_cannot_execute", "budget":"budget_never_expands",
+ "approvals":"single_use_exact_payload", "audit":"tamper_detected_fail_closed", "storage":"no_partial_authoritative_commit",
+ "lifecycle":"quarantine_cannot_wake", "alerts":"stale_receipt_never_acknowledges", "mirror":"no_false_success",
+ "claims":"unverified_claims_flagged", "contracts":"invalid_transitions_denied", "cli":"unsafe_input_refused",
+ "operations":"failure_cannot_grant_authority", "cross_system":"no_cross_boundary_authority_escalation",
+}
+SOURCE_MAP = {
+ "identity":"backend/core/src/identity.rs", "delegation":"backend/mcp/src/lib.rs", "policy":"backend/core/src/policy.rs",
+ "mcp":"backend/server/src/mcp.rs", "data_governance":"backend/core/src/data.rs", "model_gateway":"backend/server/src/gateway.rs",
+ "tool_broker":"backend/server/src/broker.rs", "workspace":"backend/server/src/workspace.rs", "sandbox":"backend/server/src/sandbox.rs",
+ "process":"backend/core/src/process.rs", "plugins":"backend/server/src/plugins.rs", "budget":"backend/core/src/budget.rs",
+ "approvals":"backend/core/src/approvals.rs", "audit":"backend/core/src/journal.rs", "storage":"backend/store/src/lib.rs",
+ "lifecycle":"backend/server/src/attention.rs", "alerts":"backend/server/src/attention.rs", "mirror":"backend/mirror/src/lib.rs",
+ "claims":"tools/jani-claims/src/main.rs", "contracts":"backend/core/src/contract.rs", "cli":"backend/core/src/config.rs",
+ "operations":"backend/server/src/main.rs", "cross_system":"backend/server/src/main.rs",
+}

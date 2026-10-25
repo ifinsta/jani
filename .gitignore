@@ -3,3 +3,8 @@
 .env.*
 *.log
 .jani/
+
+# Synthetic stress corpora are regenerated, not committed
+synthetic/generated/
+__pycache__/
+*.pyc
