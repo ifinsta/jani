@@ -5,6 +5,7 @@ mod broker;
 mod exec;
 mod gateway;
 mod model;
+mod mirror;
 mod plugins;
 mod sandbox;
 mod skills;
@@ -41,6 +42,10 @@ fn run() -> JResult<()> {
     if cfg.command == "help" {
         println!("{}", config::help());
         return Ok(());
+    }
+    // Mirror works on recorded evidence without model credentials or skill discovery.
+    if cfg.command == "mirror" {
+        return print_json(&mirror::command(&cfg)?);
     }
     let catalog = Catalog::load(&cfg)?;
     match cfg.command.as_str() {

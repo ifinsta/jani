@@ -34,16 +34,25 @@ fn check(root: &Path) -> Result<(), String> {
     if root.join("src").exists() || root.join("crates").exists() {
         return Err("root-level src/ and crates/ are forbidden: packages belong under backend/".into());
     }
-    for member in ["backend/core", "backend/store", "backend/server", "tools/jani-check"] {
+    for member in ["backend/core", "backend/store", "backend/server", "backend/mirror", "tools/jani-check"] {
         let path = root.join(member).join("Cargo.toml");
         let manifest = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         if manifest.contains("hivewire") || manifest.contains("agents-collaboration") {
             return Err(format!("{member} must not require a coordinator"));
         }
     }
+    if !root.join("backend/mirror/src/lib.rs").is_file() {
+        return Err("native Mirror package is missing".into());
+    }
     let kernel = fs::read_to_string(root.join("backend/core/Cargo.toml")).map_err(|e| e.to_string())?;
     if kernel.contains("jani-server") || kernel.contains("jani-agent") || kernel.contains("jani-store") {
         return Err("jani-core may not depend on higher layers".into());
+    }
+    let manifest = fs::read_to_string(root.join("backend/mirror/Cargo.toml")).map_err(|e| e.to_string())?;
+    for forbidden in ["reqwest", "jani-server", "jani-agent", "hivewire", "agents-collaboration"] {
+        if manifest.contains(forbidden) {
+            return Err(format!("Mirror core must remain independent of {forbidden}"));
+        }
     }
     let src = fs::read_to_string(root.join("backend/server/src/attention.rs")).map_err(|e| e.to_string())?;
     if !src.contains("use jani_core::contract::") || !src.contains("use jani_store::") {

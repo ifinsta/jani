@@ -28,6 +28,9 @@ jani/
 │   │       ├── budget.rs
 │   │       ├── journal.rs
 │   │       └── ...
+│   ├── mirror/                # jani-mirror: read-only reflection engine
+│   │   ├── Cargo.toml
+│   │   └── src/lib.rs
 │   ├── store/
 │   │   ├── Cargo.toml          # jani-store
 │   │   └── src/lib.rs          # SQLite attention + transactional outbox
@@ -56,8 +59,9 @@ jani/
 1. `jani-core` depends on no server, model orchestration, plugin executor, or coordinator.
 2. `jani-store` is an independent storage primitive.
 3. `jani` composes the trusted core, storage, tool broker and model runtime. It remains the only user-facing executable.
-4. The core's build script generates Rust state enums/transitions from `contract/`; do not introduce competing local vocabularies.
-5. No Hivewire or mandatory multi-agent framework dependency. A future coordinator may call the CLI using an optional adapter.
+4. `jani-mirror` reads trusted audit data through `jani-core` without depending on the agent runtime, model clients or coordinator; recommendations are explicitly persisted via `jani-store`.
+5. The core's build script generates Rust state enums/transitions from `contract/`; do not introduce competing local vocabularies.
+6. No Hivewire or mandatory multi-agent framework dependency. A future coordinator may call the CLI using an optional adapter.
 
 ## Compatibility
 

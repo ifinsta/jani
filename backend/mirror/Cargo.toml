@@ -1,0 +1,12 @@
+[package]
+name = "jani-mirror"
+description = "Deterministic evidence-based reflection for Jani runs and workflows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jani-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true

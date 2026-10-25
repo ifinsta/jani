@@ -73,6 +73,23 @@ The executable stays `jani`, and Cargo commands run from the workspace root.
 Read [Workspace Architecture](docs/WORKSPACE_ARCHITECTURE.md).
 Hivewire remains entirely optional. Model wake/resume is not yet implemented.
 
+## Jani Mirror — retrospective workflow critique
+
+Mirror provides deterministic, local review of Jani's recorded executions.
+Inspect run timelines, critique failures, identify recurring workflow problems,
+compare two runs, and **explicitly** save evidence-linked improvement proposals:
+
+```bash
+cargo run -- mirror workflows --state-dir .jani
+cargo run -- mirror critique RUN_ID --state-dir .jani
+cargo run -- mirror record RUN_ID --state-dir .jani
+cargo run -- mirror history --state-dir .jani
+```
+
+The `jani-mirror` package lives under `backend/mirror`, has no model-client or
+coordination dependency, and does **not** execute or self-apply recommendations.
+Details: [Mirror guide](docs/MIRROR.md).
+
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.

@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 jani-core.workspace = true
 jani-store.workspace = true
+jani-mirror.workspace = true
 ed25519-dalek = "2"
 hex.workspace = true
 regex.workspace = true

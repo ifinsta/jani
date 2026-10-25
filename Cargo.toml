@@ -4,6 +4,7 @@ members = [
     "backend/core",
     "backend/store",
     "backend/server",
+    "backend/mirror",
     "tools/jani-check",
 ]
 default-members = ["backend/server"]
@@ -17,6 +18,7 @@ repository = "https://github.com/ifinsta/jani"
 [workspace.dependencies]
 jani-core = { path = "backend/core" }
 jani-store = { path = "backend/store" }
+jani-mirror = { path = "backend/mirror" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
