@@ -291,6 +291,44 @@ impl RuntimeMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelProtocol {
+    OpenAi,
+    Anthropic,
+}
+
+impl ModelProtocol {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "openai" | "openai-compatible" => Some(Self::OpenAi),
+            "anthropic" | "anthropic-messages" => Some(Self::Anthropic),
+            _ => None,
+        }
+    }
+
+    pub fn detect(api_base: &str) -> Self {
+        let host = api_base
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        if host.eq_ignore_ascii_case("api.anthropic.com") {
+            Self::Anthropic
+        } else {
+            Self::OpenAi
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAi => "openai",
+            Self::Anthropic => "anthropic",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionRequest {

@@ -57,7 +57,7 @@ A report is in scope when it crosses a documented boundary without already ownin
 | Fail-closed data | Secret-classified content is not sent to a provider; empty allowlists deny and `"*"` is the only wildcard. |
 | Honest sandboxing | Selection has no silent fallback; an unsatisfied isolation profile is an error. |
 | Human-only commit | Agent invocation of user-only commit tools is always blocked. |
-| Settings scope | Settings select models and limits only; inline credentials are rejected and a profile reads only its named environment variable. |
+| Settings scope | Settings select models, transport and limits, and may add permission restrictions. They cannot grant write, command or policy authority. Inline credentials are accepted only for explicitly configured convenience, are never printed, and a profile never borrows another provider's generic environment key. |
 | Auditability | Each mediated decision is journaled before the effect; the journal is hash-chained and verifies on read. |
 
 Executed negative tests for these controls are listed in [VALIDATION.md](VALIDATION.md).
@@ -78,7 +78,7 @@ Executed negative tests for these controls are listed in [VALIDATION.md](VALIDAT
 2. Run in a disposable checkout or container with restricted secrets and no access to production networks or data.
 3. Grant the narrowest `--write-path` set and the fewest `--exec-program` entries that still complete the task.
 4. Keep signing private keys out of the repository, the worktree, child environments and diagnostics; publish only verification keys.
-5. Keep API keys in environment variables referenced by `apiKeyEnv`; never commit a literal key or paste one into settings.
+5. Prefer environment variables referenced by `apiKeyEnv`. If you intentionally store an inline `apiKey` in settings, keep the file out of version control, restrict its permissions and rotate the key if it is exposed; `doctor` warns but never prints the value.
 6. Run `jani doctor` and `jani sandbox doctor` and read the reported support honestly. A recognized backend is not a certification.
 7. Protect `--state-dir`: journals, approvals and budget ledgers are plaintext JSON.
 8. Have a rollback and credential-rotation plan before the first external effect.

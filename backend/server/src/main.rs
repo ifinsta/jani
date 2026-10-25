@@ -1,5 +1,6 @@
 pub use jani_core::{
-    approvals, budget, config, crypto, data, identity, journal, policy, process, schema, types,
+    approvals, budget, config, crypto, data, identity, journal, permissions, policy, process,
+    schema, types,
 };
 mod agent;
 mod attention;
@@ -11,8 +12,10 @@ mod mirror;
 mod model;
 mod native;
 mod plugins;
+mod repl;
 mod sandbox;
 mod skills;
+mod tui;
 mod workspace;
 
 use config::{Config, JResult};
@@ -66,10 +69,11 @@ fn run() -> JResult<()> {
         "doctor" => doctor(&cfg, &catalog),
         "run" => {
             let prompt = cfg.prompt.as_ref().ok_or("no prompt supplied")?;
-            let mut agent = agent::Agent::new(&cfg, &catalog);
+            let mut agent = agent::Agent::new(&cfg, &catalog)?;
             println!("{}", agent.run(prompt)?);
             Ok(())
         }
+        "repl" => repl::run(&cfg, &catalog),
         "sandbox" => match cfg.sub.as_deref() {
             Some("doctor") | None => print_json(&sandbox::doctor()),
             Some("check") => print_json(&sandbox::check(&cfg)),
@@ -161,14 +165,31 @@ fn doctor(cfg: &Config, catalog: &Catalog) -> JResult<()> {
             (None, _) => "none".to_string(),
         }
     );
+    for warning in &cfg.settings_warnings {
+        println!("Settings warning: {warning}");
+    }
     println!("Model: {}", cfg.model);
     println!(
-        "Model key: {}",
+        "Model API: {} {} (output ceiling {} tokens)",
+        cfg.protocol.as_str(),
+        cfg.api_base,
+        cfg.max_output_tokens
+    );
+    println!(
+        "Model key: {} ({})",
         if cfg.api_key.is_some() {
             "SET"
         } else {
             "MISSING"
-        }
+        },
+        cfg.api_key_source
+    );
+    println!(
+        "Permissions: {}",
+        cfg.permissions
+            .as_ref()
+            .map(permissions::Policy::describe)
+            .unwrap_or_else(|| "none (CLI grants and policy only)".into())
     );
     println!("Writes: {}; commands: {}", cfg.allow_write, cfg.allow_exec);
     println!(

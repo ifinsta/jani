@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "settings.schema.json",
+  "title": "Jani project settings",
+  "description": "Project settings for Jani. CLI flags override environment variables, which override this file. Settings can narrow authority but never grant writes, commands or policy approvals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional schema hint. Jani ignores the value."
+    },
+    "version": {
+      "const": 1
+    },
+    "model": {
+      "type": "string",
+      "description": "Top-level selector: a profile name or a raw model ID.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "defaultModel": {
+      "type": "string",
+      "description": "Legacy profile selector used when model is absent or is a raw model ID.",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "apiBase": {
+      "type": "string",
+      "description": "Default API base for profiles that do not set one.",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "apiKey": {
+      "type": "string",
+      "description": "Inline provider key. Prefer apiKeyEnv and keep this file out of version control.",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "apiKeyEnv": {
+      "type": "string",
+      "description": "Environment variable holding the provider key.",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+    },
+    "protocol": {
+      "enum": ["openai", "anthropic"],
+      "description": "Transport. Auto-detected from the API host when omitted."
+    },
+    "maxOutputTokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200000
+    },
+    "models": {
+      "type": "object",
+      "description": "Named model profiles. When present, defaultModel is required unless a top-level model selector is present.",
+      "maxProperties": 32,
+      "additionalProperties": {
+        "$ref": "#/definitions/modelProfile"
+      }
+    },
+    "maxSteps": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 80
+    },
+    "permissions": {
+      "$ref": "#/definitions/permissions"
+    }
+  },
+  "definitions": {
+    "modelProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model"],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "apiBase": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "apiKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "apiKeyEnv": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+        },
+        "protocol": {
+          "enum": ["openai", "anthropic"]
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200000
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultMode": {
+          "enum": ["default", "acceptEdits", "plan"],
+          "description": "bypassPermissions is refused."
+        },
+        "allow": {
+          "$ref": "#/definitions/rules"
+        },
+        "ask": {
+          "$ref": "#/definitions/rules"
+        },
+        "deny": {
+          "$ref": "#/definitions/rules"
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "maxLength": 512,
+        "pattern": "^(Read|List|Write|Edit|Bash|Command)\\(.+\\)$"
+      }
+    }
+  }
+}

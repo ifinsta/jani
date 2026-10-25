@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod data;
 pub mod identity;
 pub mod journal;
+pub mod permissions;
 pub mod policy;
 pub mod process;
 pub mod schema;

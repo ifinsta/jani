@@ -1,0 +1,400 @@
+"""Drive the full-screen Jani UI through a real Windows console and audit frames.
+
+The probe allocates a console, binds the child's stdin/stdout/stderr to it and
+injects keys with WriteConsoleInputW. It reads the active screen buffer, so it
+checks rendered text rather than piped output. A local fake OpenAI-compatible
+provider proves that a turn reaches the model gateway without exposing the key.
+
+Usage:
+    python tools/tui_console_probe.py target/release/jani.exe target/tui-run
+
+Windows only. It does not replace a terminal-emulator test: resize, paste,
+scrollback, color fidelity and rendering on Linux or macOS remain manual.
+"""
+
+import ctypes
+import json
+import msvcrt
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from ctypes import wintypes
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+
+class COORD(ctypes.Structure):
+    _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+
+class SMALL_RECT(ctypes.Structure):
+    _fields_ = [
+        ("Left", wintypes.SHORT),
+        ("Top", wintypes.SHORT),
+        ("Right", wintypes.SHORT),
+        ("Bottom", wintypes.SHORT),
+    ]
+
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+OPEN_EXISTING = 3
+DUPLICATE_SAME_ACCESS = 0x00000002
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+KEY_EVENT = 1
+
+kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+kernel32.CreateFileW.restype = wintypes.HANDLE
+kernel32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.HANDLE,
+]
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.GetStdHandle.restype = wintypes.HANDLE
+kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+kernel32.DuplicateHandle.argtypes = [
+    wintypes.HANDLE,
+    wintypes.HANDLE,
+    wintypes.HANDLE,
+    ctypes.POINTER(wintypes.HANDLE),
+    wintypes.DWORD,
+    wintypes.BOOL,
+    wintypes.DWORD,
+]
+kernel32.ReadConsoleOutputCharacterW.argtypes = [
+    wintypes.HANDLE,
+    wintypes.LPWSTR,
+    wintypes.DWORD,
+    COORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.SetConsoleScreenBufferSize.argtypes = [wintypes.HANDLE, COORD]
+kernel32.SetConsoleWindowInfo.argtypes = [
+    wintypes.HANDLE,
+    wintypes.BOOL,
+    ctypes.POINTER(SMALL_RECT),
+]
+kernel32.WriteConsoleInputW.argtypes = [
+    wintypes.HANDLE,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+
+
+class CHAR_UNION(ctypes.Union):
+    _fields_ = [("UnicodeChar", wintypes.WCHAR), ("AsciiChar", ctypes.c_char)]
+
+
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wintypes.BOOL),
+        ("wRepeatCount", wintypes.WORD),
+        ("wVirtualKeyCode", wintypes.WORD),
+        ("wVirtualScanCode", wintypes.WORD),
+        ("uChar", CHAR_UNION),
+        ("dwControlKeyState", wintypes.DWORD),
+    ]
+
+
+class EVENT_UNION(ctypes.Union):
+    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [("EventType", wintypes.WORD), ("Event", EVENT_UNION)]
+
+
+def fail(message):
+    error = ctypes.get_last_error()
+    print(f"FAIL: {message} (winerror={error})")
+    sys.exit(2)
+
+
+def duplicate(handle):
+    current = kernel32.GetCurrentProcess()
+    duplicate_handle = wintypes.HANDLE()
+    if not kernel32.DuplicateHandle(
+        current,
+        handle,
+        current,
+        ctypes.byref(duplicate_handle),
+        0,
+        True,
+        DUPLICATE_SAME_ACCESS,
+    ):
+        fail("DuplicateHandle")
+    return duplicate_handle
+
+
+def read_screen(width, height):
+    handle = kernel32.CreateFileW(
+        "CONOUT$",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        fail("open CONOUT$ for reading")
+    buffer = ctypes.create_unicode_buffer(width * height)
+    read = wintypes.DWORD()
+    if not kernel32.ReadConsoleOutputCharacterW(
+        handle, buffer, width * height, COORD(0, 0), ctypes.byref(read)
+    ):
+        kernel32.CloseHandle(handle)
+        fail("ReadConsoleOutputCharacterW")
+    kernel32.CloseHandle(handle)
+    text = buffer[: read.value]
+    return "\n".join(text[row * width : (row + 1) * width].rstrip() for row in range(height))
+
+
+def wait_for(width, height, needle, timeout=12.0):
+    deadline = time.time() + timeout
+    screen = ""
+    while time.time() < deadline:
+        screen = read_screen(width, height)
+        if needle in screen:
+            return screen
+        time.sleep(0.4)
+    return screen
+
+
+def stable_screen(width, height, needle, timeout=12.0):
+    # The idle UI redraws every 250 ms; a single read can land mid-diff. Two
+    # identical consecutive frames are the settled content.
+    deadline = time.time() + timeout
+    screen = ""
+    while time.time() < deadline:
+        first = read_screen(width, height)
+        if needle in first:
+            time.sleep(0.3)
+            second = read_screen(width, height)
+            screen = second
+            if first == second:
+                return second
+        else:
+            screen = first
+        time.sleep(0.15)
+    return screen
+
+
+def type_text(handle, text):
+    records = (INPUT_RECORD * len(text))()
+    for index, ch in enumerate(text):
+        record = records[index]
+        record.EventType = KEY_EVENT
+        record.Event.KeyEvent.bKeyDown = 1
+        record.Event.KeyEvent.wRepeatCount = 1
+        record.Event.KeyEvent.wVirtualKeyCode = 0x0D if ch == "\r" else 0
+        record.Event.KeyEvent.uChar.UnicodeChar = ch
+    written = wintypes.DWORD()
+    if not kernel32.WriteConsoleInputW(handle, records, len(records), ctypes.byref(written)):
+        fail("WriteConsoleInputW")
+    if written.value != len(records):
+        fail(f"WriteConsoleInputW wrote {written.value}/{len(records)}")
+
+
+class FakeProvider(BaseHTTPRequestHandler):
+    captured = []
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0"))
+        body = self.rfile.read(length)
+        FakeProvider.captured.append(body.decode("utf-8", "replace"))
+        time.sleep(1.2)
+        payload = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Hello from the fake provider.",
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 4},
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *_args):
+        pass
+
+
+def main():
+    if len(sys.argv) != 3:
+        print(__doc__)
+        return 2
+    binary = os.path.abspath(sys.argv[1])
+    scratch = os.path.abspath(sys.argv[2])
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.makedirs(os.path.join(scratch, ".jani"))
+    with open(os.path.join(scratch, ".jani", "settings.json"), "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "version": 1,
+                "permissions": {
+                    "defaultMode": "default",
+                    "allow": ["Read(./**)"],
+                    "ask": ["Bash(git push *)"],
+                    "deny": ["Read(./.env)"],
+                },
+            },
+            handle,
+        )
+    provider = ThreadingHTTPServer(("127.0.0.1", 0), FakeProvider)
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    provider_thread.start()
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "JANI_API_BASE": f"http://127.0.0.1:{provider.server_port}/v1",
+            "JANI_API_KEY": "probe-secret-key",
+            "JANI_MODEL": "probe-model",
+        }
+    )
+
+    kernel32.FreeConsole()
+    if not kernel32.AllocConsole():
+        fail("AllocConsole")
+
+    stdin_handle = kernel32.CreateFileW(
+        "CONIN$",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    stdout_handle = kernel32.CreateFileW(
+        "CONOUT$",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if stdin_handle == wintypes.HANDLE(-1).value:
+        fail("open CONIN$")
+    if stdout_handle == wintypes.HANDLE(-1).value:
+        fail("open CONOUT$")
+
+    width, height = 120, 40
+    kernel32.SetConsoleScreenBufferSize(stdout_handle, COORD(width, height))
+    window = SMALL_RECT(0, 0, width - 1, height - 1)
+    kernel32.SetConsoleWindowInfo(stdout_handle, True, ctypes.byref(window))
+
+    child_in = duplicate(stdin_handle)
+    child_out = duplicate(stdout_handle)
+    in_fd = msvcrt.open_osfhandle(child_in.value, os.O_RDONLY)
+    out_fd = msvcrt.open_osfhandle(child_out.value, os.O_WRONLY)
+
+    process = subprocess.Popen(
+        [binary],
+        cwd=scratch,
+        stdin=in_fd,
+        stdout=out_fd,
+        stderr=out_fd,
+        close_fds=False,
+        env=environment,
+    )
+
+    result = 1
+    try:
+        welcome = stable_screen(width, height, "ctrl+c")
+        print("--- welcome screen ---")
+        print(welcome)
+        print("--- markers ---")
+        print("welcome_logo:", "GOVERNED CODING AGENT" in welcome)
+        print("welcome_prompt:", "Type a message" in welcome)
+        print("welcome_hints:", "ctrl+c" in welcome)
+        print("env_model_applied:", "probe-model" in welcome)
+
+        type_text(stdin_handle, "/status\r")
+        status = stable_screen(width, height, "Task:")
+        print("--- status screen ---")
+        print(status)
+        print("status_ran:", "Task:" in status)
+        print("status_agent_label:", "jani" in status)
+        print("no_usage_dump:", "USAGE:" not in status)
+        permissions_loaded = "Project permissions: mode=default allow=1 ask=1 deny=1" in status
+        print("permissions_loaded:", permissions_loaded)
+
+        type_text(stdin_handle, "hello\r")
+        busy = wait_for(width, height, "working", timeout=3.0)
+        print("--- busy screen ---")
+        print(busy)
+        print("busy_marker:", "working" in busy)
+        answer = stable_screen(width, height, "Hello from the fake provider.", timeout=25.0)
+        print("--- answer screen ---")
+        print(answer)
+        print("answer_rendered:", "Hello from the fake provider." in answer)
+        print("turn_counted:", "1 turn " in answer or "1 turn" in answer)
+        print("provider_requests:", len(FakeProvider.captured))
+        print(
+            "key_not_in_body:",
+            all("probe-secret-key" not in body for body in FakeProvider.captured),
+        )
+
+        type_text(stdin_handle, "/exit\r")
+        try:
+            code = process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            print("exit: timeout")
+            code = -1
+
+        print(f"exit={code}")
+        ok = (
+            "GOVERNED CODING AGENT" in welcome
+            and "Type a message" in welcome
+            and "ctrl+c" in welcome
+            and "probe-model" in welcome
+            and "Task:" in status
+            and "USAGE:" not in status
+            and permissions_loaded
+            and "working" in busy
+            and "Hello from the fake provider." in answer
+            and "1 turn" in answer
+            and len(FakeProvider.captured) == 1
+            and all("probe-secret-key" not in body for body in FakeProvider.captured)
+            and code == 0
+        )
+        print("PROBE_RESULT=" + ("PASS" if ok else "FAIL"))
+        result = 0 if ok else 1
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        provider.shutdown()
+        provider.server_close()
+        kernel32.FreeConsole()
+        shutil.rmtree(scratch, ignore_errors=True)
+        os.close(in_fd)
+        os.close(out_fd)
+    return result
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -81,6 +81,16 @@ export JANI_MODEL=YOUR_TOOL_CAPABLE_MODEL
 
 `doctor` prints the worktree, discovered skills, model configuration, settings source and active permissions. `JANI_API_BASE` defaults to `https://api.openai.com/v1`; point it at another compatible endpoint if needed. A model call may incur provider charges.
 
+**Continue a conversation interactively**
+
+```bash
+./target/release/jani
+```
+
+Run `jani` with no arguments from a terminal to open a full-screen interactive session: conversation transcript, multi-line input box, frozen-authority meta line, key hints and a status bar. Type a task and press Enter, or type `/` for commands. `jani repl` opens the same session explicitly. When stdin is not a terminal, bare `jani` prints help instead, so scripts and pipes keep their previous behavior; with redirected stdin or stdout the session falls back to a line-mode prompt.
+
+The session keeps history across turns under one task ID and one run ID per turn. Authority is fixed when the session opens, so restart Jani to change write, command or policy scopes. Slash commands such as `/status`, `/budget`, `/inspect`, `/new` and `/exit` are listed by `/help`. Approvals remain external: a gated tool call reports the request ID, a verified approver decides it outside the session, and `/approval ID` attaches the decision. See the [command-line reference](docs/CLI_REFERENCE.md#interactive-terminal).
+
 **Enable scoped work only when intended**
 
 ```bash
@@ -92,29 +102,40 @@ Writes require explicit relative scopes, and commands must match the allowlist. 
 
 ## Settings
 
-`.jani/settings.json` holds named model profiles and a step limit. A missing file is fine. Precedence is **CLI flag > environment variable > settings file > built-in default**.
+`.jani/settings.json` holds model profiles, a model selector and Claude-style permission rules. A missing file is fine. Precedence is **CLI flag > environment variable > settings file > built-in default**.
 
 ```json
 {
+  "$schema": "./settings.schema.json",
   "version": 1,
-  "defaultModel": "fast",
+  "model": "fast",
   "models": {
     "fast": {
-      "model": "gpt-5-mini",
-      "apiBase": "https://api.openai.com/v1",
-      "apiKeyEnv": "JANI_API_KEY"
+      "model": "claude-sonnet-5-5",
+      "apiBase": "https://api.anthropic.com/v1",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
     },
     "deep": {
       "model": "gpt-5",
       "apiBase": "https://api.openai.com/v1",
-      "apiKeyEnv": "JANI_API_KEY"
+      "apiKey": "sk-explicitly-configured-inline-key"
     }
   },
-  "maxSteps": 20
+  "maxSteps": 20,
+  "permissions": {
+    "defaultMode": "default",
+    "allow": ["Bash(cargo test *)", "Bash(cargo check *)"],
+    "ask": ["Bash(git push *)"],
+    "deny": ["Read(./.env)", "Read(./.env.*)"]
+  }
 }
 ```
 
-Select a profile with `--model-profile deep`. Use `--settings FILE` or `JANI_SETTINGS` for a different file; relative paths resolve against the worktree. `apiKeyEnv` names the environment variable holding that profile's key. An inline `apiKey` is rejected, unknown fields fail closed, and a profile's named variable is the only credential source it will use. Settings can change model selection and limits, never write or command authority. The full example is [docs/schemas/settings.example.json](docs/schemas/settings.example.json); field constraints are in [docs/schemas/README.md](docs/schemas/README.md).
+The top-level `model` is a profile name or a raw model ID. `--model-profile deep` overrides it. Use `--settings FILE` or `JANI_SETTINGS` for a different file; relative paths resolve against the worktree.
+
+Each profile may set `model`, `apiBase`, `apiKey`, `apiKeyEnv`, `protocol` (`openai` or `anthropic`) and `maxOutputTokens`. An inline `apiKey` is accepted for convenience but `doctor` warns that the file now holds a secret; prefer `apiKeyEnv`. Key values are never printed. Anthropic's Messages API is selected automatically for `api.anthropic.com`; `--protocol` or `JANI_PROTOCOL` overrides detection.
+
+Permission rules use `Read(./path)`, `Write(./path)` and `Bash(command *)`. Evaluation is deny > plan read-only > ask > per-category allowlist. If any `allow` rule exists for a category, unmatched calls in that category are denied. These rules only narrow: they cannot enable a write or command that the CLI, contract or signed policy did not already permit, and `bypassPermissions` is refused. Unknown fields fail closed. The full example is [docs/schemas/settings.example.json](docs/schemas/settings.example.json); the JSON Schema is [docs/schemas/settings.schema.json](docs/schemas/settings.schema.json).
 
 Only `.jani/settings.json` is unignored; journals, approvals and other state stay out of Git.
 

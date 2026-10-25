@@ -1,6 +1,8 @@
+use crate::permissions::Policy as PermissionPolicy;
 use crate::settings::Settings;
-use crate::types::{NetworkPolicy, RuntimeMode, SandboxMode};
+use crate::types::{ModelProtocol, NetworkPolicy, RuntimeMode, SandboxMode};
 use std::env;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 pub type JResult<T> = Result<T, String>;
@@ -14,9 +16,15 @@ pub struct Config {
     pub model: String,
     pub api_base: String,
     pub api_key: Option<String>,
+    pub api_key_source: String,
+    pub protocol: ModelProtocol,
+    pub protocol_explicit: bool,
+    pub max_output_tokens: usize,
     pub model_profile: Option<String>,
     pub settings_path: Option<PathBuf>,
     pub settings_profile: Option<String>,
+    pub settings_warnings: Vec<String>,
+    pub permissions: Option<PermissionPolicy>,
     pub max_steps: usize,
     pub root: PathBuf,
     pub allow_write: bool,
@@ -58,6 +66,14 @@ pub struct Config {
     pub role: Option<String>,
 }
 
+fn default_command(interactive: bool) -> &'static str {
+    if interactive {
+        "repl"
+    } else {
+        "help"
+    }
+}
+
 fn env_nonempty(name: &str) -> Option<String> {
     env::var(name).ok().filter(|s| !s.trim().is_empty())
 }
@@ -81,12 +97,14 @@ pub fn help() -> &'static str {
     r#"Jani — Rust-native, skill-aware AI coding agent
 
 USAGE:
+  jani                              Interactive terminal (stdin must be a terminal)
   jani --version
   jani --help
   jani doctor [OPTIONS]
   jani skills [OPTIONS]
   jani run "TASK" [OPTIONS]
   jani --print "TASK" [OPTIONS]
+  jani repl [OPTIONS]
   jani sandbox doctor|check [OPTIONS]
   jani plugins list|inspect|verify [ID] [OPTIONS]
   jani policy check|explain [OPTIONS]
@@ -138,10 +156,12 @@ OPTIONS:
   --approval ID           Pre-approved request ID to consume; repeatable
   --provider-region R     Provider processing region label
   --provider-class C      Provider trust class label
-  --model MODEL           OpenAI-compatible tool-call-capable model (JANI_MODEL)
-  --api-base URL          API base ending in /v1 (JANI_API_BASE)
+  --model MODEL           Model ID (JANI_MODEL)
+  --api-base URL          API base (JANI_API_BASE)
+  --protocol P            openai or anthropic (auto-detected from API host)
+  --max-output-tokens N   Provider output ceiling (default 4096, 1..200000)
   --settings FILE         Project settings JSON (default .jani/settings.json; JANI_SETTINGS)
-  --model-profile NAME    Model profile from settings (default defaultModel)
+  --model-profile NAME    Model profile from settings (default top-level model)
   --repo PATH             Assigned Git worktree; defaults to current directory
   --max-steps N           Maximum model turns (default 20, ceiling 80)
   --allow-write           Enable gated file editing
@@ -160,6 +180,8 @@ ENVIRONMENT:
   JANI_API_KEY or OPENAI_API_KEY    AI provider credential
   JANI_API_BASE                     https://api.openai.com/v1 by default
   JANI_MODEL or OPENAI_MODEL        Model ID (default gpt-5)
+  JANI_PROTOCOL                     openai or anthropic
+  JANI_MAX_OUTPUT_TOKENS            Provider output ceiling
   JANI_WRITE_PATHS                  Comma-separated relative edit scope
   JANI_EXEC_PROGRAMS                Optional extra test runners
   JANI_SKILL_DIRS                   Extra skill directories, path-list separated
@@ -170,10 +192,16 @@ ENVIRONMENT:
   JANI_SETTINGS            Alternate project settings file
 
 SETTINGS:
-  .jani/settings.json (or --settings / JANI_SETTINGS) supplies named model
-  profiles and maxSteps. CLI flags override environment variables, which override
-  settings. Settings cannot grant writes or commands; apiKeyEnv names the
-  environment variable holding a profile's key.
+  .jani/settings.json (or --settings / JANI_SETTINGS) supplies a top-level
+  model selector (a profile name or model ID), named model profiles, maxSteps
+  and Claude-style permissions. A profile may set model, apiBase, protocol,
+  maxOutputTokens, apiKeyEnv or an inline apiKey. Precedence is CLI, then
+  environment, then settings; a profile's own credential binding is
+  authoritative so a generic key is never sent to another provider.
+  permissions.defaultMode is default, acceptEdits or plan; allow/ask/deny take
+  rules such as Bash(cargo test *) and Read(./.env). Settings rules can only
+  narrow the CLI grants, contract and signed policy: they never enable writes,
+  commands or policy approvals. Prefer apiKeyEnv over an inline apiKey.
 
 Skills are advisory instructions, not an executable security policy.
 Tool flags are enforced in Rust. Execution is NOT an OS sandbox unless a
@@ -181,9 +209,29 @@ verified backend is selected and attested.
 "#
 }
 
+#[derive(Default)]
+struct CredentialBinding {
+    profile_selected: bool,
+    env_name: Option<String>,
+    inline_key: Option<String>,
+}
+
 impl Config {
     pub fn parse() -> JResult<Self> {
-        Self::from_args(&env::args().skip(1).collect::<Vec<_>>())
+        Self::parse_from(
+            env::args().skip(1).collect(),
+            std::io::stdin().is_terminal(),
+        )
+    }
+
+    fn parse_from(mut args: Vec<String>, interactive: bool) -> JResult<Self> {
+        // Resolve the bare default before parsing. Setting the command afterwards
+        // would take the early help/version path inside `from_args`, silently
+        // skipping project settings and environment overrides.
+        if args.is_empty() {
+            args.push(default_command(interactive).into());
+        }
+        Self::from_args(&args)
     }
 
     pub fn baseline() -> Self {
@@ -196,9 +244,15 @@ impl Config {
             model: "gpt-5".into(),
             api_base: "https://api.openai.com/v1".into(),
             api_key: None,
+            api_key_source: "no credential configured".into(),
+            protocol: ModelProtocol::OpenAi,
+            protocol_explicit: false,
+            max_output_tokens: 4096,
             model_profile: None,
             settings_path: None,
             settings_profile: None,
+            settings_warnings: Vec::new(),
+            permissions: None,
             max_steps: 20,
             root: root.clone(),
             allow_write: false,
@@ -253,35 +307,79 @@ impl Config {
         }
 
         let loaded = Self::load_project_settings(&first)?;
-        let profile_name = first
-            .model_profile
-            .clone()
-            .or_else(|| loaded.as_ref().and_then(|(_, s)| s.default_model.clone()));
-        if profile_name.is_some() && loaded.is_none() {
+        if first.model_profile.is_some() && loaded.is_none() {
             return Err("--model-profile requires a settings file with model profiles".into());
         }
 
         let mut cfg = Self::baseline();
-        let mut credential_env = None;
+        let mut credential = CredentialBinding::default();
         if let Some((path, settings)) = &loaded {
             cfg.settings_path = Some(path.clone());
-            if let Some(name) = &profile_name {
-                let profile = settings.profile(name)?;
-                cfg.model = profile.model.clone();
-                if let Some(base) = &profile.api_base {
-                    cfg.api_base = base.clone();
-                }
-                // The profile binds its credential source, so a generic key from
-                // another provider is never sent to this endpoint.
-                credential_env = profile.api_key_env.clone();
-                cfg.settings_profile = Some(name.clone());
-            }
+            cfg.settings_warnings = settings.warnings();
+            cfg.permissions = settings.permissions()?;
             if let Some(steps) = settings.max_steps {
                 cfg.max_steps = steps;
             }
+
+            let selected = settings.selected_profile(first.model_profile.as_deref())?;
+            let profile = selected
+                .as_deref()
+                .map(|name| settings.profile(name))
+                .transpose()?;
+            // An explicit `--model-profile` wins over the top-level selector;
+            // otherwise a raw top-level `model` names the model ID directly.
+            let model_override = if first.model_profile.is_some() {
+                None
+            } else {
+                settings.model_override()
+            };
+
+            if let Some(value) = profile
+                .and_then(|profile| profile.protocol.as_deref())
+                .or(settings.protocol.as_deref())
+            {
+                cfg.protocol = ModelProtocol::parse(value)
+                    .ok_or_else(|| format!("unknown protocol '{value}'"))?;
+                cfg.protocol_explicit = true;
+            }
+            cfg.api_base = profile
+                .and_then(|profile| profile.api_base.clone())
+                .or_else(|| settings.api_base.clone())
+                .unwrap_or_else(|| cfg.api_base.clone());
+            cfg.max_output_tokens = profile
+                .and_then(|profile| profile.max_output_tokens)
+                .or(settings.max_output_tokens)
+                .unwrap_or(cfg.max_output_tokens);
+
+            // A selected profile owns its credential binding. A generic
+            // JANI_API_KEY must not silently replace a key written for a
+            // different provider endpoint.
+            credential = CredentialBinding {
+                profile_selected: selected.is_some(),
+                env_name: profile
+                    .and_then(|profile| profile.api_key_env.clone())
+                    .or_else(|| settings.api_key_env.clone()),
+                inline_key: profile
+                    .and_then(|profile| {
+                        profile.api_key.as_ref().map(|key| key.expose().to_string())
+                    })
+                    .or_else(|| {
+                        settings
+                            .api_key
+                            .as_ref()
+                            .map(|key| key.expose().to_string())
+                    }),
+            };
+
+            if let Some(model) = model_override {
+                cfg.model = model.to_string();
+            } else if let Some(profile) = profile {
+                cfg.model = profile.model.clone();
+            }
+            cfg.settings_profile = selected;
         }
 
-        Self::apply_env(&mut cfg, credential_env.as_deref())?;
+        Self::apply_env(&mut cfg, &credential)?;
         Self::parse_args(&mut cfg, args)?;
         cfg.settings_path = loaded.as_ref().map(|(path, _)| path.clone());
         Self::finalize(&mut cfg)?;
@@ -314,17 +412,62 @@ impl Config {
         Ok(Some((path, settings)))
     }
 
-    fn apply_env(cfg: &mut Config, credential_env: Option<&str>) -> JResult<()> {
+    fn apply_env(cfg: &mut Config, credential: &CredentialBinding) -> JResult<()> {
         if let Some(value) = env_nonempty("JANI_MODEL").or_else(|| env_nonempty("OPENAI_MODEL")) {
             cfg.model = value;
         }
         if let Some(value) = env_nonempty("JANI_API_BASE") {
             cfg.api_base = value;
         }
-        cfg.api_key = match credential_env {
-            Some(name) => env_nonempty(name),
-            None => env_nonempty("JANI_API_KEY").or_else(|| env_nonempty("OPENAI_API_KEY")),
+        if let Some(value) = env_nonempty("JANI_PROTOCOL") {
+            cfg.protocol = ModelProtocol::parse(&value)
+                .ok_or_else(|| format!("unknown JANI_PROTOCOL: {value}"))?;
+            cfg.protocol_explicit = true;
+        }
+        if let Some(value) = env_nonempty("JANI_MAX_OUTPUT_TOKENS") {
+            cfg.max_output_tokens = value
+                .parse()
+                .map_err(|_| "JANI_MAX_OUTPUT_TOKENS must be a positive integer".to_string())?;
+            if !(1..=200_000).contains(&cfg.max_output_tokens) {
+                return Err("JANI_MAX_OUTPUT_TOKENS must be 1..200000".into());
+            }
+        }
+
+        let mut source = "no credential configured".to_string();
+        cfg.api_key = if let Some(name) = &credential.env_name {
+            match env_nonempty(name) {
+                Some(value) => {
+                    source = format!("env {name}");
+                    Some(value)
+                }
+                None => match &credential.inline_key {
+                    Some(value) => {
+                        source = "settings (inline)".into();
+                        Some(value.clone())
+                    }
+                    None => {
+                        source = format!("env {name} is empty");
+                        None
+                    }
+                },
+            }
+        } else if credential.profile_selected && credential.inline_key.is_some() {
+            source = "settings (inline)".into();
+            credential.inline_key.clone()
+        } else if let Some((name, value)) = env_nonempty("JANI_API_KEY")
+            .map(|value| ("JANI_API_KEY", value))
+            .or_else(|| env_nonempty("OPENAI_API_KEY").map(|value| ("OPENAI_API_KEY", value)))
+        {
+            source = format!("env {name}");
+            Some(value)
+        } else if credential.inline_key.is_some() {
+            source = "settings (inline)".into();
+            credential.inline_key.clone()
+        } else {
+            None
         };
+        cfg.api_key_source = source;
+
         cfg.mode = match env_nonempty("JANI_MODE") {
             Some(value) => {
                 RuntimeMode::parse(&value).ok_or_else(|| format!("unknown JANI_MODE: {value}"))?
@@ -418,6 +561,10 @@ impl Config {
                     }
                     cfg.prompt = Some(value);
                 }
+                "repl" => {
+                    cfg.command = "repl".into();
+                    command_seen = true;
+                }
                 "sandbox" | "plugins" | "policy" | "audit" | "approvals" | "budget"
                 | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp"
                 | "native" => {
@@ -496,6 +643,20 @@ impl Config {
                 "--provider-class" => cfg.provider_class = take_value(args, &mut i, a)?,
                 "--model" => cfg.model = take_value(args, &mut i, a)?,
                 "--api-base" => cfg.api_base = take_value(args, &mut i, a)?,
+                "--protocol" => {
+                    let value = take_value(args, &mut i, a)?;
+                    cfg.protocol = ModelProtocol::parse(&value)
+                        .ok_or_else(|| format!("unknown protocol: {value}"))?;
+                    cfg.protocol_explicit = true;
+                }
+                "--max-output-tokens" => {
+                    cfg.max_output_tokens = take_value(args, &mut i, a)?.parse().map_err(|_| {
+                        "--max-output-tokens must be a positive integer".to_string()
+                    })?;
+                    if !(1..=200_000).contains(&cfg.max_output_tokens) {
+                        return Err("--max-output-tokens must be 1..200000".into());
+                    }
+                }
                 "--settings" => {
                     cfg.settings_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
                 }
@@ -550,6 +711,12 @@ impl Config {
         if cfg.command == "run" && cfg.prompt.as_ref().is_none_or(|p| p.trim().is_empty()) {
             return Err("run requires a non-empty prompt".into());
         }
+        if cfg.command == "repl" && cfg.run_id.is_some() {
+            return Err("--run is not supported with repl; each turn gets its own run id".into());
+        }
+        if cfg.command == "repl" && !cfg.positional.is_empty() {
+            return Err("repl takes no prompt argument; submit prompts inside the session".into());
+        }
         for p in &cfg.write_paths {
             validate_relative(p)?;
         }
@@ -575,6 +742,9 @@ impl Config {
             return Err("API base must not contain query or fragment".into());
         }
         cfg.api_base = cfg.api_base.trim_end_matches('/').to_string();
+        if !cfg.protocol_explicit {
+            cfg.protocol = ModelProtocol::detect(&cfg.api_base);
+        }
 
         if cfg.mode == RuntimeMode::Enterprise {
             if cfg.policy_path.is_none() {
@@ -586,10 +756,10 @@ impl Config {
             if cfg.sandbox_net != NetworkPolicy::Deny {
                 return Err("enterprise mode cannot weaken network policy from the CLI".into());
             }
-            if cfg.command == "run" && cfg.identity_path.is_none() {
+            if (cfg.command == "run" || cfg.command == "repl") && cfg.identity_path.is_none() {
                 return Err("enterprise runs require a signed --identity assertion".into());
             }
-            if cfg.contract_path.is_none() && cfg.command == "run" {
+            if cfg.contract_path.is_none() && (cfg.command == "run" || cfg.command == "repl") {
                 return Err(
                     "enterprise runs require --contract for a bounded work contract".into(),
                 );
@@ -690,10 +860,76 @@ mod tests {
     }
 
     #[test]
-    fn bare_invocation_still_prints_help() {
-        let cfg = Config::from_args(&[]).unwrap();
-        assert_eq!(cfg.command, "help");
-        assert!(cfg.positional.is_empty());
+    fn bare_invocation_selects_the_terminal_or_help() {
+        assert_eq!(default_command(true), "repl");
+        assert_eq!(default_command(false), "help");
+
+        let interactive = Config::parse_from(Vec::new(), true).unwrap();
+        assert_eq!(interactive.command, "repl");
+        assert!(interactive.positional.is_empty());
+
+        let piped = Config::parse_from(Vec::new(), false).unwrap();
+        assert_eq!(piped.command, "help");
+
+        let explicit = Config::parse_from(vec!["--help".into()], true).unwrap();
+        assert_eq!(explicit.command, "help");
+    }
+
+    #[test]
+    fn repl_is_a_command_without_a_prompt() {
+        let cfg = Config::from_args(&["repl".to_string()]).unwrap();
+        assert_eq!(cfg.command, "repl");
+        assert!(cfg.prompt.is_none());
+    }
+
+    #[test]
+    fn repl_rejects_a_fixed_run_id() {
+        let args: Vec<String> = ["repl", "--run", "run-fixed"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let error = match Config::from_args(&args) {
+            Ok(_) => panic!("expected repl to reject a fixed run id"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("--run is not supported with repl"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn repl_rejects_a_positional_prompt() {
+        let args: Vec<String> = ["repl", "read", "src/one.txt"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let error = match Config::from_args(&args) {
+            Ok(_) => panic!("expected repl to reject a positional prompt"),
+            Err(error) => error,
+        };
+        assert!(error.contains("repl takes no prompt"), "{error}");
+    }
+
+    #[test]
+    fn enterprise_repl_requires_identity_and_contract() {
+        let base: Vec<String> = [
+            "repl",
+            "--mode",
+            "enterprise",
+            "--policy",
+            "policy.json",
+            "--policy-key",
+            "test-key",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+        let error = match Config::from_args(&base) {
+            Ok(_) => panic!("expected enterprise repl to require an identity"),
+            Err(error) => error,
+        };
+        assert!(error.contains("--identity"), "{error}");
     }
 
     #[test]

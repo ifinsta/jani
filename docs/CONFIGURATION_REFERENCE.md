@@ -32,44 +32,70 @@ Each layer overrides the one below it. A missing default settings file is fine; 
 
 ## Settings file
 
-The file is optional, capped at 64 KiB, and strict. Unknown fields fail closed. The version is `1`, keys are camelCase, and at most 32 model profiles may be defined. An inline `apiKey` or `api_key` field is rejected with a message pointing to `apiKeyEnv`.
+The file is optional, capped at 128 KiB, and strict. Unknown fields fail closed. The version is `1`, keys are camelCase, and at most 32 model profiles may be defined. The shape follows Claude Code conventions: `$schema`, a top-level `model` selector and a `permissions` block. `$schema` is accepted for editor tooling and does not affect resolution.
 
 ```json
 {
+  "$schema": "./settings.schema.json",
   "version": 1,
-  "defaultModel": "fast",
+  "model": "fast",
   "models": {
     "fast": {
-      "model": "gpt-5-mini",
+      "model": "claude-sonnet-5-5",
+      "apiBase": "https://api.anthropic.com/v1",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    "deep": {
+      "model": "gpt-5",
       "apiBase": "https://api.openai.com/v1",
-      "apiKeyEnv": "JANI_API_KEY"
+      "apiKey": "explicitly-configured-inline-key"
     }
   },
-  "maxSteps": 20
+  "maxSteps": 20,
+  "permissions": {
+    "defaultMode": "default",
+    "allow": ["Bash(cargo test *)"],
+    "ask": ["Bash(git push *)"],
+    "deny": ["Read(./.env)", "Read(./.env.*)"]
+  }
 }
 ```
 
 | Field | Required | Constraint |
 | --- | --- | --- |
 | `version` | Yes | Must be `1` |
-| `defaultModel` | When `models` is non-empty | Must name an existing profile |
+| `$schema` | No | Short non-empty string, at most 512 bytes |
+| `model` | No | Profile name or raw model ID, at most 256 bytes |
+| `defaultModel` | When `models` is non-empty and `model` is absent | Must name an existing profile |
+| `apiBase`, `apiKey`, `apiKeyEnv`, `protocol`, `maxOutputTokens` | No | Defaults inherited by profiles that do not set their own |
 | `models` | No | Map of profile name to profile; at most 32 |
 | Profile name | Yes, per entry | 1-64 characters: ASCII letters, digits, `-` or `_` |
-| `models.<name>.model` | Yes | Non-empty model ID |
+| `models.<name>.model` | Yes | Non-empty model ID, at most 256 bytes |
 | `models.<name>.apiBase` | No | Non-empty, no control characters; HTTPS unless loopback HTTP is explicitly allowed |
+| `models.<name>.apiKey` | No | Non-empty, no whitespace or control characters, at most 8192 bytes; accepted, warned about, never printed |
 | `models.<name>.apiKeyEnv` | No | Valid environment-variable name |
+| `models.<name>.protocol` | No | `openai` or `anthropic` |
+| `models.<name>.maxOutputTokens` | No | Integer from 1 through 200000 |
 | `maxSteps` | No | Integer from 1 through 80 |
+| `permissions.defaultMode` | No | `default`, `acceptEdits` or `plan`; `bypassPermissions` is refused |
+| `permissions.allow`, `ask`, `deny` | No | Up to 128 rules each, at most 512 bytes per rule |
 
-Select a profile with `--model-profile NAME`. Without it, `defaultModel` applies. Settings can change the model, API base, credential source and step limit; they cannot grant write or command authority.
+Select a profile with `--model-profile NAME`. Without it, a top-level `model` naming a profile applies, then `defaultModel`. A top-level `model` that does not name a profile is used as a raw model ID. Settings can change the model, API base, credential source, transport and step limit, and add narrowing permission rules; they cannot grant write or command authority.
 
-The full example is [settings.example.json](schemas/settings.example.json); field notes and signing formats are in [schema notes](schemas/README.md). Only `.jani/settings.json` is unignored, so journals, approvals and ledgers remain untracked.
+Permission rules use `Read(./path)`, `Write(./path)` and `Bash(command *)`. Evaluation is deny > plan read-only > ask > per-category allowlist; a `deny` on a directory covers its subtree. An `ask` match adds an external approval of class `settings-permission`; it cannot waive a policy approval. If any `allow` rule exists for a category, unmatched calls in that category are denied. Path rules reject absolute paths and `..`. Unsupported tools and malformed rules fail closed.
+
+Rules map to the model-facing tools: `Read` covers `workspace_read` and `workspace_list` (directory), `Write` covers `workspace_write`, and `Bash` covers `workspace_command`. Native capabilities are separate `native.read` / `native.control` actions governed by the work contract and signed policy; their repository index excludes `.git`, `.jani`, `.env`, `target`, `claims`, generated directories and protected path components, but a project `Read` deny rule is not applied as an index filter.
+
+The full example is [settings.example.json](schemas/settings.example.json) and the JSON Schema is [settings.schema.json](schemas/settings.schema.json); field notes and signing formats are in [schema notes](schemas/README.md). Only `.jani/settings.json` is unignored, so journals, approvals and ledgers remain untracked.
 
 ## Credentials
 
-- A profile that sets `apiKeyEnv` reads **only** that variable. If it is missing, the key is reported missing; Jani does not borrow `JANI_API_KEY` or `OPENAI_API_KEY` from another provider.
-- A run without a profile-bound variable reads `JANI_API_KEY`, then `OPENAI_API_KEY`.
-- `JANI_MODEL` and `JANI_API_BASE` override the selected profile when set; CLI flags override both.
-- Never store live API keys in repository fixtures or commit them. Keep signing keys separate from verification keys and out of child environments and diagnostics.
+- A profile that sets `apiKeyEnv` reads that variable first. If it is unset, a profile with an inline `apiKey` uses that key; otherwise the key is reported missing, and Jani does not borrow `JANI_API_KEY` or `OPENAI_API_KEY` from another provider.
+- A selected profile with an inline key and no `apiKeyEnv` uses the inline key rather than a generic environment key, so one provider's key is not sent to another endpoint.
+- With no profile-bound credential, a run reads `JANI_API_KEY`, then `OPENAI_API_KEY`, then a top-level inline key.
+- `JANI_MODEL` and `JANI_API_BASE` override the selected profile when set; CLI flags override both. `JANI_PROTOCOL` and `JANI_MAX_OUTPUT_TOKENS` behave the same way.
+- When no protocol is configured, `api.anthropic.com` selects the Anthropic Messages API; every other base selects the OpenAI-compatible chat API.
+- Inline keys are redacted from `Debug`, diagnostics and errors. `doctor` reports only the source (`settings (inline)`, `env NAME` or `missing`). Never commit a live key; prefer `apiKeyEnv` and a secret manager. Keep signing keys separate from verification keys and out of child environments and diagnostics.
 
 ## Workspace and effects
 
@@ -92,7 +118,7 @@ The full example is [settings.example.json](schemas/settings.example.json); fiel
 
 ## Acceptance
 
-Verify `--help` without credentials, rejection of invalid scopes or programs, refusal of enterprise runs missing required authority, rejection of inline or unknown settings fields, profile selection without a settings file, and CLI-over-environment-over-settings precedence.
+Verify `--help` without credentials, rejection of invalid scopes or programs, refusal of enterprise runs missing required authority, refusal of unknown settings fields, `bypassPermissions` and malformed permission rules, profile selection without a settings file, CLI-over-environment-over-settings precedence, inline credentials accepted without ever appearing in output, and settings permits that cannot widen `--allow-write` or `--allow-exec`.
 
 ## Change control
 

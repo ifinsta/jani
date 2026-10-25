@@ -26,6 +26,38 @@ fn help_documents_permissions() {
     assert!(out.contains("--allow-exec"));
     assert!(out.contains("--write-path"));
     assert!(out.contains("--exec-program"));
+    assert!(out.contains("jani repl"));
+    assert!(out.contains("Interactive terminal"));
+}
+
+#[test]
+fn repl_rejects_a_fixed_run_id() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+        .args(["repl", "--run", "run-fixed"])
+        .env_remove("JANI_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .expect("execute jani");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--run is not supported with repl"));
+}
+
+#[test]
+fn bare_invocation_prints_help_without_a_terminal() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+        .env_remove("JANI_MODE")
+        .env_remove("JANI_POLICY")
+        .env_remove("JANI_IDENTITY")
+        .env_remove("JANI_CONTRACT")
+        .output()
+        .expect("execute jani");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("USAGE:"), "{stdout}");
+    assert!(
+        !stdout.contains("Jani interactive terminal"),
+        "bare invocation with piped stdin must not enter the terminal: {stdout}"
+    );
 }
 
 #[test]
@@ -218,7 +250,7 @@ fn settings_profiles_supply_model_with_env_and_cli_overrides() {
 }
 
 #[test]
-fn settings_reject_inline_credentials_and_help_still_works() {
+fn settings_inline_credentials_are_accepted_and_diagnosed_without_echo() {
     let root = settings_workspace(
         r#"{"version":1,"models":{"fast":{"model":"m","apiKey":"fixture-inline-credential"}},"defaultModel":"fast"}"#,
     );
@@ -228,12 +260,22 @@ fn settings_reject_inline_credentials_and_help_still_works() {
         .args(["--repo", repo.as_str()])
         .env_remove("JANI_API_KEY")
         .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_SETTINGS")
         .output()
         .expect("execute jani");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("apiKeyEnv"), "{stderr}");
-    assert!(!stderr.contains("fixture-inline-credential"), "{stderr}");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Model key: SET (settings (inline))"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Settings warning:"), "{stdout}");
+    assert!(!stdout.contains("fixture-inline-credential"), "{stdout}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-inline-credential"));
 
     let help = Command::new(env!("CARGO_BIN_EXE_jani"))
         .args(["--help", "--repo", repo.as_str()])
@@ -241,5 +283,133 @@ fn settings_reject_inline_credentials_and_help_still_works() {
         .expect("execute jani");
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("USAGE:"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_profile_credential_binding_beats_a_generic_environment_key() {
+    let root = settings_workspace(
+        r#"{"version":1,"models":{"fast":{"model":"m","apiKeyEnv":"PROFILE_TEST_KEY"}},"defaultModel":"fast"}"#,
+    );
+    let repo = root.to_str().unwrap().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+        .arg("doctor")
+        .args(["--repo", repo.as_str()])
+        .env("PROFILE_TEST_KEY", "profile-key")
+        .env("JANI_API_KEY", "generic-key")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_SETTINGS")
+        .output()
+        .expect("execute jani");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Model key: SET (env PROFILE_TEST_KEY)"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("profile-key"), "{stdout}");
+    assert!(!stdout.contains("generic-key"), "{stdout}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_permissions_and_top_level_model_reach_doctor() {
+    let root = settings_workspace(
+        r#"{
+            "$schema": "./settings.schema.json",
+            "version": 1,
+            "model": "claude-sonnet-5-5",
+            "defaultModel": "fast",
+            "models": {
+                "fast": {
+                    "model": "base-model",
+                    "apiBase": "https://api.anthropic.com/v1",
+                    "protocol": "anthropic"
+                }
+            },
+            "permissions": {
+                "defaultMode": "plan",
+                "allow": ["Read(./**)"],
+                "deny": ["Read(./.env)"]
+            }
+        }"#,
+    );
+    let repo = root.to_str().unwrap().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+        .arg("doctor")
+        .args(["--repo", repo.as_str()])
+        .env_remove("JANI_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_MODEL")
+        .env_remove("JANI_PROTOCOL")
+        .env_remove("JANI_SETTINGS")
+        .output()
+        .expect("execute jani");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Model: claude-sonnet-5-5"), "{stdout}");
+    assert!(
+        stdout.contains("Model API: anthropic https://api.anthropic.com/v1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Permissions: mode=plan allow=1 ask=0 deny=1"),
+        "{stdout}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_raw_top_level_model_works_without_a_default_profile() {
+    let root = settings_workspace(
+        r#"{
+            "version": 1,
+            "model": "raw-claude",
+            "apiBase": "https://api.anthropic.com/v1",
+            "models": {"fast": {"model": "base-model"}}
+        }"#,
+    );
+    let repo = root.to_str().unwrap().to_string();
+    let run = |extra: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_jani"));
+        command
+            .arg("doctor")
+            .args(["--repo", repo.as_str()])
+            .args(extra)
+            .env_remove("JANI_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("JANI_MODEL")
+            .env_remove("JANI_PROTOCOL")
+            .env_remove("JANI_SETTINGS");
+        command.output().expect("execute jani")
+    };
+
+    let raw = run(&[]);
+    assert!(
+        raw.status.success(),
+        "{}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&raw.stdout);
+    assert!(stdout.contains("Model: raw-claude"), "{stdout}");
+    assert!(
+        stdout.contains("Model API: anthropic https://api.anthropic.com/v1"),
+        "{stdout}"
+    );
+
+    let profile = run(&["--model-profile", "fast"]);
+    assert!(
+        String::from_utf8_lossy(&profile.stdout).contains("Model: base-model"),
+        "{}",
+        String::from_utf8_lossy(&profile.stdout)
+    );
     fs::remove_dir_all(root).unwrap();
 }

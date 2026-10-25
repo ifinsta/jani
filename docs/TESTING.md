@@ -14,14 +14,22 @@ The workspace root lists `backend/server` under `default-members`, so the
 
 Expected automated coverage in this build:
 
-- 108 unit tests across config, policy, identity, data, broker, journal, approvals,
+- 147 unit tests across config, policy, identity, data, broker, journal, approvals,
   budget, sandbox, process, workspace, skills, schema, plugins, project settings,
-  native tools, mirror reports and the check/claims tooling.
-- 16 CLI and integration tests: 9 CLI tests including the shipped work-contract
-  example, settings precedence and the guarantee that `--version`/`--help` need no
-  provider credentials, plus MCP gateway, mirror CLI and native tool suites.
-- 1 end-to-end test that starts a fake OpenAI-compatible provider and runs the real
-  CLI through policy, gateway, broker, audit and budget accounting.
+  Claude-style permission matching, model transport, native tools, mirror reports,
+  the interactive terminal editor and renderer, and the check/claims tooling.
+- 23 CLI and integration tests: 14 CLI tests including the shipped work-contract
+  example, settings precedence, inline-credential redaction, profile credential
+  binding, top-level `model` selection, `permissions` diagnostics, the guarantee
+  that `--version`/`--help` need no provider credentials and the interactive
+  default, plus MCP gateway, mirror CLI, native tool and end-to-end suites.
+- Broker tests prove settings `deny`, `ask` and allowlists narrow contract and
+  policy decisions; plan mode blocks writes and commands while allowing reads.
+- Anthropic transport is verified by request and response translation fixtures.
+  It has not been exercised against a live Anthropic endpoint.
+- 2 end-to-end tests that start a fake OpenAI-compatible provider and run the real
+  CLI through policy, gateway, broker, audit and budget accounting. One covers
+  conversation continuity across two turns in one task.
 
 The E2E test removes `OPENAI_API_KEY`, `JANI_POLICY` and `JANI_IDENTITY` from the
 child environment so it exercises local-unmanaged mode deterministically.
@@ -32,7 +40,9 @@ child environment so it exercises local-unmanaged mode deterministically.
 |---|---|
 | `jani --version`, `jani --help`, `jani skills`, `jani doctor` | Finite output, no model call required |
 | `.jani/settings.json` then `--model-profile NAME` | `doctor` reports the profile; CLI flags override env, env overrides settings |
-| Settings with an inline `apiKey` or unknown field | Refused before work; the value is not echoed |
+| Settings with an unknown field or malformed rule | Refused before work |
+| Settings with an inline `apiKey` | Accepted, reported as `settings (inline)` with a warning; the value never appears in output |
+| Settings permissions `deny` / `ask` / `allow` | Deny is journaled; ask requires an external `settings-permission` approval; allow never widens CLI, contract or policy |
 | `jani sandbox doctor`, `jani sandbox check` | Backend availability and confinement claims match the host; no false confinement |
 | `jani policy explain`, `jani policy check --action ... --resource ...` | Deterministic decision without a model call |
 | `jani contract validate docs/schemas/work-contract.example.json` | `ok: true` |
@@ -64,6 +74,12 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `EnterpriseRestricted` profile on Windows | Refused; Job Object never claims filesystem/network confinement |
 | `EnterpriseRestricted` profile on Linux with bwrap available | bubblewrap plan; receipt reports filesystem and network confinement |
 | Linux and Windows builds | Toolchain gates pass on both |
+| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a fake-provider turn completes, exactly one request carries no API key, exit 0 and `PROBE_RESULT=PASS` |
+
+The console probe is a manual Windows trial, not a CI gate. It proves the
+rendered buffer in a real console, but not a terminal emulator: resize, paste,
+scrollback, color fidelity and Ctrl+C during a turn remain manual, and no
+full-screen run has been performed on Linux or macOS.
 
 ## Signed-file trials
 

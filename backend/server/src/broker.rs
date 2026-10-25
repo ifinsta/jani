@@ -5,6 +5,7 @@ use crate::data::{redact_json, Governance};
 use crate::exec;
 use crate::identity::VerifiedIdentity;
 use crate::journal::{EventInput, Journal};
+use crate::permissions::{Request as PermissionRequest, Verdict as PermissionVerdict};
 use crate::policy::{action_profile, contract_allows_action, contract_allows_write, PolicyEngine};
 use crate::skills::Catalog;
 use crate::types::{
@@ -29,6 +30,7 @@ pub struct Broker<'a> {
     pub task_id: String,
     pub default_profile: SandboxProfile,
     pub default_network: NetworkPolicy,
+    pub approval_ids: &'a [String],
 }
 
 struct Call {
@@ -158,6 +160,30 @@ impl<'a> Broker<'a> {
         }
     }
 
+    fn permission_request<'v>(
+        &self,
+        tool: &str,
+        args: &'v Value,
+    ) -> Result<Option<PermissionRequest<'v>>, String> {
+        match tool {
+            "workspace_read" => Ok(Some(PermissionRequest::Read {
+                path: get_str(args, "path")?,
+                directory: false,
+            })),
+            "workspace_list" => Ok(Some(PermissionRequest::Read {
+                path: args.get("directory").and_then(Value::as_str).unwrap_or("."),
+                directory: true,
+            })),
+            "workspace_write" => Ok(Some(PermissionRequest::Write {
+                path: get_str(args, "path")?,
+            })),
+            "workspace_command" => Ok(Some(PermissionRequest::Command {
+                line: get_argv(args)?.join(" "),
+            })),
+            _ => Ok(None),
+        }
+    }
+
     // Arguments intentionally mirror the journal schema; splitting them would
     // make call sites harder to audit.
     #[allow(clippy::too_many_arguments)]
@@ -250,7 +276,7 @@ impl<'a> Broker<'a> {
         risk: RiskTier,
         approval_class: &str,
     ) -> Result<Option<String>, String> {
-        let ids = self.cfg.approval_ids.clone();
+        let ids = self.approval_ids.to_vec();
         for id in ids {
             let Some(request) = self.approvals.find(&id) else {
                 continue;
@@ -376,6 +402,47 @@ impl<'a> Broker<'a> {
             }
         }
 
+        // Project permission rules are a narrowing layer. They run before the
+        // signed policy so a deny is recorded with its own reason, and an ask
+        // can add an approval requirement but never remove one.
+        let mut settings_ask: Option<String> = None;
+        {
+            let cfg = self.cfg;
+            if let Some(policy) = cfg.permissions.as_ref() {
+                let verdict = match self.permission_request(tool, args) {
+                    Ok(request) => policy.check(request.as_ref(), call.effect),
+                    Err(error) => PermissionVerdict::Deny {
+                        rule: "settings request".into(),
+                        reason: format!(
+                            "settings permissions could not evaluate this call: {error}"
+                        ),
+                    },
+                };
+                match verdict {
+                    PermissionVerdict::Deny { rule, reason } => {
+                        let decision = PolicyDecision {
+                            decision: Decision::Deny,
+                            reason_code: "settings_permission_denied".into(),
+                            decision_id: new_id("dec"),
+                            policy_revision: self.policy.effective.revision.clone(),
+                            constraints: Constraints {
+                                reason: Some(format!("{reason} ({rule})")),
+                                ..Default::default()
+                            },
+                        };
+                        return self.deny(
+                            invocation_id,
+                            &call,
+                            &decision,
+                            format!("{reason} ({rule})"),
+                        );
+                    }
+                    PermissionVerdict::Ask { rule } => settings_ask = Some(rule),
+                    PermissionVerdict::Allow | PermissionVerdict::Unrestricted => {}
+                }
+            }
+        }
+
         let request = ActionRequest {
             task_id: self.task_id.clone(),
             invocation_id: invocation_id.to_string(),
@@ -388,7 +455,24 @@ impl<'a> Broker<'a> {
             arguments_digest: payload_digest.clone(),
             idempotency_key: None,
         };
-        let decision = self.policy.evaluate(self.cfg, &request);
+        let mut decision = self.policy.evaluate(self.cfg, &request);
+        if decision.decision == Decision::Permit {
+            if let Some(rule) = settings_ask.as_ref() {
+                decision = PolicyDecision {
+                    decision: Decision::RequireApproval,
+                    reason_code: "settings_permission_approval_required".into(),
+                    decision_id: decision.decision_id.clone(),
+                    policy_revision: decision.policy_revision.clone(),
+                    constraints: Constraints {
+                        approval_class: Some("settings-permission".into()),
+                        reason: Some(format!(
+                            "settings permission rule '{rule}' requires approval"
+                        )),
+                        ..decision.constraints.clone()
+                    },
+                };
+            }
+        }
         let mut approved_id: Option<String> = None;
         match decision.decision {
             Decision::Deny => {
@@ -899,6 +983,7 @@ mod tests {
                 task_id: "task-1".into(),
                 default_profile: SandboxProfile::TrustedDev,
                 default_network: NetworkPolicy::Deny,
+                approval_ids: &self.cfg.approval_ids,
             }
         }
     }
@@ -1119,6 +1204,168 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("operator-approved write scope"));
+        cleanup(env);
+    }
+
+    fn permission_policy(
+        mode: crate::permissions::Mode,
+        allow: &[&str],
+        ask: &[&str],
+        deny: &[&str],
+    ) -> crate::permissions::Policy {
+        let owned = |rules: &[&str]| {
+            rules
+                .iter()
+                .map(|rule| rule.to_string())
+                .collect::<Vec<_>>()
+        };
+        crate::permissions::Policy::compile(mode, &owned(allow), &owned(ask), &owned(deny)).unwrap()
+    }
+
+    #[test]
+    fn settings_deny_blocks_reads_and_is_audited() {
+        let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
+        env.cfg.permissions = Some(permission_policy(
+            crate::permissions::Mode::Default,
+            &[],
+            &[],
+            &["Read(./src/one.txt)"],
+        ));
+        let result = {
+            let mut broker = env.broker();
+            broker.invoke("inv-1", "workspace_read", &json!({"path": "src/one.txt"}))
+        };
+        assert_eq!(result.status, "denied");
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("settings permission rule"));
+        assert!(events(&env.dir)
+            .iter()
+            .any(|e| e.reason_code == "settings_permission_denied"));
+        cleanup(env);
+    }
+
+    #[test]
+    fn settings_allowlist_restricts_commands_without_widening_them() {
+        let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
+        env.cfg.allow_exec = true;
+        env.cfg.permissions = Some(permission_policy(
+            crate::permissions::Mode::Default,
+            &["Bash(cargo test *)"],
+            &[],
+            &[],
+        ));
+        let result = {
+            let mut broker = env.broker();
+            broker.invoke(
+                "inv-1",
+                "workspace_command",
+                &json!({"argv": ["cargo", "fmt", "--check"], "timeout_secs": 30}),
+            )
+        };
+        assert_eq!(result.status, "denied");
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("settings allowlist"));
+        cleanup(env);
+
+        let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
+        env.cfg.allow_exec = false;
+        env.cfg.permissions = Some(permission_policy(
+            crate::permissions::Mode::Default,
+            &["Bash(cargo test *)"],
+            &[],
+            &[],
+        ));
+        let result = {
+            let mut broker = env.broker();
+            broker.invoke(
+                "inv-2",
+                "workspace_command",
+                &json!({"argv": ["cargo", "test"], "timeout_secs": 30}),
+            )
+        };
+        assert_eq!(result.status, "denied");
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("command execution is not enabled"));
+        cleanup(env);
+    }
+
+    #[test]
+    fn settings_ask_forces_an_external_approval() {
+        let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
+        env.cfg.permissions = Some(permission_policy(
+            crate::permissions::Mode::Default,
+            &[],
+            &["Write(./src/**)"],
+            &[],
+        ));
+        let result = {
+            let mut broker = env.broker();
+            broker.invoke(
+                "inv-1",
+                "workspace_write",
+                &json!({"path": "src/asked.txt", "content": "x"}),
+            )
+        };
+        assert_eq!(result.status, "approval_required");
+        assert_eq!(
+            result.data.unwrap()["approvalClass"].as_str(),
+            Some("settings-permission")
+        );
+        cleanup(env);
+    }
+
+    #[test]
+    fn plan_mode_blocks_writes_and_commands() {
+        let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
+        env.cfg.allow_exec = true;
+        env.cfg.permissions = Some(permission_policy(
+            crate::permissions::Mode::Plan,
+            &[],
+            &[],
+            &[],
+        ));
+        let write = {
+            let mut broker = env.broker();
+            broker.invoke(
+                "inv-1",
+                "workspace_write",
+                &json!({"path": "src/plan.txt", "content": "x"}),
+            )
+        };
+        assert_eq!(write.status, "denied");
+        assert!(write
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("plan mode is read-only"));
+        let command = {
+            let mut broker = env.broker();
+            broker.invoke(
+                "inv-2",
+                "workspace_command",
+                &json!({"argv": ["cargo", "check"], "timeout_secs": 30}),
+            )
+        };
+        assert_eq!(command.status, "denied");
+        assert!(command
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("plan mode is read-only"));
+        let read = {
+            let mut broker = env.broker();
+            broker.invoke("inv-3", "workspace_read", &json!({"path": "src/one.txt"}))
+        };
+        assert_eq!(read.status, "ok");
         cleanup(env);
     }
 }

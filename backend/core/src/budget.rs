@@ -82,6 +82,9 @@ impl BudgetLedger {
                 ))
             }
         }
+        // Persist the initial limits so an interactive session can report its
+        // budget before the first model or tool call.
+        ledger.save()?;
         Ok(ledger)
     }
 

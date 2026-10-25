@@ -1,17 +1,49 @@
 {
+  "$schema": "./settings.schema.json",
   "version": 1,
-  "defaultModel": "fast",
+  "model": "fast",
+  "apiBase": "https://api.openai.com/v1",
+  "apiKeyEnv": "JANI_API_KEY",
+  "maxOutputTokens": 4096,
   "models": {
     "fast": {
-      "model": "gpt-5-mini",
-      "apiBase": "https://api.openai.com/v1",
-      "apiKeyEnv": "JANI_API_KEY"
+      "model": "gpt-5-mini"
     },
     "deep": {
-      "model": "gpt-5",
-      "apiBase": "https://api.openai.com/v1",
-      "apiKeyEnv": "JANI_API_KEY"
+      "model": "gpt-5"
+    },
+    "claude": {
+      "model": "claude-sonnet-5-5",
+      "apiBase": "https://api.anthropic.com/v1",
+      "protocol": "anthropic",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    "local": {
+      "model": "qwen3-coder",
+      "apiBase": "http://127.0.0.1:11434/v1",
+      "protocol": "openai",
+      "apiKey": "local-placeholder-key"
     }
   },
-  "maxSteps": 20
+  "maxSteps": 20,
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Read(./**)",
+      "Bash(cargo test *)",
+      "Bash(cargo check *)",
+      "Bash(cargo fmt --check *)",
+      "Bash(git status *)",
+      "Bash(git diff *)"
+    ],
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git push *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Write(./.git/**)"
+    ]
+  }
 }

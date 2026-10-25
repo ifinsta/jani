@@ -3,7 +3,7 @@ id: JANI-GOV-002
 title: "Changelog"
 status: implemented-partial
 owner: project
-version: 1.1.0
+version: 1.2.0
 last-reviewed: 2026-10-25
 source:
   - README.md
@@ -24,7 +24,17 @@ This page records what changed and what it means for compatibility. It is a deve
 ## Unreleased
 
 - Staged Sentinel native hardening for read-only Linux journald/file collection, per-source coverage, bounded persistent spooling, operator mTLS enrollment and revocation, normalized central metrics/logs/incidents, data retention and supervised systemd pilot templates. Source and tests are not a production-certified release.
-
+- `.jani/settings.json` now follows Claude Code conventions: optional `$schema`, a top-level `model` selector that is a profile name or a raw model ID, per-profile `protocol` and `maxOutputTokens`, and a `permissions` block with `defaultMode`, `allow`, `ask` and `deny`. The legacy `defaultModel` remains accepted.
+- Inline `apiKey` values are now accepted when explicitly configured, alongside `apiKeyEnv`. Values are redacted from `Debug`, diagnostics and errors; `doctor` reports only the source and warns that the file holds a secret. This supersedes the earlier rejection of inline keys.
+- Added Claude-style permission rules `Read(./path)`, `Write(./path)` and `Bash(command *)`, enforced in the broker after the work contract and before policy. Evaluation is deny > plan read-only > ask > per-category allowlist. Settings denies are journaled; ask matches require an external `settings-permission` approval; allow rules never widen CLI grants, contract capabilities or signed policy. `bypassPermissions` is refused.
+- Added Anthropic Messages transport (`/v1/messages`, `x-api-key`, `anthropic-version`) with tool-call translation, auto-detected for `api.anthropic.com`. `--protocol`, `JANI_PROTOCOL`, `--max-output-tokens` and `JANI_MAX_OUTPUT_TOKENS` override it.
+- `doctor` now reports the protocol and API base, the credential source, settings warnings and the compiled permission mode and rule counts.
+- Bare `jani` in a terminal now opens a full-screen interactive interface: alternate-screen transcript, multi-line input with history and slash-command completion, a frozen-authority meta line, key hints, a tip line and a status bar. It runs over the same governed session as `jani repl`; line mode remains when stdin or stdout is redirected. With redirected stdin, bare `jani` still prints help, so existing scripts are unchanged.
+- The full-screen interface suppresses the per-turn stderr run banner, which would otherwise corrupt the frame. Run identifiers remain available through `/status` and `/inspect`.
+- The full-screen editor is Unicode-safe, restores an in-progress draft when walking history, requires a 40x10 terminal and restores the console on exit, error or panic.
+- Added `jani repl`, an interactive session over the existing agent loop. One task ID spans the session, each prompt gets its own run ID, and authority (policy, identity, contract, write scopes, executable programs, sandbox and network) is loaded once and frozen. History is trimmed at user-turn boundaries above 256 KiB and tool output is clipped at 64,000 bytes; a failed turn rolls back to its pre-prompt checkpoint.
+- REPL slash commands are read-only: `/help`, `/status`, `/skills`, `/inspect [RUN_ID]`, `/budget`, `/approvals`, `/approval ID`, `/new`, `/exit`. None widens authority. `/approval` only attaches a request that a separate verified approver already decided, after reloading the store and rechecking tenant, task, status, expiry and separation of duties.
+- Redirected stdin is accepted for automation with a warning; answers go to stdout and the prompt to stderr. The budget ledger is written when a session opens so `/budget` is readable before the first model call.
 - Added a root `releases/` channel with a versioned Windows binary, SHA-256 checksum and manifest, plus `install.ps1` for one-command, checksum-verifying installation and `tools/release.ps1` for packaging future releases.
 - The installer now asks before adding its install directory to the user `PATH`, defaults to no, never prompts in a non-interactive session, and accepts `-NoPath` to suppress the question or `-AddToPath` to add the entry without prompting.
 - `tools/release.ps1` now measures dirty state over tracked build inputs only, records commit, build time and dirty state per artifact, refuses to mix commits within a version, and requires `-Replace` to rebuild an existing target from a different commit.
@@ -37,7 +47,7 @@ This page records what changed and what it means for compatibility. It is a deve
 
 - Added `.jani/settings.json` with named model profiles, a default profile and a `maxSteps` limit. Precedence is CLI flag > environment > settings > built-in default.
 - Added `--settings FILE`, `--model-profile NAME` and the `JANI_SETTINGS` environment variable. Relative paths resolve against the worktree.
-- Settings are strict: version 1, camelCase, unknown fields rejected, 64 KiB cap, at most 32 profiles, `maxSteps` 1..80. An inline `apiKey` is rejected; `apiKeyEnv` names the only credential source used for that profile.
+- Settings are strict: version 1, camelCase, unknown fields rejected, at most 32 profiles, `maxSteps` 1..80. At that commit an inline `apiKey` was rejected; the Unreleased entry above changes this to accepted-with-warning. `apiKeyEnv` remains the recommended credential source.
 - Settings cannot grant write or command authority. `doctor` reports the loaded settings file and profile.
 - Added a source-linked documentation contract library, `docs/documentation_manifest.json`, and `python tools/doccheck.py` as a CI gate.
 
@@ -94,7 +104,7 @@ This page records what changed and what it means for compatibility. It is a deve
 
 - Rust 1.95.0 is pinned. The root workspace has non-default members, so use `--workspace` for full tests and lint.
 - Python 3.11 is required only for synthetic tooling.
-- Settings affect model selection and limits only. They never replace `--allow-write`, `--write-path`, `--allow-exec` or signed policy.
+- Settings affect model selection, transport, limits and narrowing permission rules only. They never replace `--allow-write`, `--write-path`, `--allow-exec` or signed policy, and an inline key does not change precedence over operator flags.
 - Documentation with frontmatter must be registered in the manifest; claims must be synced after Markdown changes.
 - No migration path exists from an earlier published release because none has been published.
 

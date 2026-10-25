@@ -218,3 +218,134 @@ fn governed_run_calls_a_local_provider_and_records_evidence() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn repl_keeps_conversation_and_budget_across_turns() {
+    let root = temp_root();
+    let state = root.join("state");
+    let first_answer = json!({
+        "choices": [{
+            "message": {"role": "assistant", "content": "first answer"}
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 3}
+    });
+    let second_answer = json!({
+        "choices": [{
+            "message": {"role": "assistant", "content": "second answer"}
+        }],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 4}
+    });
+    let (base, bodies, provider) =
+        start_provider(vec![first_answer.to_string(), second_answer.to_string()]);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jani"))
+        .arg("repl")
+        .args([
+            "--repo",
+            root.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--max-steps",
+            "4",
+        ])
+        .env("JANI_API_KEY", "test-provider-secret")
+        .env("JANI_API_BASE", &base)
+        .env("JANI_MODEL", "test-model")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_POLICY")
+        .env_remove("JANI_IDENTITY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jani repl");
+
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(stdin, "first question").unwrap();
+        writeln!(stdin, "second question").unwrap();
+        writeln!(stdin, "/inspect").unwrap();
+        writeln!(stdin, "/exit").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("jani repl did not finish within 60 seconds");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "jani repl failed: {}",
+        stderr.trim()
+    );
+    assert!(stderr.contains("stdin is not a terminal"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("first answer"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("second answer"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stdout.matches("\"action\": \"agent.run\"").count(),
+        2,
+        "/inspect did not show the latest run: {stdout}"
+    );
+    provider.join().unwrap();
+
+    let requests = bodies.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2, "expected one model turn per prompt");
+    assert!(requests[0].contains("first question"));
+    assert!(
+        requests[1].contains("first answer")
+            && requests[1].contains("first question")
+            && requests[1].contains("second question"),
+        "second request did not carry the conversation: {}",
+        requests[1]
+    );
+    for request in &requests {
+        assert!(
+            !request.contains("test-provider-secret"),
+            "provider credential leaked into the model request body"
+        );
+    }
+
+    let events = journal_events(&state);
+    let completed: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["action"] == "agent.run" && event["decision"] == "completed")
+        .collect();
+    assert_eq!(completed.len(), 2, "expected two completed runs");
+    let task_id = completed[0]["task_id"].as_str().unwrap().to_string();
+    assert!(completed
+        .iter()
+        .all(|event| event["task_id"].as_str() == Some(task_id.as_str())));
+    assert_ne!(completed[0]["run_id"], completed[1]["run_id"]);
+
+    let budget = Command::new(env!("CARGO_BIN_EXE_jani"))
+        .args([
+            "budget",
+            "show",
+            "--task",
+            &task_id,
+            "--state-dir",
+            state.to_str().unwrap(),
+        ])
+        .output()
+        .expect("show budget");
+    assert!(budget.status.success());
+    let budget_json: Value = serde_json::from_slice(&budget.stdout).unwrap();
+    assert_eq!(budget_json["toolCalls"], 0);
+    assert_eq!(budget_json["inputTokens"], 30);
+    assert_eq!(budget_json["outputTokens"], 7);
+
+    let _ = std::fs::remove_dir_all(root);
+}

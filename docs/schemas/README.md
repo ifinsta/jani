@@ -18,7 +18,7 @@ events, which are `snake_case`.
 | `plugin-manifest/v1alpha1` | `PluginManifest` | `--plugin-dir` | Ed25519 over the manifest digest |
 | Organization policy (proposal 03) | `PolicyBundle` | `--policy` | Ed25519 over the bundle without `signature` |
 | Identity assertion (proposal 03) | `IdentityAssertion` | `--identity` | Ed25519 over the assertion without `signature` |
-| Project settings (not in the proposal table) | `Settings` | `.jani/settings.json`, `--settings`, `JANI_SETTINGS` | No; must not contain secrets |
+| Project settings (not in the proposal table) | `Settings` | `.jani/settings.json`, `--settings`, `JANI_SETTINGS` | No; an inline key is accepted but discouraged |
 
 ### 1.1 Work contract
 
@@ -169,14 +169,23 @@ there is no audience field yet.
 
 ### 1.5 Project settings
 
-See [settings.example.json](settings.example.json). Settings supply named model
-profiles and a `maxSteps` limit; they cannot grant write or command authority.
+See [settings.example.json](settings.example.json) and the JSON Schema
+[settings.schema.json](settings.schema.json). Settings supply named model
+profiles, a model selector, transport settings, a `maxSteps` limit and
+Claude-style `permissions` rules; they cannot grant write or command authority.
 
 Required: `version: 1`. If `models` is non-empty, `defaultModel` must name one of
-them. Each profile requires `model` and may set `apiBase` and `apiKeyEnv`;
-`apiKeyEnv` names the environment variable holding the credential, and an inline
-`apiKey` field is rejected. Unknown fields fail closed. CLI flags override
-environment variables, which override settings.
+them unless a top-level `model` selector is present. Each profile
+requires `model` and may set `apiBase`, `apiKey`, `apiKeyEnv`, `protocol`
+(`openai` or `anthropic`) and `maxOutputTokens`. `apiKeyEnv` names the
+environment variable holding the credential. An inline `apiKey` is accepted for
+explicitly configured convenience, but it is redacted from `Debug` and
+diagnostics and should be replaced with `apiKeyEnv` in shared checkouts.
+`permissions` accepts `defaultMode` (`default`, `acceptEdits`, `plan`; not
+`bypassPermissions`), plus `allow`, `ask` and `deny` lists of `Read(./path)`,
+`Write(./path)` and `Bash(command *)` rules. Rules narrow the operator's CLI
+grants, work contract and signed policy; they never widen them. Unknown fields
+fail closed. CLI flags override environment variables, which override settings.
 
 ## 2. Implemented internal records
 
