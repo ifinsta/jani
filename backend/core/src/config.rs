@@ -89,6 +89,9 @@ USAGE:
   jani alerts accept|retry AGENT ALERT_ID RECEIPT [OPTIONS]
   jani alerts resolve AGENT ALERT_ID EVIDENCE_REF [OPTIONS]
   jani wake poll|once|watch AGENT [OPTIONS]
+  jani mirror inspect|critique|recommendations|record RUN_ID [OPTIONS]
+  jani mirror workflows|history [OPTIONS]
+  jani mirror compare RUN_A RUN_B [OPTIONS]
 
 Jani has no embedded coordination engine. It works directly in a Git
 worktree. Skills are advisory. Every tool call passes through a Rust
@@ -270,7 +273,7 @@ impl Config {
                     cfg.prompt = Some(value);
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "approvals" | "budget"
-                | "identity" | "contract" | "agent" | "alerts" | "wake" => {
+                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" => {
                     cfg.command = a.into();
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {

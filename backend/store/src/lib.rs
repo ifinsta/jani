@@ -1,3 +1,4 @@
+pub mod mirror;
 //! Transactional single-host SQLite state and transition outbox.
 //! No network service or coordinator is required.
 //! External side effects are never claimed atomic with a SQLite commit.
