@@ -1,6 +1,6 @@
 # Jani
 
-**Native Sentinel pilot:** [JSMT/1 Rust Probe and Gateway](docs/PROBE_GATEWAY_GUIDE.md) · [wire specification](protocol/jsmt/v1/SPEC.md). Source and local unit tests are provided, but do not assume production host coverage or a published binary.
+**Native Sentinel pilot and compliance:** [JSMT/1 Rust Probe and Gateway](docs/PROBE_GATEWAY_GUIDE.md) · [wire specification](protocol/jsmt/v1/SPEC.md). Source and local unit tests are provided, but do not assume production host coverage or a published binary.
 
 **Release catalogue:** [typed agent/client/gateway releases](releases/README.md). **Open-source JSMT/1 protocol:** [specification](protocol/jsmt/v1/SPEC.md) and [reproducible Python reference](protocol/jsmt/v1/README.md). Only an existing Windows agent binary is currently published; client and gateway binaries are not yet released.
 

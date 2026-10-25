@@ -117,9 +117,11 @@ those test credentials for production.
 
 ### Current native limitations
 
-- Live native log sources: explicitly configured regular files with durable
-  byte offsets. Linux systemd service listing is best-effort inventory, **not**
-  journald collection; unconfigured services are reported as unsupported.
+- Native sources: explicitly configured regular files with durable byte offsets
+  plus opt-in Linux `journal:unit.service` sources with stored cursors.
+  Linux systemd service listing is inventory, **not** automatic collection.
+  Unconfigured services remain unsupported; first journal tail is partial.
+  Live journald service-coverage acceptance is still pending.
 - No production Windows Event Log or macOS Unified Logging adapters, no
   container/DB-aware source discovery, no automatic certificate
   enrollment/rotation/revocation, no horizontally scalable ingestion or
@@ -133,3 +135,14 @@ those test credentials for production.
 
 See `docs/PROBE_GATEWAY_GUIDE.md` for manual provisioning, limitations and
 service acceptance. The native implementation is not a production release.
+
+## 10. Native operations extensions (pilot source)
+
+In addition to the fixed JSMT/1 wire envelope, the native gateway can
+reload an operator-maintained fingerprint registry per request and enforce
+`revoked: true` or `expires_unix` for each tenant/device binding.
+This is a local enrollment-operator contract, not a change to JSMT/1 wire
+semantics. Bounded per-device rates, normalized SQL projections, coverage
+incident outbox, and 1–90-day storage retention are implementation details.
+No production certificate issuance, PKI lifecycle, cross-platform collectors,
+HA or central model-triggered remediation are available.

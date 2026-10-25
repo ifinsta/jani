@@ -12,7 +12,7 @@ CORE = tuple("docs/" + x + ".md" for x in (
     "RECOVERY_AND_REPLAY", "DELEGATION_PROTOCOL", "ERRORS_AND_RETRIES",
     "CONFIGURATION_REFERENCE", "RELEASE_ACCEPTANCE", "COMPONENT_CONTRACTS"
 ))
-SENTINEL = ("docs/SENTINEL_CONTRACT.md", "docs/SENTINEL_RELEASE_GATES.md")
+SENTINEL = ("docs/SENTINEL_CONTRACT.md", "docs/SENTINEL_RELEASE_GATES.md", "docs/SENTINEL_OPERATIONS.md")
 STATUSES = {"implemented", "implemented-partial", "proposed", "deprecated", "superseded"}
 REQUIRED = {"id", "title", "status", "owner", "version", "last-reviewed", "source", "tests"}
 SAFE = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
@@ -76,7 +76,7 @@ def check(root: Path) -> list[str]:
         return errors + ["manifest files must be a list of strings"]
     if not isinstance(critical, list) or set(critical) != set(CORE):
         errors.append("requiredCore differs from mandatory twelve contracts")
-    if manifest.get("requiredSentinel") != list(SENTINEL):
+    if set(manifest.get("requiredSentinel", [])) != set(SENTINEL):
         errors.append("requiredSentinel differs from mandatory monitoring security gates")
     if set(SENTINEL) - set(paths):
         errors.append("mandatory Sentinel contract missing from manifest")

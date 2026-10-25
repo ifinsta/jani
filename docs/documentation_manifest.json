@@ -40,6 +40,7 @@
     "docs/RELEASE_ACCEPTANCE.md",
     "docs/ROADMAP.md",
     "docs/SENTINEL_CONTRACT.md",
+    "docs/SENTINEL_OPERATIONS.md",
     "docs/SENTINEL_RELEASE_GATES.md",
     "docs/STORAGE_CONSISTENCY.md",
     "docs/THREAT_MODEL.md",
@@ -74,6 +75,7 @@
   ],
   "requiredSentinel": [
     "docs/SENTINEL_CONTRACT.md",
+    "docs/SENTINEL_OPERATIONS.md",
     "docs/SENTINEL_RELEASE_GATES.md"
   ]
 }

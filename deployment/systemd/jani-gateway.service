@@ -1,0 +1,38 @@
+[Unit]
+Description=Jani Sentinel experimental telemetry gateway
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=jani-gateway
+Group=jani-gateway
+EnvironmentFile=/etc/jani/gateway.env
+ExecStart=/usr/local/bin/jani-gateway --bind ${JANI_BIND} --allow-remote --ca /etc/jani/pki/ca.pem --cert /etc/jani/pki/server.pem --key /etc/jani/pki/server-key.pem --registry /etc/jani/devices.json --db /var/lib/jani-gateway/telemetry.sqlite --retain-days 7 --rate-per-minute 120
+Restart=always
+RestartSec=10s
+StartLimitIntervalSec=300
+StartLimitBurst=6
+StateDirectory=jani-gateway
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+MemoryMax=512M
+CPUQuota=100%
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

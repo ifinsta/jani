@@ -110,7 +110,21 @@ class RustGatewayProbeTest(unittest.TestCase):
                 self.assertEqual(
                     {x["service"] for x in payload["coverage"] if x["status"]=="missing"},
                     {"missing-service"})
-                self.assertIn("system.uptime", {m["name"] for m in payload["metrics"]})
+                # Same transaction contains queryable normalized projections and source gaps.
+                with sqlite3.connect(p/"central.db") as con:
+                    self.assertGreaterEqual(con.execute("SELECT COUNT(*) FROM metric_samples").fetchone()[0],1)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM service_logs").fetchone()[0],3)
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM coverage_latest WHERE status='covered'").fetchone()[0],3)
+                    self.assertGreaterEqual(con.execute("SELECT COUNT(*) FROM incidents WHERE status='open'").fetchone()[0],1)
+                    self.assertGreaterEqual(con.execute("SELECT COUNT(*) FROM incident_outbox WHERE event='open'").fetchone()[0],1)
+                inspector=subprocess.run([str(BIN/"jani-gateway"),"inspect","--db",str(p/"central.db"),
+                                          "--tenant","tenant-a"],capture_output=True,text=True,timeout=10)
+                self.assertEqual(inspector.returncode,0,inspector.stderr)
+                self.assertEqual(json.loads(inspector.stdout)["log_events"],3)
+                metric_names={m["name"] for m in payload["metrics"]}
+                self.assertIn("system.uptime",metric_names)
+                self.assertIn("system.cpu.time",metric_names)
+                self.assertIn("jani.filesystem.used",metric_names)
                 self.assertTrue(all(m["unit"] in ("s","By","1","{process}") for m in payload["metrics"]))
                 with sqlite3.connect(p/"spool.db") as con:
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM pending").fetchone()[0],0)
@@ -138,12 +152,28 @@ class RustGatewayProbeTest(unittest.TestCase):
                     urllib.request.urlopen(urllib.request.Request(f"https://localhost:{port}/v1/ingest",
                         data=changed,headers={"Content-Type":"application/json"},method="POST"),context=ctx,timeout=10)
                 self.assertEqual(conflict.exception.code,409)
+                # A valid registered certificate cannot impersonate another tenant.
+                wrong=dict(extra,tenant_id="other-tenant",sequence=3)
+                wrong_data=json.dumps(wrong,separators=(",",":"),sort_keys=True).encode()
+                with self.assertRaises(urllib.error.HTTPError) as mismatch:
+                    urllib.request.urlopen(urllib.request.Request(f"https://localhost:{port}/v1/ingest",
+                        data=wrong_data,headers={"Content-Type":"application/json"},method="POST"),
+                        context=ctx,timeout=10)
+                self.assertEqual(mismatch.exception.code,403)
                 # Non-enrolled but CA-trusted client certificate is refused.
                 other=ssl.create_default_context(cafile=str(p/"ca.crt"))
                 other.load_cert_chain(str(p/"other.crt"),str(p/"other.key"))
                 with self.assertRaises(urllib.error.HTTPError) as denied:
                     urllib.request.urlopen(request,context=other,timeout=10)
                 self.assertEqual(denied.exception.code,403)
+                # Revoking a registered certificate requires no gateway restart.
+                updated={fingerprint:{"tenant_id":"tenant-a","device_id":"device-one","revoked":True}}
+                replacement=p/"registry.new.json"
+                replacement.write_text(json.dumps(updated))
+                os.replace(replacement,p/"registry.json")
+                with self.assertRaises(urllib.error.HTTPError) as revoked_reply:
+                    urllib.request.urlopen(request,context=ctx,timeout=10)
+                self.assertEqual(revoked_reply.exception.code,403)
                 # No certificate should fail during the TLS handshake.
                 bare=ssl.create_default_context(cafile=str(p/"ca.crt"))
                 with self.assertRaises((ssl.SSLError,urllib.error.URLError,OSError)):

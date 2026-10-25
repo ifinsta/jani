@@ -1,3 +1,13 @@
+## Sentinel hardening: 2026-10-25 (unreleased, non-production)
+
+Native source staged for Linux file/journald collectors, standardized CPU/memory/disk/process metrics, bounded systemd inventory, 64 MiB identity-bound offline spool, runtime certificate revocation, normalized transactional SQLite tables, tenant-specific incidents and configurable 1–90 day data retention. Dedicated systemd service examples and security regression tests are included.
+
+**Executed locally in this session:** `python -m unittest discover -s tests -v` within the original JSMT Python reference: 15 passed; local registry schema tests: 3 passed; ephemeral CA-signed client-auth certificate enrollment/revocation CLI: passed. This is evidence of the Python reference and operator tool logic, not native Rust compilation.
+
+**Unpassed release gates:** Rust toolchain absent in the execution environment; cargo fmt, clippy, build, workspace tests and the new Rust probe/gateway separate-process mTLS test have not executed. Prior GitHub Actions jobs are failing without assigned runners or steps. Real-host log inventory, Windows/macOS/container adapters, managed PKI/renewal, encrypted-at-rest production stores, HA failover, load/soak, signing and security review remain outstanding. No new binaries published.
+
+See [Sentinel operational gates](docs/SENTINEL_OPERATIONS.md).
+
 # Validation status
 
 **Verdict: supervised local prototype. Not production-approved and not enterprise-certified.**

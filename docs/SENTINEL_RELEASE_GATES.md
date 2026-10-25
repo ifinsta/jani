@@ -48,3 +48,13 @@ High-risk remediation stays disabled at all times until a separate enforcer meet
 ## Required documentation maintenance
 
 Changes to model gateway, tool broker, auth policy, journal, remote integration, operating system collectors or monitoring transport require security/coverage review before any status change from proposed.
+
+## Native pilot status (October 25, 2026)
+
+Native probe/gateway source includes read-only telemetry, per-device mTLS
+binding, operator revocation, queryable normalized metric/log/coverage tables,
+incident transition outbox, bounded spool, retention and Linux systemd
+supervision templates. These are **implemented source paths** and remain
+unverified as a compiled end-to-end system until a real Rust toolchain and
+assigned CI runner exercise the native suite. Refer to
+[Sentinel operations](SENTINEL_OPERATIONS.md) for remaining gates.

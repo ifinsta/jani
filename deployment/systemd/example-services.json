@@ -1,0 +1,16 @@
+{
+  "services": [
+    {
+      "service": "api",
+      "path": "/var/log/myapp/api.log"
+    },
+    {
+      "service": "worker",
+      "path": "/var/log/myapp/worker.log"
+    },
+    {
+      "service": "sshd",
+      "path": "journal:sshd.service"
+    }
+  ]
+}

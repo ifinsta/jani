@@ -1,5 +1,5 @@
 ---
-id: JANI-OPS-007
+id: JANI-OPS-009
 title: "Native Jani Probe and JSMT gateway pilot guide"
 status: implemented-partial
 owner: backend/monitoring
@@ -87,6 +87,12 @@ SQLite ingest service without redundancy, managed enrollment or quotas.
 }
 \`\`\`
 
+On Linux, `{"service":"api","path":"journal:api.service"}` is also allowed.
+A bounded read-only `journalctl` call collects only that unit's events with
+a durable cursor; the first tail is marked partial because it cannot establish
+complete earlier history. Journal permissions and OS behavior need live
+verification before any claims of full service coverage.
+
 Sources must be explicitly authorized and readable by a minimally privileged
 local identity. The Linux prototype also attempts to enumerate systemd unit
 names, reporting unconfigured services as unsupported. Missing files and denied
@@ -127,3 +133,30 @@ Even passing the test does not prove log coverage across an arbitrary real
 host, performance, HA, secure enrollment, Linux/macOS/Windows collectors,
 auto-updates, supply-chain integrity or intrusion prevention. Run the separate
 [release gates](SENTINEL_RELEASE_GATES.md) before marketing those capabilities.
+
+## Native observability and identity operations
+
+Gateway projectors now persist normalized metric samples, service log rows,
+latest per-service source coverage, incident state and an immutable incident
+outbox in the same SQLite transaction as the raw envelope and ACK sequence.
+The `jani-gateway inspect --db ... --tenant ...` command shows aggregate
+counts locally. Native source-file rotation/truncation is detected as partial
+coverage, not success. Probe queues are bound to their enrolled tenant/device
+and capped at 1000 records or 64 MiB of queued payload.
+
+Enrollment/revocation: `tools/sentinel_registry.py` validates a separately
+issued CA client certificate, records its SHA-256 DER fingerprint, tenant,
+device and expiry, then atomically updates the registry. The gateway reloads
+it for every connection request. Revoking is not a replacement for trust-root
+rollover, key custody or a managed PKI platform.
+
+Deploy Linux service templates from `deployment/systemd/` only as a
+laboratory pilot after passing a native build and TLS interoperability checks.
+Gateway samples, raw envelopes, service logs and incident outbox follow a
+configurable 1–90-day retention horizon (default 7); live incident state and
+anti-replay sequence cursors persist. Databases and backups need encrypted
+storage and an independent verified restore plan.
+
+See [Sentinel operations compliance](SENTINEL_OPERATIONS.md). Windows Event
+Log, macOS Unified Log, certified journald completeness, container logs, managed key
+issuance and HA remain explicit blockers for cross-platform production.

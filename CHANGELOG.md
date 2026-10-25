@@ -23,6 +23,8 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- Staged Sentinel native hardening for read-only Linux journald/file collection, per-source coverage, bounded persistent spooling, operator mTLS enrollment and revocation, normalized central metrics/logs/incidents, data retention and supervised systemd pilot templates. Source and tests are not a production-certified release.
+
 - Added a root `releases/` channel with a versioned Windows binary, SHA-256 checksum and manifest, plus `install.ps1` for one-command, checksum-verifying installation and `tools/release.ps1` for packaging future releases.
 - The installer now asks before adding its install directory to the user `PATH`, defaults to no, never prompts in a non-interactive session, and accepts `-NoPath` to suppress the question or `-AddToPath` to add the entry without prompting.
 - `tools/release.ps1` now measures dirty state over tracked build inputs only, records commit, build time and dirty state per artifact, refuses to mix commits within a version, and requires `-Replace` to rebuild an existing target from a different commit.
