@@ -4,8 +4,8 @@
 writes. Several schemas named in the proposal pack (`sandbox-grant`,
 `task-checkpoint`, a signed `action-request`) do not exist yet.
 
-**Source of truth:** `src/types.rs`, `src/policy.rs`, `src/identity.rs`,
-`src/plugins.rs`, `src/journal.rs`, `src/approvals.rs`, `src/data.rs`.
+**Source of truth:** `backend/core/src/types.rs`, `backend/core/src/policy.rs`, `backend/core/src/identity.rs`,
+`backend/server/src/plugins.rs`, `backend/core/src/journal.rs`, `backend/core/src/approvals.rs`, `backend/core/src/data.rs`.
 
 All externally supplied files are JSON. Field names are `camelCase` except audit
 events, which are `snake_case`.
@@ -186,7 +186,7 @@ the model. They are not independently versioned files.
 
 - `sandbox-grant/v1` — no external, signed grant is issued. The runtime selects
   and reports a plan locally.
-- `task-checkpoint/v1` — no checkpoint, cursor, lease or recovery state.
+- `task-checkpoint/v1` — no durable model-run cursor, action-intent ledger or automatic recovery state. Native plan metadata checkpoints are available separately and do not resume a model session.
 - Signed `action-request` / signed `tool-result` — requests and results are not
   signed, and the journal does not bind a canonical contract digest.
 - Retention labels and lineage records — `DataEnvelope.lineage` is always empty.

@@ -1,5 +1,7 @@
 # Jani 🦀
 
+**Documentation:** [Complete documentation index](docs/INDEX.md) · [Project contract](docs/PROJECT_CONTRACT.md) · [Release acceptance](docs/RELEASE_ACCEPTANCE.md). New source-linked contracts are checked in CI.
+
 **Jani** is an independent **Rust-native, skill-aware AI coding agent**. Its agent runtime, tool dispatch, workspace handling and OpenAI-compatible model client are written in Rust.
 
 Jani embeds no coordination engine. It works directly in a Git worktree, reads installed `SKILL.md` guidance on demand, and enforces its permissions in Rust. Collaboration workflows, when needed, are just skills or external processes that invoke Jani — they are not part of Jani's core or its privilege model.

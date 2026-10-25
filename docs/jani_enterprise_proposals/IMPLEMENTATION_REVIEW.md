@@ -2,13 +2,15 @@
 
 **Reviewed:** 2026-10-25  
 **Baseline:** `main` after the trusted vertical-slice implementation  
-**Scope reviewed:** this directory (proposals 01–05) against the Rust source in `src/`  
+**Scope reviewed:** proposals 01–05 against the then-current Rust implementation  
 **Verdict:** the proposals are **partially implemented** as a trusted local kernel.
 They are **not** implemented at enterprise-pilot or supportable-release depth.
 
 This document distinguishes what the binary actually enforces from what the
 proposals describe. A feature is listed as *implemented* only when Rust enforces
 it and a test or executable path demonstrates it.
+
+**Historical review notice:** This document captures the initial trusted-kernel review, not the latest full baseline after MCP, native tools and attention enhancements. Consult [the current documentation index](../INDEX.md), [MCP governance](../MCP_GOVERNANCE.md), [native tools](../NATIVE_TOOLS.md) and [release acceptance](../RELEASE_ACCEPTANCE.md). Requirement statuses below require fresh verification against the current main branch before release sign-off.
 
 ## 1. Summary
 

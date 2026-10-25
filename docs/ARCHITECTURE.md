@@ -21,7 +21,7 @@ flowchart TB
 ## Scope
 
 Jani is a single-process coding agent. It has no embedded coordination engine,
-task database, message bus or merge authority. Its job is to inspect a worktree,
+cross-agent task coordinator, distributed message bus or merge authority. The native tools and attention protocol maintain bounded local task metadata. Its job is to inspect a worktree,
 edit files within operator-approved scopes, run allowlisted commands, and report
 what it observed. Any multi-agent coordination is external to this binary.
 
@@ -117,5 +117,5 @@ See [WORKSPACE_ARCHITECTURE.md](WORKSPACE_ARCHITECTURE.md).
 - Environment and file-system checks are defense in depth, not an OS-level
   sandbox. On Windows and macOS they are not confinement at all for isolation
   purposes; enterprise isolation profiles are refused there rather than claimed.
-- State is local plaintext JSON. The journal is tamper-evident, not tamper-proof,
+- State is local plaintext JSON and SQLite. The journal is tamper-evident, not tamper-proof,
   and is not externally anchored.
