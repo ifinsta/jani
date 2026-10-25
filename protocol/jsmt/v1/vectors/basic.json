@@ -8,7 +8,7 @@
     {
       "name": "system.uptime",
       "unit": "s",
-      "value": 1,
+      "value": 1.0,
       "attributes": {}
     }
   ],
