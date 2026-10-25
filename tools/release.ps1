@@ -2,7 +2,8 @@
 param(
     [string]$Version,
     [string]$Target,
-    [switch]$AllowDirty
+    [switch]$AllowDirty,
+    [switch]$Replace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,10 +63,15 @@ if (-not $Target) {
     Fail "cross-compilation is not supported by this script; run it on a '$Target' host"
 }
 
-$status = @(git status --porcelain)
+$sourcePaths = @('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'backend', 'contract')
+if (Test-Path -LiteralPath '.cargo') {
+    $sourcePaths += '.cargo'
+}
+$status = @(git status --porcelain -- $sourcePaths)
 $dirty = $status.Count -gt 0
 if ($dirty -and -not $AllowDirty) {
-    Fail 'working tree is dirty. Commit changes first, or pass -AllowDirty for a local bootstrap build.'
+    $details = $status -join "`n"
+    Fail "tracked build inputs differ from HEAD:`n$details`nCommit them first, or pass -AllowDirty for a local diagnostic build."
 }
 $commit = (& git rev-parse HEAD 2>$null)
 if ($LASTEXITCODE -ne 0 -or -not $commit) {
@@ -103,7 +109,6 @@ $checksumName = "$binaryName.sha256"
 $manifestPath = Join-Path $releaseDir 'manifest.json'
 $artifacts = @()
 $builtAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-$releaseDirty = $dirty
 
 if (Test-Path -LiteralPath $manifestPath) {
     $existing = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
@@ -113,11 +118,15 @@ if (Test-Path -LiteralPath $manifestPath) {
     if ([string]$existing.version -ne $Version) {
         Fail "existing manifest version '$($existing.version)' does not match '$Version'"
     }
+    $existingArtifact = @(@($existing.artifacts) | Where-Object { $_.target -eq $Target }) | Select-Object -First 1
     if ([string]$existing.commit -ne $commit) {
-        Fail "release $tag already records commit $($existing.commit); bump the version instead of mixing commits"
+        if (-not $existingArtifact) {
+            Fail "release $tag records commit $($existing.commit); bump the version before adding another target"
+        }
+        if (-not $Replace) {
+            Fail "release $tag already records commit $($existing.commit); pass -Replace to rebuild this target from $commit, or bump the version"
+        }
     }
-    $builtAt = [string]$existing.builtAt
-    $releaseDirty = $releaseDirty -or [bool]$existing.dirty
     $artifacts = @(@($existing.artifacts) | Where-Object { $_.target -ne $Target })
 }
 
@@ -126,6 +135,9 @@ $artifacts += [ordered]@{
     binary = $binaryName
     sha256 = $hash
     sizeBytes = $size
+    commit = $commit
+    dirty = $dirty
+    builtAt = $builtAt
 }
 
 $manifest = [ordered]@{
@@ -133,7 +145,7 @@ $manifest = [ordered]@{
     version = $Version
     tag = $tag
     commit = $commit
-    dirty = $releaseDirty
+    dirty = $dirty
     builtAt = $builtAt
     artifacts = @($artifacts)
 }
@@ -145,7 +157,7 @@ $latest = [ordered]@{
 }
 [IO.File]::WriteAllText((Join-Path (Join-Path $root 'releases') 'latest.json'), (($latest | ConvertTo-Json) + "`n"), $utf8)
 
-Write-Host "Release $tag built from $commit (dirty=$releaseDirty)"
+Write-Host "Release $tag built from $commit (build inputs dirty: $dirty)"
 Write-Host "Binary:   $binaryPath"
 Write-Host "SHA-256:  $hash"
 Write-Host "Manifest: $manifestPath"

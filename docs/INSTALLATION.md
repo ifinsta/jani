@@ -3,7 +3,7 @@ id: JANI-OPS-003
 title: "Installation and initial verification"
 status: implemented-partial
 owner: backend/server
-version: 1.1.0
+version: 1.2.0
 last-reviewed: 2026-10-25
 source:
   - Cargo.toml
@@ -30,8 +30,11 @@ Useful options:
 
 - `-Version v0.1.0` installs a specific release.
 - `-InstallDir C:\Tools\Jani\bin` changes the destination.
-- `-AddToPath` appends the install directory to the user `PATH`; this is opt-in and requires a new terminal to take effect.
+- `-AddToPath` appends the install directory to the user `PATH` without prompting; a new terminal is required to see it.
+- `-NoPath` never asks about or modifies `PATH`.
 - `-Target` overrides host detection and must match an artifact in the manifest.
+
+When the install directory is not on `PATH`, an interactive run asks before changing the user environment and defaults to no. A non-interactive run with neither flag leaves `PATH` untouched and prints the command for the current session. `-AddToPath` and `-NoPath` cannot be combined. Installing never configures credentials, write scopes or command authority.
 
 Release binaries are not code-signed. Windows SmartScreen may warn; verify the checksum and the source commit in the manifest, or build from source. See [releases/README.md](../releases/README.md) for the layout and the release process.
 
@@ -53,13 +56,13 @@ Source builds follow the pinned toolchain in `rust-toolchain.toml`. Python is no
 
 ## Release channel
 
-`releases/latest.json` points at the version the installer uses by default. Each version directory contains the platform binary, its `.sha256` file and a manifest recording the version, source commit, build time, dirty state and artifact digest. To publish a new release, update the workspace version and changelog, commit the source, then run:
+`releases/latest.json` points at the version the installer uses by default. Each version directory contains the platform binary, its `.sha256` file and a manifest recording the version, source commit, build time and per-artifact digest, size, commit and dirty state. `dirty` covers tracked build inputs only, so documentation or tooling edits do not make a binary dirty. To publish a new release, update the workspace version and changelog, commit the source, then run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release.ps1
 ```
 
-Commit the new version directory and `latest.json`. The script refuses a dirty tree unless `-AllowDirty` is passed, and refuses to label a host build as another target.
+Commit the new version directory and `latest.json`. The script refuses when tracked build inputs differ from `HEAD` unless `-AllowDirty` is passed, refuses to label a host build as another target, refuses to add a target from a different commit, and requires `-Replace` to rebuild an existing target from a different commit.
 
 ## Configure and verify
 

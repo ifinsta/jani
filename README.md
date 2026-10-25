@@ -36,7 +36,7 @@ From a clone, on Windows x64:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer reads `releases/latest.json`, selects the artifact for your host, verifies its SHA-256 digest, refuses a mismatch, and copies the binary to `%LOCALAPPDATA%\Jani\bin`. It does not configure credentials or grant write or command authority. Add `-AddToPath` to update your user `PATH`. Layout, manual verification and the release process are in [releases/README.md](releases/README.md).
+The installer reads `releases/latest.json`, selects the artifact for your host, verifies its SHA-256 digest, refuses a mismatch, and copies the binary to `%LOCALAPPDATA%\Jani\bin`. If that directory is not already on `PATH`, it asks before changing your user environment: answer `y`, pass `-AddToPath` to add it without prompting, or pass `-NoPath` to skip the question. A non-interactive run without `-AddToPath` never modifies `PATH`. It does not configure credentials or grant write or command authority, and release binaries are unsigned. Layout, manual verification and the release process are in [releases/README.md](releases/README.md).
 
 To build and install from source instead, on any supported platform:
 

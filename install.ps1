@@ -3,7 +3,8 @@ param(
     [string]$Version,
     [string]$Target,
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Jani\bin'),
-    [switch]$AddToPath
+    [switch]$AddToPath,
+    [switch]$NoPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +31,24 @@ function Get-HostTarget {
         return 'i686-pc-windows-msvc'
     }
     Fail 'cannot determine the host target; pass -Target (for example x86_64-unknown-linux-gnu)'
+}
+
+if ($AddToPath -and $NoPath) {
+    Fail '-AddToPath and -NoPath cannot be used together'
+}
+
+function Add-UserPathEntry {
+    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $entries = @((($current + '') -split ';') | Where-Object { $_ })
+    if (-not ($entries -contains $InstallDir)) {
+        try {
+            [Environment]::SetEnvironmentVariable('Path', ((@($entries) + $InstallDir) -join ';'), 'User')
+            Write-Host "Added $InstallDir to the user PATH. Restart your terminal to pick it up."
+        } catch {
+            Write-Warning "Could not update the user PATH: $_"
+        }
+    }
+    $env:Path = "$InstallDir;$env:Path"
 }
 
 if (-not $Version) {
@@ -106,13 +125,23 @@ $pathEntries = @((($userPath + ';' + $machinePath) -split ';') | Where-Object { 
 $onPath = $pathEntries -contains $InstallDir
 
 if ($AddToPath) {
-    $userEntries = @((($userPath + '') -split ';') | Where-Object { $_ })
-    if (-not ($userEntries -contains $InstallDir)) {
-        [Environment]::SetEnvironmentVariable('Path', ((@($userEntries) + $InstallDir) -join ';'), 'User')
-        Write-Host "Added $InstallDir to the user PATH. Restart your terminal to pick it up."
+    Add-UserPathEntry
+} elseif ($onPath) {
+    Write-Host "$InstallDir is already on PATH."
+} else {
+    $interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+    $answer = ''
+    if ($interactive -and -not $NoPath) {
+        try {
+            $answer = Read-Host "Add $InstallDir to your user PATH? [y/N]"
+        } catch {
+            $answer = ''
+        }
     }
-    $env:Path = "$InstallDir;$env:Path"
-} elseif (-not $onPath) {
-    Write-Host "To use jani in this session: `$env:Path = `"$InstallDir;`$env:Path`""
-    Write-Host "To add it permanently, rerun with -AddToPath"
+    if ($answer -match '^(y|yes)$') {
+        Add-UserPathEntry
+    } else {
+        Write-Host "To use jani in this session: `$env:Path = `"$InstallDir;`$env:Path`""
+        Write-Host "To add it permanently, rerun with -AddToPath"
+    }
 }

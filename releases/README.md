@@ -17,6 +17,7 @@ The installer:
 3. Verifies the SHA-256 digest from the manifest.
 4. Refuses to install on a missing binary, malformed manifest or checksum mismatch.
 5. Copies the binary to `%LOCALAPPDATA%\Jani\bin` and runs `jani --version`.
+6. If that directory is not already on `PATH`, asks whether to add it. The default answer is no, and a non-interactive run without `-AddToPath` never modifies `PATH`.
 
 No Rust toolchain is needed when a matching artifact exists. Options:
 
@@ -27,12 +28,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version v0.1.
 # Install somewhere else
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir C:\Tools\Jani\bin
 
-# Add the install directory to your user PATH (persistent; opt-in)
+# Add the install directory to your user PATH without prompting
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -AddToPath
+
+# Never ask about PATH and do not modify it
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -NoPath
 
 # Override host detection (must match an artifact in the manifest)
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Target x86_64-pc-windows-msvc
 ```
+
+`-AddToPath` and `-NoPath` cannot be combined. When the install directory is not on `PATH` and neither flag is given, an interactive session prompts and treats anything other than `y` or `yes` as no; it then prints the command for the current session. Write scopes, command authority, credentials and signed policy are never part of installation.
 
 If no matching artifact exists, install from source instead:
 
@@ -60,7 +66,7 @@ releases/
 }
 ```
 
-Each `manifest.json` records the release version, source commit, build time, whether the tree was dirty, and one entry per target with the binary name, digest and size. The manifest is the authority the installer reads; `latest.json` only chooses the folder.
+Each `manifest.json` records the release version, source commit, build time and one entry per target. Each artifact entry repeats the commit, build time and dirty state alongside the binary name, digest and size, so a mixed-target release shows exactly which build produced each file. `dirty` means tracked build inputs (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `backend`, `contract` and `.cargo` when present) differed from the recorded commit; documentation and tooling edits that cannot change the binary do not set it. The manifest is the authority the installer reads; `latest.json` only chooses the folder.
 
 ## Verify by hand
 
@@ -82,7 +88,7 @@ All three digests must match. The checksum detects corruption or substitution of
    powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release.ps1
    ```
 
-   The script builds `cargo build --release -p jani --locked`, writes `releases/v<version>/`, refreshes `releases/latest.json` and prints the digest. It refuses a dirty tree unless you pass `-AllowDirty`; bootstrap and diagnostic builds may use that flag, and the manifest records `"dirty": true`.
+   The script builds `cargo build --release -p jani --locked`, writes `releases/v<version>/`, refreshes `releases/latest.json` and prints the digest. It refuses when tracked build inputs differ from `HEAD` unless you pass `-AllowDirty`; a dirty build records `"dirty": true`. Documentation-only edits do not block a release. Adding a second target to an existing version is allowed only from the same commit; rebuilding an existing target from a different commit requires `-Replace`, and mixing artifacts from different commits in one version is refused.
 
 4. Commit the new version folder and the updated `latest.json`. Those committed files are what the installer distributes.
 

@@ -3,7 +3,7 @@ id: JANI-GOV-002
 title: "Changelog"
 status: implemented-partial
 owner: project
-version: 1.0.0
+version: 1.1.0
 last-reviewed: 2026-10-25
 source:
   - README.md
@@ -17,14 +17,16 @@ This page records what changed and what it means for compatibility. It is a deve
 ## Release status
 
 - **No Git tags exist.** The workspace version in `Cargo.toml` is `0.1.0`.
-- `releases/` is a commit-based channel, not a tagged release feed. `releases/v0.1.0/` contains a Windows binary built from commit `f33547e`; it has not passed release acceptance.
-- This page describes commit `f33547e` (2026-10-25). Later changes are listed under Unreleased.
+- `releases/` is a commit-based channel, not a tagged release feed. `releases/v0.1.0/` contains a Windows binary built from commit `c9e3f3b` with clean build inputs; it has not passed release acceptance.
+- This page describes commit `c9e3f3b` (2026-10-25). Later changes are listed under Unreleased.
 - Two commits have `v0.1.1` and `v0.1.2` in their subject lines. They are development markers from earlier work, not tagged or published releases. Do not cite them as versions.
 
 ## Unreleased
 
 - Added a root `releases/` channel with a versioned Windows binary, SHA-256 checksum and manifest, plus `install.ps1` for one-command, checksum-verifying installation and `tools/release.ps1` for packaging future releases.
-- The initial `v0.1.0` artifact was built from `f33547e` while the release tooling was still uncommitted, so its manifest records `"dirty": true`. Later releases should be built from a clean tree.
+- The installer now asks before adding its install directory to the user `PATH`, defaults to no, never prompts in a non-interactive session, and accepts `-NoPath` to suppress the question or `-AddToPath` to add the entry without prompting.
+- `tools/release.ps1` now measures dirty state over tracked build inputs only, records commit, build time and dirty state per artifact, refuses to mix commits within a version, and requires `-Replace` to rebuild an existing target from a different commit.
+- Rebuilt the `v0.1.0` Windows artifact from clean build inputs at `c9e3f3b`, so its manifest records `"dirty": false`. The first local build had recorded `"dirty": true` while the release tooling was uncommitted.
 - Rewrote the root guides so each has one purpose: evaluation and quick start (README), evidence and gaps (VALIDATION), reporting and guarantees (SECURITY), the contribution gate (CONTRIBUTING) and this record.
 - Documented `--settings`, `--model-profile` and `JANI_SETTINGS` in the CLI and configuration references.
 - Corrected the contribution instructions to use `jani-claims sync` then `check`; `scan` only prints findings.

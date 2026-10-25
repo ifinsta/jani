@@ -20,7 +20,7 @@ Snapshot: 2026-10-25, Windows `x86_64-pc-windows-msvc`, Rust 1.95.0 pinned by `r
 | Claims register | `cargo run -p jani-claims -- check` | Register current; 0 unresolved deterministic findings |
 | Synthetic corpus | `python -m synthetic.generate generate` / `verify` | 5,000,000 cases generated and integrity-verified locally |
 | Native corpus | `python -m synthetic.native_tools generate` / `verify` | Generated and verified; CI exercises 2,400 cases |
-| Release installer | `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1` | `v0.1.0` installs after SHA-256 verification and reports its version; a tampered copy is refused before installation |
+| Release installer | `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1` | `v0.1.0` (manifest commit `c9e3f3b`, clean build inputs) installs after SHA-256 verification and reports its version; a non-interactive install left the user `PATH` unchanged; a tampered copy and conflicting PATH flags are refused before installation |
 | CI matrix | `.github/workflows/ci.yml` | Ubuntu and Windows jobs run formatting, claims, docs, clippy, tests and release build |
 
 ### Security behavior covered by negative tests
@@ -72,7 +72,7 @@ Record the commit SHA, platform, runner identity and artifact digests if you rel
 - **No Linux execution on this host.** bubblewrap confinement and the `cfg(unix)` test path were not run here. CI targets Ubuntu, but a green CI job is not a penetration test.
 - **No sandbox-escape or crash-recovery trial.** Confinement is asserted by selection and refusal tests, not by adversarial escape attempts.
 - **No executed 5M corpus.** Generating and verifying inputs proves corpus integrity only. There are no per-case Jani execution receipts, so the corpus is not evidence of runtime correctness.
-- **Release installer coverage is narrow.** Only the committed Windows x64 artifact was installed and exercised on this host. There is no code signing, no clean-machine test, no Linux artifact install and no auto-update or rollback test.
+- **Release installer coverage is narrow.** Only the committed Windows x64 artifact was installed and exercised on this host. The non-interactive PATH path was tested; the interactive yes branch was not. There is no code signing, no clean-machine test, no Linux artifact install and no auto-update or rollback test.
 - **No independent signoff.** All evidence here was produced locally or in CI without an external reviewer. See the receipt and reviewer fields in [docs/RELEASE_ACCEPTANCE.md](docs/RELEASE_ACCEPTANCE.md).
 - **No enterprise controls.** There is no IdP/SCIM, policy administration, key rotation/revocation, encrypted tenant storage, signed execution receipt, plugin runtime or portable OS sandbox. See the [implementation review](docs/jani_enterprise_proposals/IMPLEMENTATION_REVIEW.md).
 
