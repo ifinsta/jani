@@ -21,6 +21,9 @@ Jani is a Rust virtual Cargo workspace with an explicit trust kernel and no mand
 | backend/store | Transactional local SQLite and outbox | Claim remote effect atomicity |
 | backend/mcp | Verify signed contracts, delegation and receipts | Offer agent-side human commit |
 | backend/native | Bounded metadata, planning, context and evidence tools | Execute unmediated source effects |
+| backend/jsmt | Shared strict JSMT/1 envelope, canonical digest and validation | Grant host execution or tenant identity |
+| backend/probe | Read-only OS telemetry, scoped logs, durable queue, authenticated outbound transport | Accept remote arbitrary commands |
+| backend/monitoring | mTLS ingress, certificate binding, durable SQLite receipt and replay checks | Pretend single-node storage is HA |
 | backend/mirror | Evidence-linked retrospective critique | Automatically self-apply suggestions |
 | tools/jani-check | Workspace architecture checks | Runtime authorization |
 | tools/jani-claims | Markdown/source discrepancy detection | Certify semantic implementation solely from prose |

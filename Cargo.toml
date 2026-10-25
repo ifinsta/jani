@@ -7,6 +7,9 @@ members = [
     "backend/mirror",
     "backend/mcp",
     "backend/native",
+    "backend/jsmt",
+    "backend/probe",
+    "backend/monitoring",
     "tools/jani-check",
     "tools/jani-claims",
 ]

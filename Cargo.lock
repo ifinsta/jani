@@ -631,6 +631,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "jani-gateway"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "jani-jsmt",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "jani-jsmt"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "jani-mcp"
 version = "0.1.0"
 dependencies = [
@@ -663,6 +686,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "jani-probe"
+version = "0.1.0"
+dependencies = [
+ "jani-jsmt",
+ "libc",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

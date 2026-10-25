@@ -23,3 +23,14 @@ The reference test suite generates ephemeral credentials in temporary directorie
 ## Explicit boundary
 
 The current application product remains the Rust `jani` agent. This reference uses Python and validates **only** the documented sample protocol. The repository does not currently ship a Rust `jani-probe` or `jani-gateway` executable and no such binaries may be declared as releases until built. Full OS log collection, host protections, tenant administration, AI investigation and managed enrollment are independent future milestones. Jani's current attention store is single-host and must not be used as the public ingestion broker.
+
+
+## Native Rust implementations
+
+The experimental JSMT/1 Rust client, gateway, and shared message validator are
+in [backend/probe](../../../backend/probe),
+[backend/monitoring](../../../backend/monitoring), and
+[backend/jsmt](../../../backend/jsmt). See the
+[native pilot guide](../../../docs/PROBE_GATEWAY_GUIDE.md). They are not
+published production binaries and have not passed remote Rust CI.
+The original Python reference remains a cross-language regression oracle.

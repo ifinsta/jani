@@ -96,3 +96,40 @@ Current version is `jani-jsmt/1`. Changes that modify field semantics, canonical
 From `protocol/jsmt/v1/reference/python` run `python -m unittest discover -s tests -v` with Python 3.11+ and `openssl` available. It launches real TLS 1.3 client/server sockets, verifies mutual authentication and actually commits records to SQLite. Tests include an external gateway process, configured service logs, duplicate/altered replay, offline resumption, missing source coverage and invalid metric units. A passing reference test does not prove actual Jani Rust runtime compatibility or that all services on a real Windows/macOS/Linux host are covered.
 
 See the source-linked compliance gates in [Sentinel release gates](../../../docs/SENTINEL_RELEASE_GATES.md) and the [release catalog](../../../releases/README.md).
+
+## 9. Native Rust client and gateway (experimental)
+
+The Rust crates `backend/jsmt`, `backend/probe` (`jani-probe`), and
+`backend/monitoring` (`jani-gateway`) implement a read-only subset of
+JSMT/1 with manually provisioned device certificates. The native code and the
+reference implementation use the exact v1 envelope and HTTP acknowledgement
+schema. The basic vector at `vectors/basic.json` has canonical SHA-256
+`ee12c79dc0c57a15ca58bdb663ff2c7d1c1bd72acef2cee173a609d6de0bf405`.
+Float canonicalization beyond the vector remains constrained and requires
+explicit cross-language compatibility evidence before claiming general interop.
+
+Compile with `cargo build --locked -p jani-probe -p jani-gateway`. The
+separate-process integration test is `synthetic/tests/test_jsmt_rust_e2e.py`;
+enable it only after compiling native binaries with
+`JANI_RUST_E2E=1 python -m unittest synthetic.tests.test_jsmt_rust_e2e -v`.
+The test generates short-lived CA and device certs on loopback. Never reuse
+those test credentials for production.
+
+### Current native limitations
+
+- Live native log sources: explicitly configured regular files with durable
+  byte offsets. Linux systemd service listing is best-effort inventory, **not**
+  journald collection; unconfigured services are reported as unsupported.
+- No production Windows Event Log or macOS Unified Logging adapters, no
+  container/DB-aware source discovery, no automatic certificate
+  enrollment/rotation/revocation, no horizontally scalable ingestion or
+  central AI event integration.
+- No daemon installer, service manager integration, supervised recovery,
+  per-tenant rate quotas, automatic updater, signed binaries or EDR blocking.
+- SQLite commit precedes ACK, but without centralized replication it is
+  not a disaster-recovery guarantee.
+- The client queues a maximum of 1000 envelopes and rejects overflow. No
+  silent discard is acceptable; operators must monitor spool saturation.
+
+See `docs/PROBE_GATEWAY_GUIDE.md` for manual provisioning, limitations and
+service acceptance. The native implementation is not a production release.

@@ -1,0 +1,16 @@
+[package]
+name = "jani-gateway"
+description = "Jani Sentinel experimental mTLS JSMT/1 telemetry gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jani-jsmt = { path = "../jsmt" }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true

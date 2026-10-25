@@ -1,0 +1,17 @@
+{
+  "version": "jani-jsmt/1",
+  "tenant_id": "tenant-a",
+  "device_id": "device-one",
+  "sequence": 1,
+  "observed_at": "2026-10-25T12:00:00Z",
+  "metrics": [
+    {
+      "name": "system.uptime",
+      "unit": "s",
+      "value": 1,
+      "attributes": {}
+    }
+  ],
+  "logs": [],
+  "coverage": []
+}

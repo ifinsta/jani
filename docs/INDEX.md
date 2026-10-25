@@ -41,6 +41,8 @@ The documents below define Jani's implemented boundaries and forward-looking con
 - [Sentinel client and host monitoring contract](SENTINEL_CONTRACT.md)
 - [Sentinel secure transport and service readiness gates](SENTINEL_RELEASE_GATES.md)
 
+- [Native Rust probe/gateway installation and acceptance](PROBE_GATEWAY_GUIDE.md)
+
 ## Native tools
 
 - [CHECKPOINT](native/CHECKPOINT.md)

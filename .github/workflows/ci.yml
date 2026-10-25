@@ -29,6 +29,12 @@ jobs:
       - run: python -m synthetic.native_tools generate --output synthetic/generated/native_ci --count 2400 --shard-size 400
       - run: python -m synthetic.native_tools verify --output synthetic/generated/native_ci
       - run: cargo fmt --all -- --check
+      - run: cargo build --locked -p jani-probe -p jani-gateway
+      - name: Native TLS/mTLS JSMT/1 end-to-end
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          JANI_RUST_E2E: '1'
+        run: python -m unittest synthetic.tests.test_jsmt_rust_e2e -v
       - run: cargo run -p jani-check
       - run: cargo test -p jani-claims
       - run: python tools/doccheck.py
