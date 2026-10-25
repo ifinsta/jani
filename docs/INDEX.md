@@ -16,6 +16,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 
 ## Start here
 
+- [README](../README.md) — what Jani is, quick start and the authority model
 - [COMPONENT CONTRACTS](COMPONENT_CONTRACTS.md)
 - [PROJECT CONTRACT](PROJECT_CONTRACT.md)
 - [RELEASE ACCEPTANCE](RELEASE_ACCEPTANCE.md)
@@ -84,7 +85,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 
 - [CHANGELOG](../CHANGELOG.md)
 - [CONTRIBUTING](../CONTRIBUTING.md)
-- [README](ADR/README.md)
+- [ADR README](ADR/README.md)
 - [DOCUMENTATION COVERAGE](DOCUMENTATION_COVERAGE.md)
 - [ROADMAP](ROADMAP.md)
 
