@@ -28,6 +28,9 @@ jani/
 │   │       ├── budget.rs
 │   │       ├── journal.rs
 │   │       └── ...
+│   ├── mcp/                   # jani-mcp: signed governance contract verifier
+│   │   ├── Cargo.toml
+│   │   └── src/lib.rs
 │   ├── mirror/                # jani-mirror: read-only reflection engine
 │   │   ├── Cargo.toml
 │   │   └── src/lib.rs

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.jani.dev/mcp/delegation/v1",
+  "title": "Jani MCP Signed Delegation",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "tenant",
+    "initiator",
+    "agent",
+    "taskId",
+    "purpose",
+    "issuedAt",
+    "expiresAt",
+    "roles",
+    "entitlements",
+    "resources",
+    "operations",
+    "maxClassification",
+    "signature"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "jani.mcp.governance/v1"
+    },
+    "kind": {
+      "const": "McpDelegation"
+    },
+    "tenant": {
+      "type": "string",
+      "minLength": 1
+    },
+    "initiator": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "taskId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issuedAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "entitlements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "maxClassification": {
+      "enum": [
+        "PUBLIC",
+        "INTERNAL",
+        "CONFIDENTIAL",
+        "RESTRICTED",
+        "SECRET"
+      ]
+    },
+    "signature": {
+      "type": "object",
+      "required": [
+        "keyId",
+        "value"
+      ],
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{128}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

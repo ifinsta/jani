@@ -33,6 +33,15 @@ pub struct Config {
     pub sandbox_net: NetworkPolicy,
     pub plugin_dir: Option<PathBuf>,
     pub plugin_keys: Vec<String>,
+    pub mcp_contract_path: Option<PathBuf>,
+    pub mcp_delegation_path: Option<PathBuf>,
+    pub mcp_input_path: Option<PathBuf>,
+    pub mcp_response_path: Option<PathBuf>,
+    pub mcp_token_path: Option<PathBuf>,
+    pub mcp_agent: String,
+    pub mcp_contract_keys: Vec<String>,
+    pub mcp_delegation_keys: Vec<String>,
+    pub mcp_receipt_keys: Vec<String>,
     pub approval_ids: Vec<String>,
     pub provider_region: String,
     pub provider_class: String,
@@ -92,6 +101,7 @@ USAGE:
   jani mirror inspect|critique|recommendations|record RUN_ID [OPTIONS]
   jani mirror workflows|history [OPTIONS]
   jani mirror compare RUN_A RUN_B [OPTIONS]
+  jani mcp verify|authorize|call|validate-response OP RESOURCE [OPTIONS]
 
 Jani has no embedded coordination engine. It works directly in a Git
 worktree. Skills are advisory. Every tool call passes through a Rust
@@ -111,6 +121,15 @@ OPTIONS:
   --sandbox-net POLICY    deny | loopback | host (default deny)
   --plugin-dir PATH       Trusted, administrator-approved plugin manifest directory
   --plugin-key KEY        Trusted plugin publisher key, ID:HEX or HEX; repeatable
+  --mcp-contract FILE     Signed MCP governance contract
+  --mcp-delegation FILE   Signed task-specific initiator grant
+  --mcp-contract-key KEY  Trusted contract signer's Ed25519 public key
+  --mcp-delegation-key K  Trusted authorization signer's public key
+  --mcp-receipt-key KEY   Trusted MCP response signer public key
+  --mcp-agent ID          Delegated agent identity label (default jani)
+  --mcp-arguments FILE    Tool arguments JSON (must include exact resource)
+  --mcp-response FILE     MCP response JSON for offline receipt validation
+  --mcp-token-file FILE   OAuth access token file for HTTP call (not shown in logs)
   --approval ID           Pre-approved request ID to consume; repeatable
   --provider-region R     Provider processing region label
   --provider-class C      Provider trust class label
@@ -183,6 +202,15 @@ impl Config {
             sandbox_net: NetworkPolicy::Deny,
             plugin_dir: None,
             plugin_keys: Vec::new(),
+            mcp_contract_path: None,
+            mcp_delegation_path: None,
+            mcp_input_path: None,
+            mcp_response_path: None,
+            mcp_token_path: None,
+            mcp_agent: "jani".into(),
+            mcp_contract_keys: Vec::new(),
+            mcp_delegation_keys: Vec::new(),
+            mcp_receipt_keys: Vec::new(),
             approval_ids: Vec::new(),
             provider_region: "local".into(),
             provider_class: "openai-compatible".into(),
@@ -273,7 +301,7 @@ impl Config {
                     cfg.prompt = Some(value);
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "approvals" | "budget"
-                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" => {
+                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp" => {
                     cfg.command = a.into();
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {
@@ -321,6 +349,15 @@ impl Config {
                     cfg.plugin_dir = Some(PathBuf::from(take_value(args, &mut i, a)?))
                 }
                 "--plugin-key" => cfg.plugin_keys.push(take_value(args, &mut i, a)?),
+                "--mcp-contract" => cfg.mcp_contract_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--mcp-delegation" => cfg.mcp_delegation_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--mcp-arguments" => cfg.mcp_input_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--mcp-response" => cfg.mcp_response_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--mcp-token-file" => cfg.mcp_token_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--mcp-agent" => cfg.mcp_agent = take_value(args, &mut i, a)?,
+                "--mcp-contract-key" => cfg.mcp_contract_keys.push(take_value(args, &mut i, a)?),
+                "--mcp-delegation-key" => cfg.mcp_delegation_keys.push(take_value(args, &mut i, a)?),
+                "--mcp-receipt-key" => cfg.mcp_receipt_keys.push(take_value(args, &mut i, a)?),
                 "--approval" => cfg.approval_ids.push(take_value(args, &mut i, a)?),
                 "--provider-region" => cfg.provider_region = take_value(args, &mut i, a)?,
                 "--provider-class" => cfg.provider_class = take_value(args, &mut i, a)?,
