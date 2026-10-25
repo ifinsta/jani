@@ -10,6 +10,7 @@ Jani reads skills, calls an OpenAI-compatible model and edits a Git worktree. Ev
 
 | If you want to... | Start with |
 | --- | --- |
+| Install the binary | [Install](#install) |
 | Try it safely in a few minutes | [Quick start](#quick-start) |
 | Understand what stops a bad edit or command | [How authority works](#how-authority-works) |
 | Review the security posture | [SECURITY.md](SECURITY.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) |
@@ -25,6 +26,22 @@ Jani is a standalone coding agent. The agent loop, tool dispatch, workspace hand
 
 Jani is **not** a hosted control plane, a multi-agent runtime, an OS sandbox on every platform, or an unattended operator. There is no identity provider integration, no distributed coordinator, no durable model checkpointing and no plugin executor. Those are stated limits, not hidden fallbacks: when a required control is unavailable, Jani refuses rather than silently downgrading.
 
+## Install
+
+From a clone, on Windows x64:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The installer reads `releases/latest.json`, selects the artifact for your host, verifies its SHA-256 digest, refuses a mismatch, and copies the binary to `%LOCALAPPDATA%\Jani\bin`. It does not configure credentials or grant write or command authority. Add `-AddToPath` to update your user `PATH`. Layout, manual verification and the release process are in [releases/README.md](releases/README.md).
+
+To build and install from source instead, on any supported platform:
+
+```powershell
+cargo install --path backend/server --locked
+```
+
 ## Quick start
 
 **Prerequisites**
@@ -32,6 +49,8 @@ Jani is **not** a hosted control plane, a multi-agent runtime, an OS sandbox on 
 - Rust 1.95.0, pinned by [rust-toolchain.toml](rust-toolchain.toml).
 - A provider implementing OpenAI-compatible `POST /chat/completions` tool calling, plus an API key and a tool-capable model ID.
 - Python 3.11 only if you want to run the synthetic corpus tooling.
+
+If you installed the release binary above, skip the build and go to Configure.
 
 **Build and verify**
 
@@ -151,10 +170,12 @@ Detailed contracts: [ARCHITECTURE](docs/ARCHITECTURE.md), [AUTHORIZATION MATRIX]
 | `backend/mcp/` | Signed MCP delegation and response-receipt gateway |
 | `backend/native/` | Twelve bounded native tools exposed through `jani native` and the broker |
 | `contract/` | Protocol definitions |
-| `tools/` | Architecture, documentation and claims gates |
+| `tools/` | Architecture, documentation and claims gates, plus release packaging |
 | `synthetic/` | Deterministic fault-corpus generation and readiness evaluation |
 | `docs/` | Normative contracts, schemas and subsystem guides |
 | `claims/` | Generated documentation-claims register and open findings |
+| `releases/` | Versioned binaries, SHA-256 checksums and manifests; `latest.json` drives the installer |
+| `install.ps1` | One-command, checksum-verifying installer for the current host |
 
 The root intentionally has no `src/` or `crates/`; this is a virtual Cargo workspace. See [WORKSPACE ARCHITECTURE](docs/WORKSPACE_ARCHITECTURE.md).
 

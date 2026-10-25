@@ -16,12 +16,15 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Release status
 
-- **No Git tags and no published binaries exist.** The workspace version in `Cargo.toml` is `0.1.0`.
-- This snapshot describes commit `8bb3080` (2026-10-25). Later commits are listed under Unreleased.
+- **No Git tags exist.** The workspace version in `Cargo.toml` is `0.1.0`.
+- `releases/` is a commit-based channel, not a tagged release feed. `releases/v0.1.0/` contains a Windows binary built from commit `f33547e`; it has not passed release acceptance.
+- This page describes commit `f33547e` (2026-10-25). Later changes are listed under Unreleased.
 - Two commits have `v0.1.1` and `v0.1.2` in their subject lines. They are development markers from earlier work, not tagged or published releases. Do not cite them as versions.
 
 ## Unreleased
 
+- Added a root `releases/` channel with a versioned Windows binary, SHA-256 checksum and manifest, plus `install.ps1` for one-command, checksum-verifying installation and `tools/release.ps1` for packaging future releases.
+- The initial `v0.1.0` artifact was built from `f33547e` while the release tooling was still uncommitted, so its manifest records `"dirty": true`. Later releases should be built from a clean tree.
 - Rewrote the root guides so each has one purpose: evaluation and quick start (README), evidence and gaps (VALIDATION), reporting and guarantees (SECURITY), the contribution gate (CONTRIBUTING) and this record.
 - Documented `--settings`, `--model-profile` and `JANI_SETTINGS` in the CLI and configuration references.
 - Corrected the contribution instructions to use `jani-claims sync` then `check`; `scan` only prints findings.

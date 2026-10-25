@@ -70,6 +70,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 - [CLI REFERENCE](CLI_REFERENCE.md)
 - [DEPLOYMENT](DEPLOYMENT.md)
 - [INSTALLATION](INSTALLATION.md)
+- [RELEASES](../releases/README.md)
 - [OBSERVABILITY](OBSERVABILITY.md)
 - [PLATFORM SUPPORT](PLATFORM_SUPPORT.md)
 
