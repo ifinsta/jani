@@ -86,6 +86,8 @@ cargo run -- mirror record RUN_ID --state-dir .jani
 cargo run -- mirror history --state-dir .jani
 ```
 
+<!-- jani-claim: {"id":"README-MIRROR-ENGINE","kind":"source_contains","path":"backend/mirror/src/lib.rs","needle":"pub fn run_report("} -->
+
 The `jani-mirror` package lives under `backend/mirror`, has no model-client or
 coordination dependency, and does **not** execute or self-apply recommendations.
 Details: [Mirror guide](docs/MIRROR.md).
@@ -96,12 +98,22 @@ Jani's MCP adapter is a signed, fail-closed delegation gateway in
 `backend/mcp`. The initiator's verified identity and task-specific signed
 roles/permissions must match the organization-approved server contract.
 Agent invocations of user-only commit tools are **always blocked**.
+<!-- jani-claim: {"id":"README-MCP-COMMIT-GUARD","kind":"source_contains","path":"backend/mcp/src/lib.rs","needle":"USER_COMMIT_REQUIRED"} -->
 Remote results must include signed authorization and classification receipts.
 Only the explicitly authorized `tools/call` transport is available in this
 first implementation; other MCP methods and uncontracted operations remain
 unsupported. No Hivewire dependency exists.
 
 See [MCP Governance](docs/MCP_GOVERNANCE.md) for configuration, limitations and examples.
+
+## Documentation Claims Audit
+
+Jani now provides an offline documentation conformance checker in `tools/jani-claims/`.
+It checks local Markdown links, source references, and explicit source-backed assertions.
+Discrepancies are written to `claims/`; optional AI agents can submit evidence-anchored
+review candidates that **never** count as verified facts automatically.
+Run `cargo run -p jani-claims -- sync` to refresh claims, and `-- check` to
+verify freshness in CI. See [Docs Claims Auditor](docs/CLAIMS.md).
 
 ## Requirements
 

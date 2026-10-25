@@ -34,7 +34,7 @@ fn check(root: &Path) -> Result<(), String> {
     if root.join("src").exists() || root.join("crates").exists() {
         return Err("root-level src/ and crates/ are forbidden: packages belong under backend/".into());
     }
-    for member in ["backend/core", "backend/store", "backend/server", "backend/mirror", "backend/mcp", "tools/jani-check"] {
+    for member in ["backend/core", "backend/store", "backend/server", "backend/mirror", "backend/mcp", "tools/jani-check", "tools/jani-claims"] {
         let path = root.join(member).join("Cargo.toml");
         let manifest = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         if manifest.contains("hivewire") || manifest.contains("agents-collaboration") {

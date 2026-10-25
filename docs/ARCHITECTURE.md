@@ -112,6 +112,7 @@ See [WORKSPACE_ARCHITECTURE.md](WORKSPACE_ARCHITECTURE.md).
 - Plugins are verified and catalogued, but this build refuses native dynamic
   loading and has no WASM/sidecar/MCP executor. A plugin cannot gain authority by
   being installed.
+<!-- jani-claim: {"id":"ARCH-MCP-EXECUTOR","kind":"source_absent","path":"backend/server/src/main.rs","needle":"mod mcp;","statement":"Jani has no MCP executor."} -->
 - Environment and file-system checks are defense in depth, not an OS-level
   sandbox. On Windows and macOS they are not confinement at all for isolation
   purposes; enterprise isolation profiles are refused there rather than claimed.

@@ -7,6 +7,7 @@ members = [
     "backend/mirror",
     "backend/mcp",
     "tools/jani-check",
+    "tools/jani-claims",
 ]
 default-members = ["backend/server"]
 
