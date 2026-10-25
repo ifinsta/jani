@@ -1,103 +1,56 @@
-# Jani releases
+# Jani typed release catalogue (v2)
 
-This directory is Jani's release channel. A release is a versioned folder containing a platform binary, its SHA-256 checksum and a machine-readable manifest. `latest.json` tells the installer which version to use by default.
-
-## Install with one command
-
-From the repository root on Windows x64:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-The installer:
-
-1. Reads `releases/latest.json`.
-2. Selects the artifact matching your host target.
-3. Verifies the SHA-256 digest from the manifest.
-4. Refuses to install on a missing binary, malformed manifest or checksum mismatch.
-5. Copies the binary to `%LOCALAPPDATA%\Jani\bin` and runs `jani --version`.
-6. If that directory is not already on `PATH`, asks whether to add it. The default answer is no, and a non-interactive run without `-AddToPath` never modifies `PATH`.
-
-No Rust toolchain is needed when a matching artifact exists. Options:
-
-```powershell
-# Install a specific version
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version v0.1.0
-
-# Install somewhere else
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir C:\Tools\Jani\bin
-
-# Add the install directory to your user PATH without prompting
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -AddToPath
-
-# Never ask about PATH and do not modify it
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -NoPath
-
-# Override host detection (must match an artifact in the manifest)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Target x86_64-pc-windows-msvc
-```
-
-`-AddToPath` and `-NoPath` cannot be combined. When the install directory is not on `PATH` and neither flag is given, an interactive session prompts and treats anything other than `y` or `yes` as no; it then prints the command for the current session. Write scopes, command authority, credentials and signed policy are never part of installation.
-
-If no matching artifact exists, install from source instead:
-
-```powershell
-cargo install --path backend/server --locked
-```
-
-## Layout
+**Canonical layout:** `releases/{type}/{platform}/{version}/`, with immutable component and platform metadata. Version directories use tags such as `v0.1.0`; architecture/ABI is recorded by Rust target triple inside each manifest.
 
 ```text
 releases/
-  latest.json
-  v0.1.0/
-    manifest.json
-    jani-0.1.0-x86_64-pc-windows-msvc.exe
-    jani-0.1.0-x86_64-pc-windows-msvc.exe.sha256
+  agent/
+    windows/
+      latest.json
+      v0.1.0/
+        manifest.json
+        jani-0.1.0-x86_64-pc-windows-msvc.exe
+        jani-0.1.0-x86_64-pc-windows-msvc.exe.sha256
+    macos/                 # appears only when an artifact exists
+    linux/                 # appears only when an artifact exists
+  client/
+    windows/ linux/ macos/ # only after a real jani-probe binary is built
+  gateway/
+    windows/ linux/ macos/ # only after a real jani-gateway binary is built
+  latest.json             # frozen legacy pointer for old installers
+  v0.1.0/                 # legacy Windows artifact alias, retained to avoid breakage
 ```
 
-`latest.json` is the channel pointer:
+Component identifiers: `agent` (`jani`), `client` (`jani-probe`) and `gateway` (`jani-gateway`). Platform identifiers: `windows`, `macos`, `linux`. These are not interchangeable with Rust target triples: `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` both belong to `linux` but require different binaries. **A directory name does not prove a binary exists.** Only a fully verified manifest and checksum designate a release.
 
-```json
-{
-  "schemaVersion": "jani.release-channel/v1",
-  "latest": "v0.1.0"
-}
-```
+## Release metadata
 
-Each `manifest.json` records the release version, source commit, build time and one entry per target. Each artifact entry repeats the commit, build time and dirty state alongside the binary name, digest and size, so a mixed-target release shows exactly which build produced each file. `dirty` means tracked build inputs (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `backend`, `contract` and `.cargo` when present) differed from the recorded commit; documentation and tooling edits that cannot change the binary do not set it. The manifest is the authority the installer reads; `latest.json` only chooses the folder.
+`{type}/{platform}/latest.json` has `jani.release-channel/v2`, exact `type`, exact `platform`, and `latest` version. Versioned `manifest.json` uses `jani.release/v2`, `type`, `platform`, `package`, `version`, `tag`, `commit`, `dirty`, `builtAt`, and an artifact array. Each artifact binds target triple, filename, SHA-256, size, source commit, dirty flag and build time. A release cannot silently mix commits across targets.
 
-## Verify by hand
+An example typed Windows agent release is already available at [agent/windows/v0.1.0](agent/windows/v0.1.0/manifest.json), mapped from the previously published Windows build **without building a new binary**. The old `releases/v0.1.0/` remains a compatibility alias for existing installers; do not create new legacy releases. No client or gateway artifacts are currently published.
+
+## Installer
+
+On Windows run `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1` from repository root. `-Type agent` (default), `-Type client` or `-Type gateway` selects a component, while `-Version` and `-Target` choose a version and compatible target. Installer chooses typed channels, validates manifest type/platform/target and SHA-256, and **only for a legacy Windows agent** may fall back to the deprecated version directory. It installs nothing when client/gateway binaries do not exist.
+
+There is no auto-update channel, OS signing, security attestation, or managed certificate provisioning behind these local installer scripts. Platform support and threat containment must be validated separately.
+
+## Release publisher
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\releases\v0.1.0\jani-0.1.0-x86_64-pc-windows-msvc.exe
-Get-Content .\releases\v0.1.0\jani-0.1.0-x86_64-pc-windows-msvc.exe.sha256
-Get-Content .\releases\v0.1.0\manifest.json
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release.ps1 -Type agent
+# Future, only after the packages exist in Cargo:
+# .\tools\release.ps1 -Type client
+# .\tools\release.ps1 -Type gateway
 ```
 
-All three digests must match. The checksum detects corruption or substitution of the committed artifact; it does not make an untrusted commit trustworthy. Review the source commit recorded in the manifest before running the binary.
+The builder checks the actual installed Rust host target, `cargo metadata` package existence, clean tracked build inputs, SHA-256 and existing target conflicts. It refuses to fake platform builds and refuses to replace an existing target without `-Replace`. It writes the typed version directory and typed platform-specific `latest.json` (not the frozen v1 global pointer). Commit those files intentionally only after verification. It does not claim release-signature provenance.
 
-## Publish a new release
+## CI verification
 
-1. Update the workspace version in `Cargo.toml` and add a `CHANGELOG.md` entry.
-2. Commit your source changes so the release records a real source commit.
-3. From the repository root, run:
+```bash
+python tools/release_catalog.py check
+python -m unittest discover -s tests -p 'test_release_catalog.py' -v
+```
 
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release.ps1
-   ```
-
-   The script builds `cargo build --release -p jani --locked`, writes `releases/v<version>/`, refreshes `releases/latest.json` and prints the digest. It refuses when tracked build inputs differ from `HEAD` unless you pass `-AllowDirty`; a dirty build records `"dirty": true`. Documentation-only edits do not block a release. Adding a second target to an existing version is allowed only from the same commit; rebuilding an existing target from a different commit requires `-Replace`, and mixing artifacts from different commits in one version is refused.
-
-4. Commit the new version folder and the updated `latest.json`. Those committed files are what the installer distributes.
-
-For additional platforms, run the script on each target host. It deliberately refuses to label a host build as a different target.
-
-## Trust and limits
-
-- **Binaries are committed intentionally.** Every platform release adds roughly the binary size to Git history. If that becomes a problem, keep this manifest format and move artifacts to GitHub Releases, updating the installer to download and verify them.
-- **No code signing.** Jani release binaries are unsigned, so Windows SmartScreen may warn. Verify the checksum and the manifest's source commit, or build from source.
-- **No credential or authority setup.** Installing the binary does not configure API keys, write scopes, signed policy or sandbox support. Those remain explicit runtime decisions.
-- **Platform-specific.** A committed artifact only runs on its recorded target. Do not assume Windows isolation applies to Linux or macOS; see [VALIDATION.md](../VALIDATION.md) and [docs/PLATFORM_SUPPORT.md](../docs/PLATFORM_SUPPORT.md).
-- **Not a release certification.** A folder here proves a binary was built, not that release acceptance evidence exists. See [docs/RELEASE_ACCEPTANCE.md](../docs/RELEASE_ACCEPTANCE.md).
+The catalog verifies canonical manifests, target/platform identity, exact artifact bytes against SHA-256, sidecars, and current channels. The v1 global pointer is checked for legacy availability. Tests include tampered binaries and mislabelled builds. An all-green catalogue is **integrity evidence, not production security certification**. See [Sentinel gates](../docs/SENTINEL_RELEASE_GATES.md) and [release acceptance](../docs/RELEASE_ACCEPTANCE.md).

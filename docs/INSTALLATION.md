@@ -24,7 +24,7 @@ On Windows x64, from the repository root:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer resolves `releases/latest.json`, matches an artifact to the host target, verifies the SHA-256 digest from `releases/<version>/manifest.json`, refuses a missing binary or mismatch, copies the binary to `%LOCALAPPDATA%\Jani\bin`, and runs `jani --version`. No Rust toolchain is required when a matching artifact exists.
+The installer resolves `releases/latest.json`, matches an artifact to the host target, verifies the SHA-256 digest from `releases/agent/windows/<version>/manifest.json`, refuses a missing binary or mismatch, copies the binary to `%LOCALAPPDATA%\Jani\bin`, and runs `jani --version`. No Rust toolchain is required when a matching artifact exists.
 
 Useful options:
 
@@ -56,13 +56,15 @@ Source builds follow the pinned toolchain in `rust-toolchain.toml`. Python is no
 
 ## Release channel
 
-`releases/latest.json` points at the version the installer uses by default. Each version directory contains the platform binary, its `.sha256` file and a manifest recording the version, source commit, build time and per-artifact digest, size, commit and dirty state. `dirty` covers tracked build inputs only, so documentation or tooling edits do not make a binary dirty. To publish a new release, update the workspace version and changelog, commit the source, then run:
+The canonical release tree is `releases/{type}/{platform}/{version}/`, where component type is `agent`, `client` or `gateway`, and platform is `windows`, `macos` or `linux`. Typed channels such as `releases/agent/windows/latest.json` choose the component/platform version. The frozen `releases/latest.json` points only at the legacy Windows agent version for old installers. Each typed version directory contains the platform binary, its `.sha256` file and a manifest recording the version, source commit, build time and per-artifact digest, size, commit and dirty state. `dirty` covers tracked build inputs only, so documentation or tooling edits do not make a binary dirty. To publish a new release, update the workspace version and changelog, commit the source, then run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release.ps1
 ```
 
-Commit the new version directory and `latest.json`. The script refuses when tracked build inputs differ from `HEAD` unless `-AllowDirty` is passed, refuses to label a host build as another target, refuses to add a target from a different commit, and requires `-Replace` to rebuild an existing target from a different commit.
+Commit the new typed version directory and its component/platform `latest.json`. Do not move the old v0.1.0 Windows agent alias; existing installers still depend on it. Use `-Type agent`, `-Type client` or `-Type gateway` with the release script; the last two fail until their actual Cargo packages are implemented. The script refuses when tracked build inputs differ from `HEAD` unless `-AllowDirty` is passed, refuses to label a host build as another target, refuses to add a target from a different commit, and requires `-Replace` to rebuild an existing target from a different commit.
+
+On Linux/macOS, where a matching release binary exists, use `sh ./install.sh --type agent` or install from source. The local Unix installer uses Python 3 only for checksum-verified installation; no Python runtime is bundled into the Rust agent. Current repository publishes no Linux/macOS binaries.
 
 ## Configure and verify
 

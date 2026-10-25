@@ -35,6 +35,9 @@ The documents below define Jani's implemented boundaries and forward-looking con
 
 ## Sentinel security and monitoring compliance
 
+- [Open-source JSMT/1 communication protocol](../protocol/jsmt/v1/SPEC.md)
+- [JSMT/1 reference implementation and integration tests](../protocol/jsmt/v1/README.md)
+
 - [Sentinel client and host monitoring contract](SENTINEL_CONTRACT.md)
 - [Sentinel secure transport and service readiness gates](SENTINEL_RELEASE_GATES.md)
 

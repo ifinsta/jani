@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "jani.release-channel/v2",
+  "type": "agent",
+  "platform": "windows",
+  "latest": "v0.1.0"
+}

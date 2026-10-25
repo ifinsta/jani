@@ -18,6 +18,12 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m unittest discover -s synthetic/tests -v
+      - run: python -m unittest discover -s tests -p 'test_release_catalog.py' -v
+      - run: python tools/release_catalog.py check
+      - name: JSMT/1 real TLS mTLS interoperability tests (Linux only)
+        if: runner.os == 'Linux'
+        working-directory: protocol/jsmt/v1/reference/python
+        run: python -m unittest discover -s tests -v
       - run: python -m synthetic.generate generate --output synthetic/generated/ci_smoke --count 2500 --shard-size 500 --quiet
       - run: python -m synthetic.generate verify --output synthetic/generated/ci_smoke
       - run: python -m synthetic.native_tools generate --output synthetic/generated/native_ci --count 2400 --shard-size 400

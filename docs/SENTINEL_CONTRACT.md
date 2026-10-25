@@ -13,7 +13,7 @@ tests: []
 
 # Sentinel client monitoring and intrusion protection contract
 
-**Implementation status: proposed.** Jani is not presently a fleet monitoring or endpoint protection service. Its current attention inbox is local and cannot operate as a multi-host ingestion bus.
+**Implementation status: proposed for Rust fleet integration.** The open-source Python JSMT/1 reference has test coverage, but Jani is not presently a fleet monitoring or endpoint protection service. Its current attention inbox is local and cannot operate as a multi-host ingestion bus.
 
 ## Product boundary
 
@@ -30,7 +30,7 @@ Sentinel proposes one consent-based, low-overhead, independently restartable pro
 
 ## Protected transmission and proprietary implementation
 
-The exact Jani Secure Machine Transport (JSMT) wire protocol and runtime are intended for a **private, access-controlled repository**, not this public source tree. Obscurity is not a cryptographic control. Transport must enforce TLS 1.3, verified server identity, authenticated registered client devices, fail-closed protocol downgrade and tenant/device authorization, authenticated ACK and bounded replay protection. Internal onward hops must protect data in transit too.
+The **JSMT/1 protocol specification and its Python client/server interoperability reference are published openly** under [JSMT/1](../protocol/jsmt/v1/README.md) and the repository's MIT license. Future implementation may have independently licensed proprietary components, but publication does not revoke existing open-source rights. Obscurity is not a cryptographic control. Transport must enforce TLS 1.3, verified server identity, authenticated registered client devices, fail-closed protocol downgrade and tenant/device authorization, authenticated ACK and bounded replay protection. Internal onward hops must protect data in transit too.
 
 No default shell access or general remote command execution is permitted. A future local enforcer requires signed specific host policy, independent authorization, time-limited permissions, safe rollback and break-glass before customer deployment.
 

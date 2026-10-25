@@ -1,5 +1,7 @@
 # Jani
 
+**Release catalogue:** [typed agent/client/gateway releases](releases/README.md). **Open-source JSMT/1 protocol:** [specification](protocol/jsmt/v1/SPEC.md) and [reproducible Python reference](protocol/jsmt/v1/README.md). Only an existing Windows agent binary is currently published; client and gateway binaries are not yet released.
+
 **Sentinel roadmap and compliance:** [monitoring and security contract](docs/SENTINEL_CONTRACT.md) · [release gates](docs/SENTINEL_RELEASE_GATES.md). The proprietary JSMT client/server reference implementation is deliberately not published in this public repository. No production monitoring functionality is implied.
 
 **A Rust-native coding agent that works only inside authority you grant explicitly.**

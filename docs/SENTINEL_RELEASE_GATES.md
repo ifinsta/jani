@@ -14,7 +14,7 @@ tests: []
 
 # Sentinel security and service acceptance gates
 
-**Mandatory planned compliance contract, not an implemented release certificate.** Jani must reject attempts to label experimental host monitoring or intrusion protection as production ready without independently observed runtime evidence.
+**Mandatory planned compliance contract, not an implemented release certificate.** The open-source JSMT/1 Python reference is published at [the protocol directory](../protocol/jsmt/v1/README.md), but passing its tests is not a Rust or production certification. Jani must reject attempts to label experimental host monitoring or intrusion protection as production ready without independently observed runtime evidence.
 
 ## Threat and safety gates
 

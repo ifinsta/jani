@@ -2,6 +2,8 @@
 param(
     [string]$Version,
     [string]$Target,
+    [ValidateSet('agent', 'client', 'gateway')]
+    [string]$Type = 'agent',
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Jani\bin'),
     [switch]$AddToPath,
     [switch]$NoPath
@@ -33,6 +35,14 @@ function Get-HostTarget {
     Fail 'cannot determine the host target; pass -Target (for example x86_64-unknown-linux-gnu)'
 }
 
+function Get-Platform([string]$TargetName) {
+    if ($TargetName -match 'windows') { return 'windows' }
+    if ($TargetName -match '(apple-darwin|darwin)') { return 'macos' }
+    if ($TargetName -match 'linux') { return 'linux' }
+    Fail "unsupported release platform '$TargetName'"
+}
+$binaryNames = @{ agent = 'jani'; client = 'jani-probe'; gateway = 'jani-gateway' }
+
 if ($AddToPath -and $NoPath) {
     Fail '-AddToPath and -NoPath cannot be used together'
 }
@@ -51,42 +61,75 @@ function Add-UserPathEntry {
     $env:Path = "$InstallDir;$env:Path"
 }
 
-if (-not $Version) {
-    $latestPath = Join-Path $releases 'latest.json'
-    if (-not (Test-Path -LiteralPath $latestPath)) {
-        Fail 'no release found. Run tools\release.ps1 first, or install from source with: cargo install --path backend/server --locked'
-    }
-    $latest = Get-Content -Raw -LiteralPath $latestPath | ConvertFrom-Json
-    if (-not $latest.latest) {
-        Fail "invalid release channel: $latestPath"
-    }
-    $Version = [string]$latest.latest
-}
-
-$Version = $Version -replace '^[vV]', ''
-$tag = "v$Version"
-$releaseDir = Join-Path $releases $tag
-$manifestPath = Join-Path $releaseDir 'manifest.json'
-if (-not (Test-Path -LiteralPath $manifestPath)) {
-    Fail "missing release manifest: $manifestPath"
-}
-
-$manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-if ($manifest.schemaVersion -ne 'jani.release/v1') {
-    Fail "unsupported release manifest schema in $manifestPath"
-}
-if ([string]$manifest.version -ne $Version) {
-    Fail "manifest version '$($manifest.version)' does not match requested version '$Version'"
-}
-
 if (-not $Target) {
     $Target = Get-HostTarget
 }
+$platform = Get-Platform $Target
+$channelDir = Join-Path (Join-Path $releases $Type) $platform
+$channelPath = Join-Path $channelDir 'latest.json'
+$legacy = $false
 
+if (-not $Version) {
+    if (Test-Path -LiteralPath $channelPath) {
+        $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
+        if ($channel.schemaVersion -ne 'jani.release-channel/v2' -or
+            $channel.type -ne $Type -or $channel.platform -ne $platform -or
+            [string]$channel.latest -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+') {
+            Fail "invalid typed release channel: $channelPath"
+        }
+        $Version = [string]$channel.latest
+    } elseif ($Type -eq 'agent' -and $platform -eq 'windows') {
+        $latestPath = Join-Path $releases 'latest.json'
+        if (-not (Test-Path -LiteralPath $latestPath)) {
+            Fail 'no matching release channel; build the component from source'
+        }
+        $channel = Get-Content -Raw -LiteralPath $latestPath | ConvertFrom-Json
+        if ($channel.schemaVersion -ne 'jani.release-channel/v1') {
+            Fail 'unsupported legacy release channel'
+        }
+        $Version = [string]$channel.latest
+    } else {
+        Fail "no published $Type/$platform release channel; no binary was fabricated"
+    }
+}
+
+$Version = $Version -replace '^[vV]', ''
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.+-]+)?$') {
+    Fail "invalid release version '$Version'"
+}
+$tag = "v$Version"
+$releaseDir = Join-Path $channelDir $tag
+$manifestPath = Join-Path $releaseDir 'manifest.json'
+if (-not (Test-Path -LiteralPath $manifestPath)) {
+    if ($Type -eq 'agent' -and $platform -eq 'windows') {
+        $oldDir = Join-Path $releases $tag
+        $oldManifestPath = Join-Path $oldDir 'manifest.json'
+        if (Test-Path -LiteralPath $oldManifestPath) {
+            $releaseDir = $oldDir
+            $manifestPath = $oldManifestPath
+            $legacy = $true
+        }
+    }
+}
+if (-not (Test-Path -LiteralPath $manifestPath)) {
+    Fail "missing release manifest: $manifestPath"
+}
+$manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+if ($legacy) {
+    if ($manifest.schemaVersion -ne 'jani.release/v1') {
+        Fail 'unsupported legacy release manifest'
+    }
+} elseif ($manifest.schemaVersion -ne 'jani.release/v2' -or
+          $manifest.type -ne $Type -or $manifest.platform -ne $platform) {
+    Fail "release manifest does not match $Type/$platform"
+}
+if ([string]$manifest.version -ne $Version -or [string]$manifest.tag -ne $tag) {
+    Fail "manifest identity does not match $tag"
+}
 $artifact = @($manifest.artifacts) | Where-Object { $_.target -eq $Target } | Select-Object -First 1
 if (-not $artifact) {
     $available = (@($manifest.artifacts) | ForEach-Object { $_.target }) -join ', '
-    Fail "release $tag has no artifact for '$Target'. Available: $available"
+    Fail "release $Type/$platform/$tag has no artifact for '$Target'. Available: $available"
 }
 if ($artifact.binary -match '[\\/]' -or $artifact.binary -match '\.\.') {
     Fail 'unexpected path in release manifest'
@@ -105,7 +148,7 @@ if ($actual -ne ([string]$artifact.sha256).ToLowerInvariant()) {
     Fail "checksum mismatch for $binaryPath; refusing to install"
 }
 
-$exeName = if ($Target -like '*windows*') { 'jani.exe' } else { 'jani' }
+$exeName = if ($Target -like '*windows*') { "$($binaryNames[$Type]).exe" } else { [string]$binaryNames[$Type] }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $destination = Join-Path $InstallDir $exeName
 Copy-Item -LiteralPath $binaryPath -Destination $destination -Force
@@ -117,7 +160,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Installed $installed to $destination"
 Write-Host "Verified SHA-256 $actual"
-Write-Warning 'Jani release binaries are not code-signed; verify the checksum and source commit before use.'
+Write-Warning 'Jani release binaries are not code-signed; verify the checksum, manifest and source commit before use.'
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
