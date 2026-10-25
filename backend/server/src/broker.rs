@@ -107,6 +107,25 @@ impl<'a> Broker<'a> {
                     resource: canonical_resource("repo", get_str(args, "path")?)?,
                 })
             }
+            "native_tool" => {
+                let native = get_str(args, "tool")?;
+                let operation = get_str(args, "operation")?;
+                if !jani_native::TOOLS.contains(&native) {
+                    return Err("unknown native capability".into());
+                }
+                if operation=="verify" && native=="planner" ||
+                   operation=="rollback" && native=="workspace" ||
+                   operation=="run" && native=="verifier" {
+                    return Err("native privileged action is not available to the model".into());
+                }
+                let is_mutation=jani_native::mutation(native,operation);
+                Ok(Call {
+                    action: if is_mutation { "native.control" } else { "native.read" },
+                    effect: if is_mutation { Effect::Control } else { Effect::Read },
+                    risk: if is_mutation { RiskTier::R1 } else { RiskTier::R0 },
+                    resource: format!("native:{}:{}:{native}:{operation}",self.identity.tenant,self.task_id),
+                })
+            }
             "workspace_command" => {
                 let argv = get_argv(args)?;
                 let program = argv.first().ok_or("empty executable")?;
@@ -268,6 +287,7 @@ impl<'a> Broker<'a> {
                 | "workspace_read"
                 | "workspace_write"
                 | "workspace_command"
+                | "native_tool"
         );
         if !known {
             return self.reject(
@@ -633,6 +653,25 @@ impl<'a> Broker<'a> {
                     None,
                     None,
                 ))
+            }
+            "native_tool" => {
+                let name = get_str(args,"tool")?;
+                let operation = get_str(args,"operation")?;
+                let extra = args.get("args").and_then(Value::as_array)
+                    .ok_or("native args must be an array")?;
+                if extra.len()>5 {return Err("native argument count exceeds limit".into());}
+                let mut parts=vec![operation.to_string()];
+                for item in extra {
+                    parts.push(item.as_str().ok_or("native args must be strings")?.to_owned());
+                }
+                if name=="planner" && operation=="verify" ||
+                    name=="workspace" && operation=="rollback" ||
+                    name=="verifier" && operation=="run" {
+                    return Err("native tool cannot perform user-only or ungoverned operations".into());
+                }
+                let data=jani_native::run(&self.cfg.root,&self.cfg.state_dir,
+                    &self.identity.tenant,&self.task_id,name,&parts,false)?;
+                Ok((data,None,None))
             }
             "workspace_command" => {
                 let argv = get_argv(args)?;

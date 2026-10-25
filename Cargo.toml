@@ -6,6 +6,7 @@ members = [
     "backend/server",
     "backend/mirror",
     "backend/mcp",
+    "backend/native",
     "tools/jani-check",
     "tools/jani-claims",
 ]
@@ -22,6 +23,7 @@ jani-core = { path = "backend/core" }
 jani-store = { path = "backend/store" }
 jani-mirror = { path = "backend/mirror" }
 jani-mcp = { path = "backend/mcp" }
+jani-native = { path = "backend/native" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

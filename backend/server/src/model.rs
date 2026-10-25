@@ -107,6 +107,15 @@ pub fn specs() -> Vec<Value> {
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
         ),
         function(
+            "native_tool",
+            "Call one of Jani's 12 native indexing, context, planning, pruning, checkpoint, verification, impact, scheduling, workspace, evidence, optimization or simulation primitives. Never executes arbitrary tests or commits external effects.",
+            json!({"type":"object","properties":{
+                "tool":{"type":"string"},
+                "operation":{"type":"string"},
+                "args":{"type":"array","items":{"type":"string"}}
+            },"required":["tool","operation","args"],"additionalProperties":false}),
+        ),
+        function(
             "workspace_command",
             "Run an allowlisted test or git command permitted by the operator",
             json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":300}},"required":["argv","timeout_secs"],"additionalProperties":false}),

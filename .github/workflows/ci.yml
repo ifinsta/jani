@@ -20,6 +20,8 @@ jobs:
       - run: python -m unittest discover -s synthetic/tests -v
       - run: python -m synthetic.generate generate --output synthetic/generated/ci_smoke --count 2500 --shard-size 500 --quiet
       - run: python -m synthetic.generate verify --output synthetic/generated/ci_smoke
+      - run: python -m synthetic.native_tools generate --output synthetic/generated/native_ci --count 2400 --shard-size 400
+      - run: python -m synthetic.native_tools verify --output synthetic/generated/native_ci
       - run: cargo fmt --all -- --check
       - run: cargo run -p jani-check
       - run: cargo test -p jani-claims

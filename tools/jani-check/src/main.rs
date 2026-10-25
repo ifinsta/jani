@@ -34,7 +34,7 @@ fn check(root: &Path) -> Result<(), String> {
     if root.join("src").exists() || root.join("crates").exists() {
         return Err("root-level src/ and crates/ are forbidden: packages belong under backend/".into());
     }
-    for member in ["backend/core", "backend/store", "backend/server", "backend/mirror", "backend/mcp", "tools/jani-check", "tools/jani-claims"] {
+    for member in ["backend/core", "backend/store", "backend/server", "backend/mirror", "backend/mcp", "backend/native", "tools/jani-check", "tools/jani-claims"] {
         let path = root.join(member).join("Cargo.toml");
         let manifest = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         if manifest.contains("hivewire") || manifest.contains("agents-collaboration") {
@@ -51,6 +51,9 @@ fn check(root: &Path) -> Result<(), String> {
     }
     if !root.join("contract/mcp/governance.schema.json").is_file() {
         return Err("missing Jani MCP governance contract schema".into());
+    }
+    if !root.join("backend/native/src/lib.rs").is_file() {
+        return Err("jani-native toolkit missing".into());
     }
     let kernel = fs::read_to_string(root.join("backend/core/Cargo.toml")).map_err(|e| e.to_string())?;
     if kernel.contains("jani-server") || kernel.contains("jani-agent") || kernel.contains("jani-store") {

@@ -1,0 +1,17 @@
+[package]
+name = "jani-native"
+description = "Twelve bounded, standalone native planning and repository tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jani-core.workspace = true
+jani-mirror.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true

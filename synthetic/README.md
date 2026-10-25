@@ -47,3 +47,22 @@ high/critical relevant hook with an isolated executable adapter and collect
 independently reproducible pass/fail evidence.
 
 See [Readiness gates](READINESS_GATES.md) for the release campaign matrix.
+
+## Native toolkit-specific fault corpus
+
+The separate `synthetic/native_tools.py` catalog contains 240 named failure
+hooks (20 per native tool), 16 mutation profiles and 16 deployment profiles.
+It generates **240,000** default scenarios in twelve 20,000-case compressed
+shards, each protected by SHA-256:
+
+```bash
+python -m synthetic.native_tools generate --output synthetic/generated/native_240k
+python -m synthetic.native_tools verify --output synthetic/generated/native_240k
+python -m unittest discover -s synthetic/tests -v
+```
+
+These are **fault descriptions**, not proof of runtime success. Every case
+contains `execution.status=NOT_RUN`. A separate controlled runner and
+release receipts must execute realistic representative subsets (and ultimately
+the risk-relevant fault hooks) through Jani's existing policy broker before
+a production-readiness verdict is justified.

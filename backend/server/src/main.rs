@@ -7,6 +7,7 @@ mod gateway;
 mod model;
 mod mirror;
 mod mcp;
+mod native;
 mod plugins;
 mod sandbox;
 mod skills;
@@ -50,6 +51,9 @@ fn run() -> JResult<()> {
     }
     if cfg.command == "mcp" {
         return print_json(&mcp::command(&cfg)?);
+    }
+    if cfg.command == "native" {
+        return print_json(&native::command(&cfg)?);
     }
     let catalog = Catalog::load(&cfg)?;
     match cfg.command.as_str() {

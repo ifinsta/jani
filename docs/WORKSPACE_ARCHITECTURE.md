@@ -86,3 +86,13 @@ cargo run -- --version
 ```
 
 Outstanding scope: real supervised model checkpoint/resume, persistent per-task transactional governance, externally validated evidence, runnable plugin isolation, and distributed multi-tenant deployment. No production-readiness claim is made.
+
+## Native autonomy toolkit
+
+`backend/native` contains twelve bounded, standalone operations
+(index, context, planner, pruner, checkpoint, verifier, impact, scheduler,
+workspace, evidence, optimizer, simulator). The authoritative execution entry
+is `backend/server/src/native.rs` for CLI and `native_tool` under the
+existing mediated broker for agent access. The native crate has no network
+client, no coordinator and no independent source-writing executor.
+Persistent metadata is tenant/task-scoped SQLite WAL under `.jani/native/`.

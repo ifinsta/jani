@@ -102,6 +102,7 @@ USAGE:
   jani mirror workflows|history [OPTIONS]
   jani mirror compare RUN_A RUN_B [OPTIONS]
   jani mcp verify|authorize|call|validate-response OP RESOURCE [OPTIONS]
+  jani native TOOL OPERATION [ARGUMENTS] [--task TASK] [OPTIONS]
 
 Jani has no embedded coordination engine. It works directly in a Git
 worktree. Skills are advisory. Every tool call passes through a Rust
@@ -301,7 +302,7 @@ impl Config {
                     cfg.prompt = Some(value);
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "approvals" | "budget"
-                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp" => {
+                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp" | "native" => {
                     cfg.command = a.into();
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {

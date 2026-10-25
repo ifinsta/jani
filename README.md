@@ -129,6 +129,23 @@ CI exercises a smaller deterministic sample plus the generator unit tests.
 readiness evaluator in `synthetic/readiness.py` with independent test receipts.
 See [Synthetic corpus guide](synthetic/README.md).
 
+## Native Autonomy Toolkit (12 tools)
+
+Jani provides 12 bounded native capabilities in `backend/native`:
+**Index, Context, Planner, Pruner, Checkpoint, Verifier, Impact, Scheduler,
+Workspace, Evidence, Optimizer and Simulator**. They can be called via
+`jani native TOOL OPERATION` or the governed model-facing `native_tool`
+broker function. Native operations are policy-evaluated and audited; they do
+not acquire extra permissions, and no Hivewire runtime is required.
+
+The Verifier selects tests but must route execution through the existing
+governed `workspace_command`; Workspace rollback and human-only verification
+are not agent-executable shortcuts. This is a bounded first implementation,
+not complete source-code semantic indexing or automatic crash continuation.
+
+See [Native Toolkit](docs/NATIVE_TOOLS.md).
+Dedicated scenario generator: `python -m synthetic.native_tools generate --output synthetic/generated/native_240k`.
+
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.

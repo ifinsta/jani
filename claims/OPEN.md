@@ -1,6 +1,6 @@
 # Open documentation claims
 
-Scanned 18 Markdown files. Verified claims: 2. Open: 1. AI review candidates: 0.
+Scanned 19 Markdown files. Verified claims: 2. Open: 1. AI review candidates: 0.
 
 ## ARCH-MCP-EXECUTOR (open)
 
