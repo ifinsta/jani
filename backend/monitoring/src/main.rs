@@ -57,6 +57,11 @@ fn init_db(path: &str) -> Result<()> {
         CREATE TABLE IF NOT EXISTS device_cursors(
           tenant TEXT NOT NULL, device TEXT NOT NULL, last_seq INTEGER NOT NULL,
           PRIMARY KEY(tenant,device)
+        );
+        CREATE TABLE IF NOT EXISTS device_receipts(
+          tenant TEXT NOT NULL, device TEXT NOT NULL, sequence INTEGER NOT NULL,
+          payload_hash TEXT NOT NULL,
+          PRIMARY KEY(tenant,device)
         );")?;
     // Upgrade any existing v1 pilot database without resetting its device cursors.
     let mut has_received=false;
@@ -69,6 +74,12 @@ fn init_db(path: &str) -> Result<()> {
         conn.execute("ALTER TABLE accepted ADD COLUMN received_unix INTEGER NOT NULL DEFAULT 0",[])?;
         conn.execute("UPDATE accepted SET received_unix=?1 WHERE received_unix=0",params![store::epoch()])?;
     }
+    // Recover the last digest from a retained raw record during migration.
+    // A previously purged legacy digest cannot be invented or re-acknowledged.
+    conn.execute("INSERT OR IGNORE INTO device_receipts(tenant,device,sequence,payload_hash)
+        SELECT a.tenant,a.device,a.sequence,a.payload_hash FROM accepted a
+        JOIN device_cursors c ON a.tenant=c.tenant
+            AND a.device=c.device AND a.sequence=c.last_seq", [])?;
     store::schema(&conn)?;
     Ok(())
 }
@@ -91,6 +102,23 @@ fn persist(db: &str, env: &jani_jsmt::Envelope, canonical: &[u8], hash: &str, ra
         "SELECT last_seq FROM device_cursors WHERE tenant=?1 AND device=?2",
         params![env.tenant_id, env.device_id], |r| r.get(0),
     ).optional()?;
+    // ACK recovery must work after the retention policy purges raw envelopes.
+    // The receipt stores only the latest committed sequence and its digest.
+    if previous == Some(env.sequence) {
+        let receipt: Option<String> = tx.query_row(
+            "SELECT payload_hash FROM device_receipts
+             WHERE tenant=?1 AND device=?2 AND sequence=?3",
+            params![env.tenant_id,env.device_id,env.sequence],|r|r.get(0),
+        ).optional()?;
+        tx.commit()?;
+        return Ok(match receipt {
+            Some(saved) if saved==hash =>
+                (200,json!({"version":VERSION,"ack_sequence":env.sequence,
+                    "payload_sha256":hash,"duplicate":true})),
+            Some(_) => (409,json!({"error":"sequence_conflict"})),
+            None => (409,json!({"error":"receipt_unavailable"})),
+        });
+    }
     let expected = previous.unwrap_or(0) + 1;
     if env.sequence != expected {
         tx.rollback()?;
@@ -107,6 +135,11 @@ fn persist(db: &str, env: &jani_jsmt::Envelope, canonical: &[u8], hash: &str, ra
     tx.execute("INSERT INTO device_cursors VALUES(?1,?2,?3)
         ON CONFLICT(tenant,device) DO UPDATE SET last_seq=excluded.last_seq",
         params![env.tenant_id,env.device_id,env.sequence])?;
+    tx.execute("INSERT INTO device_receipts(tenant,device,sequence,payload_hash)
+        VALUES(?1,?2,?3,?4)
+        ON CONFLICT(tenant,device) DO UPDATE SET
+          sequence=excluded.sequence,payload_hash=excluded.payload_hash",
+        params![env.tenant_id,env.device_id,env.sequence,hash])?;
     store::project(&tx,env)?;
     tx.commit()?; // Only after durable transaction commit may we ACK.
     Ok((200, json!({"version":VERSION,"ack_sequence":env.sequence,
@@ -301,4 +334,35 @@ impl Drop for Guard {
 }
 fn main() {
     if let Err(e)=run() { eprintln!("jani-gateway: {e}"); std::process::exit(1); }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    #[test]
+    fn last_ack_survives_raw_retention_without_permitting_mutation() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("jani-jsmt-receipt-{}-{nonce}.sqlite",std::process::id()));
+        let db=path.to_str().unwrap();
+        init_db(db).unwrap();
+        let sample=|seq, time: &str| {
+            let (bytes,hash)=jani_jsmt::create_envelope("tenant","device",seq,time.into(),
+                vec![],vec![],vec![]).unwrap();
+            let env=jani_jsmt::validate(&bytes).unwrap().0;
+            (env,bytes,hash)
+        };
+        let (env,bytes,hash)=sample(1,"2026-10-25T12:00:00Z");
+        let (status,ack)=persist(db,&env,&bytes,&hash,120).unwrap();
+        assert_eq!(status,200);assert_eq!(ack["duplicate"],false);
+        Connection::open(db).unwrap().execute("DELETE FROM accepted",[]).unwrap();
+        let (status,ack)=persist(db,&env,&bytes,&hash,120).unwrap();
+        assert_eq!(status,200);assert_eq!(ack["duplicate"],true);
+        let (altered,raw,altered_hash)=sample(1,"2026-10-25T12:00:01Z");
+        let (status,conflict)=persist(db,&altered,&raw,&altered_hash,120).unwrap();
+        assert_eq!(status,409);assert_eq!(conflict["error"],"sequence_conflict");
+        let (next,raw,next_hash)=sample(2,"2026-10-25T12:00:02Z");
+        assert_eq!(persist(db,&next,&raw,&next_hash,120).unwrap().0,200);
+        let _=std::fs::remove_file(path);
+    }
 }

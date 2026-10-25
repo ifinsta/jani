@@ -128,6 +128,22 @@ class RustGatewayProbeTest(unittest.TestCase):
                 self.assertTrue(all(m["unit"] in ("s","By","1","{process}") for m in payload["metrics"]))
                 with sqlite3.connect(p/"spool.db") as con:
                     self.assertEqual(con.execute("SELECT COUNT(*) FROM pending").fetchone()[0],0)
+                # Simulate loss of the final ACK followed by retention eviction.
+                # The gateway still authenticates the latest receipt digest.
+                raw=row[0].encode("utf-8")
+                replay_context=ssl.create_default_context(cafile=str(p/"ca.crt"))
+                replay_context.minimum_version=replay_context.maximum_version=ssl.TLSVersion.TLSv1_3
+                replay_context.load_cert_chain(str(p/"device.crt"),str(p/"device.key"))
+                replay_request=urllib.request.Request(f"https://localhost:{port}/v1/ingest",
+                    data=raw,headers={"Content-Type":"application/json"},method="POST")
+                with sqlite3.connect(p/"central.db") as con:
+                    con.execute("DELETE FROM accepted WHERE tenant=? AND device=? AND sequence=?",
+                                ("tenant-a","device-one",1))
+                with urllib.request.urlopen(replay_request,context=replay_context,timeout=10) as response:
+                    recovered=json.loads(response.read())
+                self.assertTrue(recovered["duplicate"])
+                self.assertEqual(recovered["ack_sequence"],1)
+                self.assertEqual(recovered["payload_sha256"],hashlib.sha256(raw).hexdigest())
                 # Independent Python client -> Rust gateway: canonical JSON, TLS 1.3,
                 # mTLS, durable ACK and replay protection without using Rust probe code.
                 extra={"version":"jani-jsmt/1","tenant_id":"tenant-a","device_id":"device-one",

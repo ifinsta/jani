@@ -146,3 +146,13 @@ semantics. Bounded per-device rates, normalized SQL projections, coverage
 incident outbox, and 1–90-day storage retention are implementation details.
 No production certificate issuance, PKI lifecycle, cross-platform collectors,
 HA or central model-triggered remediation are available.
+
+## 11. Latest-receipt durability across retention
+
+In the native Rust pilot, a committed `device_receipts` checkpoint keeps the
+latest `(tenant,device,sequence,SHA-256)` after raw telemetry expires. A retry
+of exactly that last committed sequence returns the same authenticated duplicate
+ACK when its payload digest matches; changed digest returns HTTP 409
+`sequence_conflict`. An old migrated cursor whose raw data is no longer
+available has no trustworthy hash and returns `receipt_unavailable`. This is
+not historical arbitrary replay and not backup/disaster recovery.

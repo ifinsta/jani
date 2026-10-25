@@ -160,3 +160,13 @@ storage and an independent verified restore plan.
 See [Sentinel operations compliance](SENTINEL_OPERATIONS.md). Windows Event
 Log, macOS Unified Log, certified journald completeness, container logs, managed key
 issuance and HA remain explicit blockers for cross-platform production.
+
+## Lost acknowledgement after telemetry retention
+
+The pilot gateway now commits a device's latest sequence and SHA-256
+acknowledgement receipt separately from its raw telemetry. This lets a probe
+safely retry its **latest** committed message after retention has removed that
+raw row: matching payloads receive the same authenticated ACK; mismatched
+digests receive HTTP 409. Old cursors whose raw payload had already been
+purged before this migration have no recoverable digest; they fail closed as
+`receipt_unavailable`. A full cursor-reconciliation protocol remains future work.
