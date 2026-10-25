@@ -1,0 +1,21 @@
+{
+  "name": "AgentPhase",
+  "states": [
+    "ready",
+    "running",
+    "sleeping",
+    "paused",
+    "quarantined"
+  ],
+  "transitions": {
+    "ready": [
+      "sleeping"
+    ],
+    "sleeping": [
+      "ready"
+    ],
+    "running": [],
+    "paused": [],
+    "quarantined": []
+  }
+}

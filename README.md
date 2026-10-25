@@ -59,6 +59,18 @@ Read [ATTENTION_PROTOCOL.md](docs/ATTENTION_PROTOCOL.md) for commands,
 trust boundaries and production limitations. It is not yet a multi-host broker,
 durable model checkpoint system or unattended banking operator.
 
+## Rust workspace and transactional attention state
+
+Jani now has a Cargo workspace with `jani-contract` (contract-generated
+agent/alert states), `jani-store` (SQLite-backed transactional attention
+snapshot and outbox), and `jani-check` (architecture gates). The CLI
+remains standalone with **no Hivewire dependency**. Existing alert JSON is
+read and migrated on first database access; SQLite then becomes authoritative.
+
+See [Workspace Architecture](docs/WORKSPACE_ARCHITECTURE.md). This is
+not yet durable model-context checkpointing or a production-ready
+multi-host event broker.
+
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.

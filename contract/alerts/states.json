@@ -1,0 +1,22 @@
+{
+  "name": "AlertPhase",
+  "states": [
+    "pending",
+    "leased",
+    "accepted",
+    "resolved"
+  ],
+  "transitions": {
+    "pending": [
+      "leased"
+    ],
+    "leased": [
+      "pending",
+      "accepted"
+    ],
+    "accepted": [
+      "resolved"
+    ],
+    "resolved": []
+  }
+}

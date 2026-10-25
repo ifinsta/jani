@@ -1,3 +1,7 @@
+[workspace]
+resolver = "2"
+members = [".", "crates/jani-contract", "crates/jani-store", "tools/jani-check"]
+
 [package]
 name = "jani"
 version = "0.1.0"
@@ -7,6 +11,8 @@ description = "Rust-native, skill-aware coding agent with a governed execution r
 repository = "https://github.com/ifinsta/jani"
 
 [dependencies]
+jani-contract = { path = "crates/jani-contract" }
+jani-store = { path = "crates/jani-store" }
 ed25519-dalek = "2"
 hex = "0.4"
 regex = "1"
