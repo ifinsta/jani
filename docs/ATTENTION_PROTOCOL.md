@@ -18,7 +18,7 @@ Status: initial implementation for **one trusted local machine**. Not an enterpr
   trusted source / local administrator
          | attention.alerts.send (policy checked)
          v
-  .jani/attention/state.json  <-- OS-locked, atomic rewrite
+  .jani/attention/state.sqlite3  <-- SQLite transaction + outbox
          |
          v
   wake poll / wake watch --> lifecycle sleeping -> ready
@@ -89,15 +89,15 @@ For enterprise inbox operations, the authenticated principal must equal the reci
 
 ## Storage and guarantees
 
-- The JSON snapshot is serialized under an operating-system file lock, available on Rust 1.89+. Lock ownership is released automatically when the process exits.
-- Writes use a same-directory temporary file, fsync and rename; a failure refuses mutation rather than replacing an invalid snapshot with empty state.
-- The local journal records authorized transition **intent** before snapshot mutation. Its record does not prove the mutation was committed. Because journal and snapshot are separate files, their updates are not an atomic distributed transaction.
+- The attention snapshot and transition outbox event are committed in a SQLite immediate transaction (WAL, synchronous FULL). Existing JSON snapshots are migrated once on first access. No external coordinator is needed.
+- SQLite transaction rollback refuses partially committed attention snapshots. Failed or corrupt legacy imports are rejected, not silently reset.
+- The attention outbox and attention snapshot commit together; the existing global hash-chained JSONL audit journal is separate and still requires a future projection/reconciliation step.
 - Consumer receipts include an opaque lease token and expiration; an expired or stale token cannot acknowledge a new delivery. A crash after claim permits redelivery following lease expiry.
 - Published alerts are deduplicated on (tenant, sender, idempotency key). Reusing a key with different contents is refused; using the same key is replay-safe.
 - Retries use bounded exponential delays up to five minutes, without resetting the attempt count.
 - A maximum of 10,000 retained alerts and an 8 MB serialized-state ceiling bound the prototype's memory/disk use. There is no automatic pruning, database archiving, or infinite retention guarantee.
 - File-lock behavior has **not been validated for network filesystems**. Do not share one attention store across hosts, run untrusted writers, or use this as a multi-tenant banking service.
-- The JSON state remains locally plaintext. Place the state directory on an appropriately encrypted volume under OS filesystem ACLs.
+- The SQLite attention state remains locally plaintext. Place the state directory on an appropriately encrypted volume under OS filesystem ACLs.
 - Only identifiers and external references are stored. Do not put account numbers, secrets, sensitive personal details or large payloads in these fields.
 
 ## Wake and action trust separation

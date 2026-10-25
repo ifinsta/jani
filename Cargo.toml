@@ -1,30 +1,27 @@
-[package]
-name = "jani"
+[workspace]
+resolver = "2"
+members = [
+    "backend/core",
+    "backend/store",
+    "backend/server",
+    "tools/jani-check",
+]
+default-members = ["backend/server"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Rust-native, skill-aware coding agent with a governed execution runtime"
 repository = "https://github.com/ifinsta/jani"
 
-[dependencies]
-ed25519-dalek = "2"
+[workspace.dependencies]
+jani-core = { path = "backend/core" }
+jani-store = { path = "backend/store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 hex = "0.4"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
-sha2 = "0.10"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-  "Win32_Foundation",
-  "Win32_Security",
-  "Win32_System_JobObjects",
-  "Win32_System_Threading",
-] }
 
 [profile.release]
 strip = true

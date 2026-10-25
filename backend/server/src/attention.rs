@@ -4,30 +4,20 @@
 
 use crate::config::{Config, JResult};
 use crate::identity;
-use crate::journal::{EventInput, Journal};
 use crate::policy::PolicyEngine;
-use crate::types::{new_id, now_unix, sha256_hex, ActionRequest, Classification, Decision, Effect, RiskTier};
+use crate::types::{new_id, now_unix, sha256_hex, ActionRequest, Decision, Effect, RiskTier};
+use jani_core::contract::{AgentPhase as Phase, AlertPhase};
+use jani_store::{Store, TransitionEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::Path;
+#[cfg(test)]
+use std::fs;
 
 const VERSION: u32 = 1;
 const MAX_ALERTS: usize = 10_000;
 const MAX_STATE_BYTES: u64 = 8_000_000;
 const LEASE_SECS: u64 = 60;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Phase {
-    Ready,
-    Running,
-    Sleeping,
-    Paused,
-    Quarantined,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,15 +28,6 @@ struct AgentRecord {
     generation: u64,
     wake_requested: bool,
     updated_at: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum AlertPhase {
-    Pending,
-    Leased,
-    Accepted,
-    Resolved,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -141,123 +122,34 @@ fn actor(cfg: &Config, action: &str, recipient: &str, risk: RiskTier, effect: Ef
     Ok(id)
 }
 
-fn secure_directory(path: &Path) -> JResult<()> {
-    for ancestor in [path.parent(), Some(path)].into_iter().flatten() {
-        if let Ok(meta) = fs::symlink_metadata(ancestor) {
-            if meta.file_type().is_symlink() {
-                return Err("symlinked attention state directory refused".into());
-            }
-        }
-    }
-    fs::create_dir_all(path).map_err(|e| format!("cannot create attention state: {e}"))?;
-    Ok(())
-}
-
-fn refuse_symlink(path: &Path) -> JResult<()> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(format!("symlinked state file refused: {}", path.display())),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-fn read_state(path: &Path) -> JResult<Snapshot> {
-    if !path.exists() {
-        return Ok(Snapshot { version: VERSION, ..Default::default() });
-    }
-    let size = fs::metadata(path).map_err(|e| e.to_string())?.len();
-    if size > MAX_STATE_BYTES {
-        return Err("attention state exceeds storage ceiling".into());
-    }
-    let bytes = fs::read(path).map_err(|e| format!("cannot read attention state: {e}"))?;
-    let snapshot: Snapshot = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("invalid attention state; refusing reset: {e}"))?;
-    if snapshot.version != VERSION {
-        return Err("unsupported attention state version; migration required".into());
-    }
-    Ok(snapshot)
-}
-
-fn save_state(path: &Path, snapshot: &Snapshot) -> JResult<()> {
-    let bytes = serde_json::to_vec(snapshot).map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_STATE_BYTES {
-        return Err("attention state exceeds storage ceiling".into());
-    }
-    let tmp = path.with_extension(format!("tmp-{}", new_id("state")));
-    let outcome = (|| {
-        let mut opts = OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(&bytes).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-        if let Some(parent) = path.parent() {
-            if let Ok(dir) = File::open(parent) {
-                let _ = dir.sync_all();
-            }
-        }
-        Ok(())
-    })();
-    if outcome.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    outcome
-}
-
-// All compliant local clients use an OS-released advisory file lock.
-// Durable state is always rewritten atomically under this lock.
-// Network shares and uncooperative writers are NOT supported.
+// A single SQLite transaction commits the snapshot and transition event together.
+// Legacy JSON snapshots are imported once on first access, without truncation.
 fn transaction<F>(cfg: &Config, actor: &str, action: &str, f: F) -> JResult<Value>
 where
     F: FnOnce(&mut Snapshot) -> JResult<(Value, bool)>,
 {
-    let root = cfg.state_dir.join("attention");
-    secure_directory(&root)?;
-    let lock_path = root.join(".lock");
-    let path = root.join("state.json");
-    refuse_symlink(&lock_path)?;
-    refuse_symlink(&path)?;
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let lock = options.open(&lock_path).map_err(|e| format!("attention lock: {e}"))?;
-    lock.try_lock().map_err(|e| format!("attention store busy: {e}"))?;
-    refuse_symlink(&path)?;
-    let mut snapshot = read_state(&path)?;
-    let (value, changed) = f(&mut snapshot)?;
-    if changed {
-        // Audit an authorized transition intent before committing the state.
-        // A crash between this receipt and the state rename remains inspectable
-        // as an intent, not as proof of completion.
-        let mut journal = Journal::open(&cfg.state_dir)?;
-        journal.record(EventInput {
-            tenant_id: &cfg.tenant,
-            task_id: "attention",
-            run_id: "attention",
-            invocation_id: "attention-transition",
-            actor_id: actor,
-            worker_id: actor,
-            action,
-            resource_digest: &sha256_hex(value.to_string().as_bytes()),
-            decision: "authorized",
-            reason_code: "transition_intent",
-            policy_revision: "attention-v1",
-            approval_id: None,
-            sandbox_receipt_id: None,
-            data_classification: Classification::Internal,
-        })?;
-        save_state(&path, &snapshot)?;
-    }
-    Ok(value)
+    let mut store = Store::open(&cfg.state_dir)?;
+    let legacy = cfg.state_dir.join("attention").join("state.json");
+    let event = TransitionEvent {
+        tenant: cfg.tenant.clone(),
+        actor: actor.to_string(),
+        action: action.to_string(),
+        payload_digest: sha256_hex(format!("{action}:{actor}").as_bytes()),
+    };
+    store.transact(
+        &legacy,
+        Snapshot {
+            version: VERSION,
+            ..Default::default()
+        },
+        event,
+        |snapshot| {
+            if snapshot.version != VERSION {
+                return Err("unsupported attention snapshot version".into());
+            }
+            f(snapshot)
+        },
+    )
 }
 
 fn lookup_agent<'a>(s: &'a mut Snapshot, tenant: &str, id: &str) -> JResult<&'a mut AgentRecord> {
@@ -325,6 +217,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             if a.phase != Phase::Ready {
                 return Err("sleep requires ready state; active work must checkpoint separately".into());
             }
+            if !a.phase.can_transition(Phase::Sleeping) {
+                return Err("lifecycle transition is not allowed by contract".into());
+            }
             a.phase = Phase::Sleeping;
             a.updated_at = now;
             a.generation += 1;
@@ -334,6 +229,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             let a = lookup_agent(s, &tenant, agent)?;
             if a.phase != Phase::Sleeping {
                 return Err("wake requires sleeping state; paused/quarantined agents cannot wake".into());
+            }
+            if !a.phase.can_transition(Phase::Ready) {
+                return Err("lifecycle transition is not allowed by contract".into());
             }
             a.phase = Phase::Ready;
             a.wake_requested = false;
@@ -429,6 +327,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             ).min_by_key(|a| (a.created_at, a.id.clone()));
             if let Some(a) = candidate {
                 a.attempts = a.attempts.saturating_add(1);
+                if !a.phase.can_transition(AlertPhase::Leased) {
+                    return Err("alert transition is not allowed by contract".into());
+                }
                 a.phase = AlertPhase::Leased;
                 a.updated_at = now;
                 a.lease = Some(Lease { consumer: principal.clone(), token: new_id("receipt"), expires_at: now + LEASE_SECS });
@@ -449,9 +350,15 @@ pub fn command(cfg: &Config) -> JResult<Value> {
                     return Err("stale or incorrect receipt; refusing action".into());
                 }
                 if verb == "accept" {
+                    if !a.phase.can_transition(AlertPhase::Accepted) {
+                        return Err("alert transition is not allowed by contract".into());
+                    }
                     a.phase = AlertPhase::Accepted;
                     a.lease = None;
                 } else {
+                    if !a.phase.can_transition(AlertPhase::Pending) {
+                        return Err("alert retry transition is not allowed by contract".into());
+                    }
                     a.phase = AlertPhase::Pending;
                     a.lease = None;
                     let backoff = 1u64 << a.attempts.min(8);
@@ -468,6 +375,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
                 let a = lookup_alert(s, &tenant, agent, alert)?;
                 if a.phase != AlertPhase::Accepted {
                     return Err("resolve requires an accepted alert; verification is external".into());
+                }
+                if !a.phase.can_transition(AlertPhase::Resolved) {
+                    return Err("alert resolution transition is not allowed by contract".into());
                 }
                 a.phase = AlertPhase::Resolved;
                 a.evidence = Some(evidence.into());

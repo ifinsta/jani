@@ -59,6 +59,20 @@ Read [ATTENTION_PROTOCOL.md](docs/ATTENTION_PROTOCOL.md) for commands,
 trust boundaries and production limitations. It is not yet a multi-host broker,
 durable model checkpoint system or unattended banking operator.
 
+## Repository structure
+
+Jani uses an ifinpay-style virtual Cargo workspace:
+`backend/core/` for shared contracts, identity and governance;
+`backend/store/` for durable transactional state;
+`backend/server/` for the `jani` executable, agent loop and tools;
+`contract/` for protocol definitions; and `tools/` for architecture gates.
+The root has **no `src/` or `crates/`**. Rust `src/` directories are
+internal to individual Cargo packages, as required by Rust conventions.
+
+The executable stays `jani`, and Cargo commands run from the workspace root.
+Read [Workspace Architecture](docs/WORKSPACE_ARCHITECTURE.md).
+Hivewire remains entirely optional. Model wake/resume is not yet implemented.
+
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.

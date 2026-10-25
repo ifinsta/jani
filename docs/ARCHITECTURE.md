@@ -88,33 +88,21 @@ If a workflow needs coordination — task claims, epochs, message leases, merge
 gates — that logic belongs in an external coordinator or a skill-driven process
 that invokes Jani as a normal CLI. Jani grants it no special authority.
 
-## Rust module layout
+## Rust workspace layout
 
-- `main.rs`: CLI dispatch and diagnostic commands.
-- `config.rs`: flags, environment, permissions, path validation and help text.
-- `types.rs`: typed contracts, classifications, decisions, receipts, audit and
-  plugin manifest types.
-- `schema.rs`: minimal JSON Schema validation and glob matching.
-- `crypto.rs`: Ed25519 signing/verification and hashing helpers.
-- `policy.rs`: signed policy loading, PDP evaluation and effective limits.
-- `identity.rs`: signed identity assertion verification.
-- `data.rs`: classification, secret/PII detection, redaction and egress matrix.
-- `gateway.rs`: the only holder of the provider credential; redact, authorize,
-  call and inspect.
-- `broker.rs`: tool dispatch, policy/contract/approval/budget enforcement and
-  audit integration.
-- `agent.rs`: prompt composition, turn loop and budget lifecycle.
-- `approvals.rs`: persisted exact-binding approvals with separation of duties.
-- `budget.rs`: persisted tool/token/time/USD budgets.
-- `journal.rs`: append-only hash-chained audit events and verification.
-- `sandbox.rs`: backend selection, bubblewrap/Job-Object plans and receipts.
-- `exec.rs`: command allowlist, staged-path checks and confined execution.
-- `process.rs`: bounded child processes, output truncation and credential
-  stripping.
-- `workspace.rs`: bounded source inspection and scoped atomic writes.
-- `skills.rs`: skill discovery and Markdown reading.
-- `plugins.rs`: signed manifest registry and capability catalog.
-- `model.rs`: OpenAI-compatible client and JSON tool schemas.
+Jani follows an ifinpay-style Rust workspace. There is **no root-level `src/` and no `crates/` directory**.
+
+- `contract/`: versioned vocabulary and state machine source of truth.
+- `backend/core/` (`jani-core`): signed identity, policy, data-governance, core types, budget, audit, approvals and generated contracts; no dependency on the model or CLI.
+- `backend/store/` (`jani-store`): SQLite-backed attention state plus transaction outbox.
+- `backend/server/` (`jani`): executable and composition root; model loop, broker, sandbox, skills, plugins, alert commands, and CI end-to-end tests.
+- `tools/jani-check/`: architecture gates and contract checks.
+
+`backend/<package>/src/` exists because Cargo uses `src/lib.rs` and `src/main.rs` **inside each package**. The repository root is a virtual workspace, not a Rust source crate.
+
+The server currently contains more modules than it should long-term. Further extraction should follow demonstrated dependency boundaries, with no speculative empty packages.
+
+See [WORKSPACE_ARCHITECTURE.md](WORKSPACE_ARCHITECTURE.md).
 
 ## Deliberate architectural decisions
 
