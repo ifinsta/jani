@@ -42,6 +42,7 @@
     "docs/SENTINEL_CONTRACT.md",
     "docs/SENTINEL_OPERATIONS.md",
     "docs/SENTINEL_RELEASE_GATES.md",
+    "docs/SENTINEL_TWO_SUITE_VERIFICATION.md",
     "docs/STORAGE_CONSISTENCY.md",
     "docs/THREAT_MODEL.md",
     "docs/TOOL_EXECUTION_CONTRACT.md",

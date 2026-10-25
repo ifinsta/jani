@@ -87,6 +87,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 
 ## Testing
 
+- [Sentinel two-suite verification: 100 cases](SENTINEL_TWO_SUITE_VERIFICATION.md)
 - [EVIDENCE PROVENANCE](../synthetic/EVIDENCE_PROVENANCE.md)
 - [EXECUTION ADAPTERS](../synthetic/EXECUTION_ADAPTERS.md)
 - [FAULT HOOK COVERAGE](../synthetic/FAULT_HOOK_COVERAGE.md)
