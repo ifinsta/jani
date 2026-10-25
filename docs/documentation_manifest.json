@@ -38,6 +38,8 @@
     "docs/RECOVERY_AND_REPLAY.md",
     "docs/RELEASE_ACCEPTANCE.md",
     "docs/ROADMAP.md",
+    "docs/SENTINEL_CONTRACT.md",
+    "docs/SENTINEL_RELEASE_GATES.md",
     "docs/STORAGE_CONSISTENCY.md",
     "docs/THREAT_MODEL.md",
     "docs/TOOL_EXECUTION_CONTRACT.md",
@@ -68,5 +70,9 @@
     "synthetic/FAULT_HOOK_COVERAGE.md",
     "synthetic/LOAD_AND_SOAK.md",
     "synthetic/TEST_ORACLES.md"
+  ],
+  "requiredSentinel": [
+    "docs/SENTINEL_CONTRACT.md",
+    "docs/SENTINEL_RELEASE_GATES.md"
   ]
 }

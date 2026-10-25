@@ -33,6 +33,11 @@ The documents below define Jani's implemented boundaries and forward-looking con
 - [THREAT MODEL](THREAT_MODEL.md)
 - [TOOL EXECUTION CONTRACT](TOOL_EXECUTION_CONTRACT.md)
 
+## Sentinel security and monitoring compliance
+
+- [Sentinel client and host monitoring contract](SENTINEL_CONTRACT.md)
+- [Sentinel secure transport and service readiness gates](SENTINEL_RELEASE_GATES.md)
+
 ## Native tools
 
 - [CHECKPOINT](native/CHECKPOINT.md)

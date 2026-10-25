@@ -1,5 +1,7 @@
 # Jani
 
+**Sentinel roadmap and compliance:** [monitoring and security contract](docs/SENTINEL_CONTRACT.md) · [release gates](docs/SENTINEL_RELEASE_GATES.md). The proprietary JSMT client/server reference implementation is deliberately not published in this public repository. No production monitoring functionality is implied.
+
 **A Rust-native coding agent that works only inside authority you grant explicitly.**
 
 Jani reads skills, calls an OpenAI-compatible model and edits a Git worktree. Every read, write and command passes through a Rust broker that checks operator scopes, signed policy, data-egress rules and budgets, then journals the decision before acting. Model output, skill text and tool responses are never treated as authority.

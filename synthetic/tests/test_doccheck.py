@@ -14,7 +14,7 @@ SPEC.loader.exec_module(doccheck)
 def fixture(root):
     (root / "docs").mkdir(exist_ok=True)
     (root / "README.md").write_text("# Source fixture\n", encoding="utf-8")
-    for i, path in enumerate(doccheck.CORE, 1):
+    for i, path in enumerate(doccheck.CORE + doccheck.SENTINEL, 1):
         f = root / path
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(
@@ -33,7 +33,8 @@ def fixture(root):
         json.dumps({
             "schemaVersion": "jani.docs/v1",
             "requiredCore": list(doccheck.CORE),
-            "files": list(doccheck.CORE),
+            "requiredSentinel": list(doccheck.SENTINEL),
+            "files": list(doccheck.CORE + doccheck.SENTINEL),
         }),
         encoding="utf-8",
     )
@@ -47,6 +48,13 @@ class DocumentationGateTest(unittest.TestCase):
             self.assertEqual(doccheck.check(root), [])
             (root / doccheck.CORE[0]).unlink()
             self.assertTrue(doccheck.check(root))
+
+    def test_missing_sentinel_contract_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root)
+            (root / doccheck.SENTINEL[0]).unlink()
+            self.assertTrue(any("SENTINEL" in issue or "not an existing" in issue for issue in doccheck.check(root)))
 
     def test_missing_source_and_duplicate_id_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
