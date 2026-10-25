@@ -1,29 +1,27 @@
 # Jani 🦀
 
-**Jani** is an independent **Rust-native, skill-aware coding agent** designed to work inside repositories governed by [Hivewire](https://github.com/ifinsta/hivewire).
+**Jani** is an independent **Rust-native, skill-aware AI coding agent**. Its agent runtime, tool dispatch, workspace handling and OpenAI-compatible model client are written in Rust.
 
-Its agent runtime, tool dispatch, workspace handling, AI integration, and Hivewire adapter are written in Rust. Jani does **not** rewrite Hivewire's existing Python coordination engine: it invokes Hivewire's supported `hivewire.py` CLI protocol and honors Hivewire's authoritative Git/SQLite state, task epochs, contracts, message leases, and verified merge gates.
+Jani embeds no coordination engine. It works directly in a Git worktree, reads installed `SKILL.md` guidance on demand, and enforces its permissions in Rust. Collaboration workflows, when needed, are just skills or external processes that invoke Jani — they are not part of Jani's core or its privilege model.
 
-**Status: source implementation, not yet production validated.** The project is deliberately strict by default: no edits, command execution, merges or acknowledgements unless explicitly enabled. The source archive is not a prebuilt binary. Before using it with a real repository, run the build and acceptance suite described below.
+**Status: source implementation, not yet production validated.** The project is deliberately strict by default: no edits or command execution unless explicitly enabled. The source archive is not a prebuilt binary. Before using it with a real repository, run the build and acceptance suite described below.
 
 ## What is implemented
 
-- Rust binary with `--print`, `run`, `skills`, `doctor`, `--version`, and `--help`.
-- Native OpenAI-compatible Chat Completions client with JSON function/tool calling, configurable model, token key, endpoint and bounded turn loop; no Python AI SDK.
-- Discovers installed `SKILL.md` files in repository and user skill directories, reads instructions on demand, and requires reading Hivewire's current skill before effects.
-- Typed tool interfaces for working-tree file lists/reads, explicitly scoped atomic file writes, selected Hivewire reads and worker transitions, measured restricted test/git commands, and leased inbox inspection/acknowledgement.
-- Every mutating tool checks Hivewire's authoritative `bus hook --stage before-tool --enforce --json` boundary and assignment epoch/task when available.
-- Explicit protection against path traversal, symlink components and common credential paths. Protected paths are not a replacement for OS-level sandboxing.
-- Model cannot set Hivewire's `--as` identity, `--epoch` fencing token, human attestation or administrative flags through a tool argument.
-- Model never receives bus receipt tokens from `inbox_read`; acknowledgement uses a currently leased token obtained by Rust from the supervisor inbox snapshot.
-- Measured commands go through `hivewire tool run` and obey Hivewire's task lifecycle, time and usage policies. Arbitrary shell invocation is not exposed.
+- Rust binary with `--print`, `run`, `skills`, `doctor`, `--version` and `--help`.
+- Native OpenAI-compatible Chat Completions client with JSON function/tool calling, configurable model, endpoint and bounded turn loop; no Python AI SDK.
+- Discovers installed `SKILL.md` files and reads instructions on demand.
+- Typed tools for non-sensitive working-tree listing and reads, explicitly scoped atomic file writes, and allowlisted test/git commands.
+- Default-deny permissions with explicit relative write scopes.
+- Protection against path traversal, symlink components and common credential paths. Protected paths are not a replacement for OS-level sandboxing.
+- Children run with argv only (no shell), bounded time and output, and without the provider API key in their environment.
+- `git commit` refuses pre-staged files outside the approved edit scope.
 
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.
-2. A **reviewed and installed** version of Hivewire with CLI protocol 2 and the `agents-collaboration` skill. Its current engine uses Python 3.11+ and Git.
-3. An AI provider that implements OpenAI-compatible `POST /chat/completions` tool calling; valid API key and model ID.
-4. For write mode: an already assigned Hivewire task, its worktree and brief, a plan and accepted contract, configured project verification gates, and explicit allowed edit paths.
+2. An AI provider that implements OpenAI-compatible `POST /chat/completions` tool calling; valid API key and model ID.
+3. For write mode: explicit approved edit paths. For commands: an approved executable operation.
 
 ## Build
 
@@ -35,64 +33,47 @@ cargo build --release
 ./target/release/jani --version
 ```
 
-On Windows, use `target\\release\\jani.exe`; the installed Hivewire executable is still run through a Python 3.11+ process. If Rust is not installed, see the official [Rust installation instructions](https://www.rust-lang.org/tools/install).
+On Windows, use `target\\release\\jani.exe`. If Rust is not installed, see the official [Rust installation instructions](https://www.rust-lang.org/tools/install).
 
-## Read-only smoke test
-
-From an initialized Hivewire-managed Git repository, set a trusted absolute launcher path and the model key:
+## Usage
 
 ```bash
-export HIVEWIRE_SCRIPT=/absolute/path/to/agents-collaboration/hivewire.py
 export JANI_API_KEY=YOUR_PROVIDER_API_KEY
 export JANI_MODEL=YOUR_TOOL_CAPABLE_MODEL
 cargo run -- doctor
 cargo run -- skills
-cargo run -- --print "Inspect my current Hivewire assignment and summarize safe next steps. Do not edit anything."
+cargo run -- --print "Summarize the main modules and their risks. Do not edit anything."
 ```
 
-On Windows PowerShell, use `$env:HIVEWIRE_SCRIPT = 'C:\\absolute\\path\\hivewire.py'` and likewise for the other values. `JANI_API_BASE` defaults to `https://api.openai.com/v1`; adjust it for a compatible provider. A model call may incur usage charges.
-
-## Enable assignment-scoped coding
-
-Run Jani from an **assigned task worktree** generated by Hivewire, not the main checkout. A supervised Hivewire spawn provides `SWARM_AS`, `SWARM_TASK`, `SWARM_EPOCH` and a `.swarm-brief.md` file. The operator supplies the approved edit scope, e.g.:
+A read-only run needs no write permissions. To allow scoped work:
 
 ```bash
-export JANI_WRITE_PATHS=src,tests
-jani --print "Read the task brief, obey Hivewire, implement my assigned task, test it, and submit evidence" \
-  --allow-write --allow-exec
+cargo run -- --print "Implement the requested change, then run the tests" \
+  --allow-write --write-path src --write-path tests --allow-exec
 ```
 
-Enable `--allow-merge` only after verified integration checks and the required review policies have been configured. `--allow-ack` allows message acknowledgements but only with concrete durable handling evidence. Do not set these flags globally for untrusted repositories.
+`doctor` reports the worktree, discovered skills, model configuration, and active permissions. `JANI_API_BASE` defaults to `https://api.openai.com/v1`; adjust it for a compatible provider. A model call may incur usage charges.
 
-If the task has configured token/cost allowances, reserve or reconcile those through the Hivewire workflow before executing metered commands. Jani does **not** currently account for the provider's LLM API tokens inside Hivewire's ledger; its `--max-steps` is a turn ceiling, not a monetary spending limit.
+The same options can be supplied through the environment: `JANI_WRITE_PATHS`, `JANI_EXEC_PROGRAMS`, `JANI_SKILL_DIRS`.
 
-## Register Jani as a Hivewire CLI adapter
+## Skills
 
-Copy the section in `examples/hivewire-adapter.toml` into the target repository's `.agents/swarm/config.toml`, update the absolute binary path and set environment variables before starting Hivewire. The documented workflow is:
+A skill is regular Markdown with a YAML `name` and `description` frontmatter. Jani discovers `SKILL.md` files in the user's skill directory and in the repository (`.agents/skills`, `.claude/skills`, `skills`), then reads them on demand.
 
-```text
-hivewire probe
-hivewire probe --live
-hivewire spawn jani --name jani1 --task TASK-ID
-hivewire sessions --once --json
-```
+**A skill is advisory, not an executable security policy.** Rust tool boundaries enforce write scopes and the command allowlist regardless of what a skill says. If a workflow needs coordination with other agents, install the relevant collaboration skill or run an external coordinator that invokes Jani as a normal CLI process; Jani does not grant extra authority to either.
 
-Here `hivewire` abbreviates the **official** absolute `hivewire.py` launcher command, and `TASK-ID` must be an eligible, approved and assigned task. `spawn` handles registration/claim and writes the brief; Jani should not independently create a second owner.
+## Security model
 
-Start with a **read-only** adapter. For a coding trial, add Jani's `--allow-write --write-path src --write-path tests --allow-exec` flags to the configured adapter `run` array, run the provider's live probe, and verify one isolated disposable task before marking the adapter `verified = true`. Keep `unattended = []`: Jani has no vendor permission-bypass flag.
-
-## Skill format and architecture
-
-The installed skill is regular Markdown with a YAML `name` and `description` frontmatter. Jani reads known `SKILL.md` files and asks the model to follow them. **A skill is not an executable security policy**; only Hivewire's engine transition checks are authoritative.
+1. **Operator permission:** writes and command execution are default-denied.
+2. **Rust tool boundaries:** only explicit relative paths inside `--write-path` scopes can be written; only allowlisted argv can run; protected and symlinked paths are refused.
+3. **Process boundary:** children receive no shell, no provider API key, and have bounded time and output.
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TESTING.md](docs/TESTING.md).
 
 ## Security limitations
 
-- Hivewire remains local-trust, not a multi-tenant authenticated execution sandbox. Neither Jani nor Hivewire prevents a process from modifying arbitrary files outside their guarded interfaces.
-- Even an allowlisted `cargo test`, `pytest`, `go test` or `npm test` can run malicious build scripts or test code. Use OS/container sandboxing with restricted secrets and a disposable checkout for untrusted code.
+- Jani is not an OS sandbox and does not prevent arbitrary processes from modifying files outside its guarded interfaces. Use OS/container isolation for untrusted code.
+- Even an allowlisted `cargo test`, `pytest`, `go test` or `npm test` can run malicious build scripts or test code. Use container sandboxing with restricted secrets and a disposable checkout.
 - Path protections are vulnerable to a hostile process racing file replacement; use a sandbox or OS ACLs for isolation.
-- Inbox acknowledgement does not prove task completion, external side-effect idempotency or model understanding. The agent must durable-record the effect before asking for ack; no exactly-once external effects are promised.
-- This release uses single-run model context; recovery is reconstructible from durable Hivewire state, not an automatically replayed Jani conversation transcript.
-- Hivewire can refuse any command Jani requests. Jani must report the refusal, not bypass it.
-- `version`, adapter capability and CLI contracts must be retested against the actual installed Hivewire revision and provider model before production adoption.
+- This release uses single-run model context; recovery is reconstructible from repository state, not an automatically replayed Jani conversation transcript.
+- `--max-steps` is a turn ceiling, not a monetary spending limit. Provider usage is not accounted for internally.
