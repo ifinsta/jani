@@ -6,6 +6,7 @@ mod exec;
 mod gateway;
 mod model;
 mod mirror;
+mod mcp;
 mod plugins;
 mod sandbox;
 mod skills;
@@ -46,6 +47,9 @@ fn run() -> JResult<()> {
     // Mirror works on recorded evidence without model credentials or skill discovery.
     if cfg.command == "mirror" {
         return print_json(&mirror::command(&cfg)?);
+    }
+    if cfg.command == "mcp" {
+        return print_json(&mcp::command(&cfg)?);
     }
     let catalog = Catalog::load(&cfg)?;
     match cfg.command.as_str() {

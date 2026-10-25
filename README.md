@@ -90,6 +90,19 @@ The `jani-mirror` package lives under `backend/mirror`, has no model-client or
 coordination dependency, and does **not** execute or self-apply recommendations.
 Details: [Mirror guide](docs/MIRROR.md).
 
+## MCP Governance Contract (JMGC)
+
+Jani's MCP adapter is a signed, fail-closed delegation gateway in
+`backend/mcp`. The initiator's verified identity and task-specific signed
+roles/permissions must match the organization-approved server contract.
+Agent invocations of user-only commit tools are **always blocked**.
+Remote results must include signed authorization and classification receipts.
+Only the explicitly authorized `tools/call` transport is available in this
+first implementation; other MCP methods and uncontracted operations remain
+unsupported. No Hivewire dependency exists.
+
+See [MCP Governance](docs/MCP_GOVERNANCE.md) for configuration, limitations and examples.
+
 ## Requirements
 
 1. Rust and Cargo with a recent stable toolchain.

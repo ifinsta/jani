@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.jani.dev/mcp/governance/v1",
+  "title": "Jani MCP Governance Contract",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "server",
+    "operations",
+    "signature"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "jani.mcp.governance/v1"
+    },
+    "kind": {
+      "const": "McpGovernanceContract"
+    },
+    "server": {
+      "type": "object",
+      "required": [
+        "id",
+        "endpoint",
+        "audience",
+        "authorizationIssuer",
+        "receiptKeyId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "audience": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "authorizationIssuer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receiptKeyId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "operations": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 128,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "tool",
+          "mode",
+          "requiredRoles",
+          "requiredEntitlements",
+          "inputSchema",
+          "maxRequestClassification",
+          "maxResponseClassification"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "enum": [
+              "read",
+              "prepare",
+              "user_commit"
+            ]
+          },
+          "requiredRoles": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "requiredEntitlements": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "maxRequestClassification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED",
+              "SECRET"
+            ]
+          },
+          "maxResponseClassification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED",
+              "SECRET"
+            ]
+          },
+          "inputSchema": {
+            "type": "object",
+            "required": [
+              "type",
+              "properties",
+              "required",
+              "additionalProperties"
+            ],
+            "properties": {
+              "type": {
+                "const": "object"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "required": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": {
+                "const": false
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": [
+        "keyId",
+        "value"
+      ],
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{128}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
