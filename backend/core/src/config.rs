@@ -1,3 +1,4 @@
+use crate::settings::Settings;
 use crate::types::{NetworkPolicy, RuntimeMode, SandboxMode};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,9 @@ pub struct Config {
     pub model: String,
     pub api_base: String,
     pub api_key: Option<String>,
+    pub model_profile: Option<String>,
+    pub settings_path: Option<PathBuf>,
+    pub settings_profile: Option<String>,
     pub max_steps: usize,
     pub root: PathBuf,
     pub allow_write: bool,
@@ -136,6 +140,8 @@ OPTIONS:
   --provider-class C      Provider trust class label
   --model MODEL           OpenAI-compatible tool-call-capable model (JANI_MODEL)
   --api-base URL          API base ending in /v1 (JANI_API_BASE)
+  --settings FILE         Project settings JSON (default .jani/settings.json; JANI_SETTINGS)
+  --model-profile NAME    Model profile from settings (default defaultModel)
   --repo PATH             Assigned Git worktree; defaults to current directory
   --max-steps N           Maximum model turns (default 20, ceiling 80)
   --allow-write           Enable gated file editing
@@ -161,6 +167,13 @@ ENVIRONMENT:
   JANI_POLICY, JANI_POLICY_KEYS, JANI_IDENTITY, JANI_CONTRACT
   JANI_STATE_DIR, JANI_SANDBOX, JANI_SANDBOX_NET
   JANI_PLUGIN_DIR, JANI_PLUGIN_KEYS, JANI_PROVIDER_REGION, JANI_PROVIDER_CLASS
+  JANI_SETTINGS            Alternate project settings file
+
+SETTINGS:
+  .jani/settings.json (or --settings / JANI_SETTINGS) supplies named model
+  profiles and maxSteps. CLI flags override environment variables, which override
+  settings. Settings cannot grant writes or commands; apiKeyEnv names the
+  environment variable holding a profile's key.
 
 Skills are advisory instructions, not an executable security policy.
 Tool flags are enforced in Rust. Execution is NOT an OS sandbox unless a
@@ -183,6 +196,9 @@ impl Config {
             model: "gpt-5".into(),
             api_base: "https://api.openai.com/v1".into(),
             api_key: None,
+            model_profile: None,
+            settings_path: None,
+            settings_profile: None,
             max_steps: 20,
             root: root.clone(),
             allow_write: false,
@@ -226,13 +242,89 @@ impl Config {
     }
 
     pub fn from_args(args: &[String]) -> JResult<Self> {
+        // Parse once for command discovery so --help/--version never depend on a
+        // project settings file. A second pass applies CLI values after settings
+        // and environment defaults.
+        let mut first = Self::baseline();
+        Self::parse_args(&mut first, args)?;
+        if matches!(first.command.as_str(), "version" | "help") {
+            first.api_base = first.api_base.trim_end_matches('/').to_string();
+            return Ok(first);
+        }
+
+        let loaded = Self::load_project_settings(&first)?;
+        let profile_name = first
+            .model_profile
+            .clone()
+            .or_else(|| loaded.as_ref().and_then(|(_, s)| s.default_model.clone()));
+        if profile_name.is_some() && loaded.is_none() {
+            return Err("--model-profile requires a settings file with model profiles".into());
+        }
+
         let mut cfg = Self::baseline();
-        cfg.model = env_nonempty("JANI_MODEL")
-            .or_else(|| env_nonempty("OPENAI_MODEL"))
-            .unwrap_or_else(|| "gpt-5".to_string());
-        cfg.api_base = env_nonempty("JANI_API_BASE")
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-        cfg.api_key = env_nonempty("JANI_API_KEY").or_else(|| env_nonempty("OPENAI_API_KEY"));
+        let mut credential_env = None;
+        if let Some((path, settings)) = &loaded {
+            cfg.settings_path = Some(path.clone());
+            if let Some(name) = &profile_name {
+                let profile = settings.profile(name)?;
+                cfg.model = profile.model.clone();
+                if let Some(base) = &profile.api_base {
+                    cfg.api_base = base.clone();
+                }
+                // The profile binds its credential source, so a generic key from
+                // another provider is never sent to this endpoint.
+                credential_env = profile.api_key_env.clone();
+                cfg.settings_profile = Some(name.clone());
+            }
+            if let Some(steps) = settings.max_steps {
+                cfg.max_steps = steps;
+            }
+        }
+
+        Self::apply_env(&mut cfg, credential_env.as_deref())?;
+        Self::parse_args(&mut cfg, args)?;
+        cfg.settings_path = loaded.as_ref().map(|(path, _)| path.clone());
+        Self::finalize(&mut cfg)?;
+        Ok(cfg)
+    }
+
+    fn load_project_settings(cfg: &Config) -> JResult<Option<(PathBuf, Settings)>> {
+        let explicit = cfg
+            .settings_path
+            .clone()
+            .or_else(|| env_nonempty("JANI_SETTINGS").map(PathBuf::from));
+        let (path, required) = match explicit {
+            Some(path) => {
+                let path = if path.is_relative() {
+                    cfg.root.join(path)
+                } else {
+                    path
+                };
+                (path, true)
+            }
+            None => (cfg.root.join(".jani").join("settings.json"), false),
+        };
+        if !path.exists() {
+            if required {
+                return Err(format!("settings file not found: {}", path.display()));
+            }
+            return Ok(None);
+        }
+        let settings = Settings::load(&path)?;
+        Ok(Some((path, settings)))
+    }
+
+    fn apply_env(cfg: &mut Config, credential_env: Option<&str>) -> JResult<()> {
+        if let Some(value) = env_nonempty("JANI_MODEL").or_else(|| env_nonempty("OPENAI_MODEL")) {
+            cfg.model = value;
+        }
+        if let Some(value) = env_nonempty("JANI_API_BASE") {
+            cfg.api_base = value;
+        }
+        cfg.api_key = match credential_env {
+            Some(name) => env_nonempty(name),
+            None => env_nonempty("JANI_API_KEY").or_else(|| env_nonempty("OPENAI_API_KEY")),
+        };
         cfg.mode = match env_nonempty("JANI_MODE") {
             Some(value) => {
                 RuntimeMode::parse(&value).ok_or_else(|| format!("unknown JANI_MODE: {value}"))?
@@ -276,7 +368,10 @@ impl Config {
         if let Some(programs) = env_nonempty("JANI_EXEC_PROGRAMS") {
             cfg.exec_programs = split_list(&programs);
         }
+        Ok(())
+    }
 
+    fn parse_args(cfg: &mut Config, args: &[String]) -> JResult<()> {
         let mut i = 0;
         let mut command_seen = false;
         while i < args.len() {
@@ -401,6 +496,10 @@ impl Config {
                 "--provider-class" => cfg.provider_class = take_value(args, &mut i, a)?,
                 "--model" => cfg.model = take_value(args, &mut i, a)?,
                 "--api-base" => cfg.api_base = take_value(args, &mut i, a)?,
+                "--settings" => {
+                    cfg.settings_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
+                "--model-profile" => cfg.model_profile = Some(take_value(args, &mut i, a)?),
                 "--repo" => cfg.root = PathBuf::from(take_value(args, &mut i, a)?),
                 "--max-steps" => {
                     cfg.max_steps = take_value(args, &mut i, a)?
@@ -434,12 +533,10 @@ impl Config {
         if !command_seen && !cfg.positional.is_empty() {
             return Err(format!("unknown command: {}", cfg.positional[0]));
         }
+        Ok(())
+    }
 
-        if matches!(cfg.command.as_str(), "version" | "help") {
-            cfg.api_base = cfg.api_base.trim_end_matches('/').to_string();
-            return Ok(cfg);
-        }
-
+    fn finalize(cfg: &mut Config) -> JResult<()> {
         cfg.root = cfg
             .root
             .canonicalize()
@@ -507,7 +604,7 @@ impl Config {
             // Local runs keep the pre-runtime defaults; sandbox is opt-in.
         }
 
-        Ok(cfg)
+        Ok(())
     }
 
     pub fn is_enterprise(&self) -> bool {
@@ -611,5 +708,121 @@ mod tests {
         assert!(!protected_component("src"));
         assert!(!protected_component("main.rs"));
         assert!(!protected_component("keyboard.rs"));
+    }
+
+    const SETTINGS: &str = r#"{
+        "version": 1,
+        "defaultModel": "fast",
+        "models": {
+            "fast": {"model": "profile-model", "apiBase": "https://settings.test/v1"},
+            "deep": {"model": "deep-model", "apiBase": "https://settings.test/v1"}
+        },
+        "maxSteps": 30
+    }"#;
+
+    fn temp_workspace(settings: Option<&str>) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "jani-config-settings-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join(".jani")).unwrap();
+        if let Some(body) = settings {
+            std::fs::write(root.join(".jani").join("settings.json"), body).unwrap();
+        }
+        root
+    }
+
+    fn args_for(root: &Path, extra: &[&str]) -> Vec<String> {
+        let mut args = vec!["doctor".to_string(), "--repo".into()];
+        args.push(root.to_str().unwrap().into());
+        args.extend(extra.iter().map(|value| value.to_string()));
+        args
+    }
+
+    #[test]
+    fn settings_profile_supplies_model_defaults() {
+        let root = temp_workspace(Some(SETTINGS));
+        let cfg = Config::from_args(&args_for(&root, &[])).unwrap();
+        assert_eq!(cfg.model, "profile-model");
+        assert_eq!(cfg.api_base, "https://settings.test/v1");
+        assert_eq!(cfg.max_steps, 30);
+        assert_eq!(cfg.settings_profile.as_deref(), Some("fast"));
+        assert_eq!(
+            cfg.settings_path.as_ref().unwrap().file_name().unwrap(),
+            "settings.json"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cli_model_flags_override_settings() {
+        let root = temp_workspace(Some(SETTINGS));
+        let cfg = Config::from_args(&args_for(
+            &root,
+            &[
+                "--model",
+                "cli-model",
+                "--api-base",
+                "https://cli.test/v1",
+                "--max-steps",
+                "12",
+            ],
+        ))
+        .unwrap();
+        assert_eq!(cfg.model, "cli-model");
+        assert_eq!(cfg.api_base, "https://cli.test/v1");
+        assert_eq!(cfg.max_steps, 12);
+        assert_eq!(cfg.settings_profile.as_deref(), Some("fast"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_profile_flag_selects_a_named_profile() {
+        let root = temp_workspace(Some(SETTINGS));
+        let cfg = Config::from_args(&args_for(&root, &["--model-profile", "deep"])).unwrap();
+        assert_eq!(cfg.model, "deep-model");
+        assert_eq!(cfg.settings_profile.as_deref(), Some("deep"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_profile_requires_settings() {
+        let root = temp_workspace(None);
+        let error = match Config::from_args(&args_for(&root, &["--model-profile", "fast"])) {
+            Ok(_) => panic!("expected --model-profile to fail without settings"),
+            Err(error) => error,
+        };
+        assert!(error.contains("requires a settings file"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn broken_settings_fail_closed_but_help_still_works() {
+        let root = temp_workspace(Some("{not json"));
+        let error = match Config::from_args(&args_for(&root, &[])) {
+            Ok(_) => panic!("expected invalid settings to fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("invalid settings JSON"), "{error}");
+        let help = Config::from_args(&args_for(&root, &["--help"])).unwrap();
+        assert_eq!(help.command, "help");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_settings_path_is_used() {
+        let root = temp_workspace(None);
+        std::fs::write(root.join("custom.json"), SETTINGS).unwrap();
+        let cfg = Config::from_args(&args_for(&root, &["--settings", "custom.json"])).unwrap();
+        assert_eq!(cfg.model, "profile-model");
+        assert_eq!(
+            cfg.settings_path.as_ref().unwrap().file_name().unwrap(),
+            "custom.json"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

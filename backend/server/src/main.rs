@@ -153,6 +153,14 @@ fn doctor(cfg: &Config, catalog: &Catalog) -> JResult<()> {
             .join(", ");
         println!("Sandbox backends: {available}");
     }
+    println!(
+        "Settings: {}",
+        match (&cfg.settings_path, &cfg.settings_profile) {
+            (Some(path), Some(profile)) => format!("{} (profile {profile})", path.display()),
+            (Some(path), None) => path.display().to_string(),
+            (None, _) => "none".to_string(),
+        }
+    );
     println!("Model: {}", cfg.model);
     println!(
         "Model key: {}",

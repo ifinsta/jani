@@ -5,7 +5,7 @@
 - Passing local gates: `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace --all-targets`
-  (110 tests: 95 unit, 14 CLI/integration, 1 fake-provider E2E), `cargo build --release`,
+  (125 tests: 108 unit, 16 CLI/integration, 1 fake-provider E2E), `cargo build --release`,
   `jani --version`, `jani --help`, `jani doctor`, `jani sandbox doctor`.
 - Scope: Jani is a standalone coding agent. It has no coordination engine, identity
   control plane, message bus, merge authority or external coordinator.

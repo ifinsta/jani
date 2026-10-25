@@ -13,4 +13,5 @@ pub mod journal;
 pub mod policy;
 pub mod process;
 pub mod schema;
+pub mod settings;
 pub mod types;

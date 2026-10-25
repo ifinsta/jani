@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "defaultModel": "fast",
+  "models": {
+    "fast": {
+      "model": "gpt-5-mini",
+      "apiBase": "https://api.openai.com/v1",
+      "apiKeyEnv": "JANI_API_KEY"
+    },
+    "deep": {
+      "model": "gpt-5",
+      "apiBase": "https://api.openai.com/v1",
+      "apiKeyEnv": "JANI_API_KEY"
+    }
+  },
+  "maxSteps": 20
+}

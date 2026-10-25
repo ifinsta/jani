@@ -158,8 +158,8 @@ Dedicated scenario generator: `python -m synthetic.native_tools generate --outpu
 
 ```bash
 cargo fmt --all -- --check
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release
 ./target/release/jani --version
 ```
@@ -186,6 +186,42 @@ cargo run -- --print "Implement the requested change, then run the tests" \
 `doctor` reports the worktree, discovered skills, model configuration, and active permissions. `JANI_API_BASE` defaults to `https://api.openai.com/v1`; adjust it for a compatible provider. A model call may incur usage charges.
 
 The same options can be supplied through the environment: `JANI_WRITE_PATHS`, `JANI_EXEC_PROGRAMS`, `JANI_SKILL_DIRS`.
+
+## Settings
+
+`.jani/settings.json` supplies named model profiles and a step limit. CLI flags
+override environment variables, which override settings; a missing file is fine.
+Settings cannot grant write or command authority.
+
+```json
+{
+  "version": 1,
+  "defaultModel": "fast",
+  "models": {
+    "fast": {
+      "model": "gpt-5-mini",
+      "apiBase": "https://api.openai.com/v1",
+      "apiKeyEnv": "JANI_API_KEY"
+    },
+    "deep": {
+      "model": "gpt-5",
+      "apiBase": "https://api.openai.com/v1",
+      "apiKeyEnv": "JANI_API_KEY"
+    }
+  },
+  "maxSteps": 20
+}
+```
+
+Select a profile with `--model-profile deep`; use `--settings FILE` or
+`JANI_SETTINGS` to load a different file. Relative settings paths resolve against
+the worktree. `apiKeyEnv` names the environment variable holding the key for that
+profile — an inline `apiKey` field is rejected, and unknown fields fail closed.
+When `apiKeyEnv` is set, that variable is the only credential source; if it is
+missing the key is reported missing rather than borrowing another provider's key.
+Only `.jani/settings.json` is unignored; journal, approvals and other state stay
+untracked. The shipped example is
+[docs/schemas/settings.example.json](docs/schemas/settings.example.json).
 
 ## Skills
 

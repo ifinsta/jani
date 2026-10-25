@@ -18,6 +18,7 @@ events, which are `snake_case`.
 | `plugin-manifest/v1alpha1` | `PluginManifest` | `--plugin-dir` | Ed25519 over the manifest digest |
 | Organization policy (proposal 03) | `PolicyBundle` | `--policy` | Ed25519 over the bundle without `signature` |
 | Identity assertion (proposal 03) | `IdentityAssertion` | `--identity` | Ed25519 over the assertion without `signature` |
+| Project settings (not in the proposal table) | `Settings` | `.jani/settings.json`, `--settings`, `JANI_SETTINGS` | No; must not contain secrets |
 
 ### 1.1 Work contract
 
@@ -165,6 +166,17 @@ model egress; `"*"` is the only wildcard. `maxRisk` is `R0`–`R4`; `effect` is
 `principal` and `tenant` must match the CLI request. Expiry, future-issued
 assertions and an empty nonce are rejected. The nonce is not replay-checked and
 there is no audience field yet.
+
+### 1.5 Project settings
+
+See [settings.example.json](settings.example.json). Settings supply named model
+profiles and a `maxSteps` limit; they cannot grant write or command authority.
+
+Required: `version: 1`. If `models` is non-empty, `defaultModel` must name one of
+them. Each profile requires `model` and may set `apiBase` and `apiKeyEnv`;
+`apiKeyEnv` names the environment variable holding the credential, and an inline
+`apiKey` field is rejected. Unknown fields fail closed. CLI flags override
+environment variables, which override settings.
 
 ## 2. Implemented internal records
 

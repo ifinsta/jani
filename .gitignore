@@ -2,7 +2,8 @@
 .env
 .env.*
 *.log
-.jani/
+**/.jani/*
+!**/.jani/settings.json
 
 # Synthetic stress corpora are regenerated, not committed
 synthetic/generated/

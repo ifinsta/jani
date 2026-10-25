@@ -14,12 +14,12 @@ The workspace root lists `backend/server` under `default-members`, so the
 
 Expected automated coverage in this build:
 
-- 95 unit tests across config, policy, identity, data, broker, journal, approvals,
-  budget, sandbox, process, workspace, skills, schema, plugins, native tools,
-  mirror reports and the check/claims tooling.
-- 14 CLI and integration tests: 7 CLI tests including the shipped work-contract
-  example and the guarantee that `--version`/`--help` need no provider credentials,
-  plus MCP gateway, mirror CLI and native tool suites.
+- 108 unit tests across config, policy, identity, data, broker, journal, approvals,
+  budget, sandbox, process, workspace, skills, schema, plugins, project settings,
+  native tools, mirror reports and the check/claims tooling.
+- 16 CLI and integration tests: 9 CLI tests including the shipped work-contract
+  example, settings precedence and the guarantee that `--version`/`--help` need no
+  provider credentials, plus MCP gateway, mirror CLI and native tool suites.
 - 1 end-to-end test that starts a fake OpenAI-compatible provider and runs the real
   CLI through policy, gateway, broker, audit and budget accounting.
 
@@ -31,6 +31,8 @@ child environment so it exercises local-unmanaged mode deterministically.
 | Trial | Expected outcome |
 |---|---|
 | `jani --version`, `jani --help`, `jani skills`, `jani doctor` | Finite output, no model call required |
+| `.jani/settings.json` then `--model-profile NAME` | `doctor` reports the profile; CLI flags override env, env overrides settings |
+| Settings with an inline `apiKey` or unknown field | Refused before work; the value is not echoed |
 | `jani sandbox doctor`, `jani sandbox check` | Backend availability and confinement claims match the host; no false confinement |
 | `jani policy explain`, `jani policy check --action ... --resource ...` | Deterministic decision without a model call |
 | `jani contract validate docs/schemas/work-contract.example.json` | `ok: true` |
