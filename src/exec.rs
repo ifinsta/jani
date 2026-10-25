@@ -1,11 +1,14 @@
 use crate::config::{validate_relative, Config, JResult};
-use crate::process::execute;
+use crate::process::{execute, execute_with};
+use crate::sandbox::{SandboxManager, SandboxPlan};
+use crate::types::{NetworkPolicy, SandboxProfile, SandboxReceipt};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
 
 // Allowlisted execution: command validation and direct execution share the same
 // scope and executable rules. Enforcement lives here because a SKILL.md is advisory.
+#[cfg(test)]
 pub fn run(cfg: &Config, argv: &[String], timeout: u64) -> JResult<Value> {
     if !cfg.allow_exec {
         return Err("command execution disabled; --allow-exec required".into());
@@ -30,6 +33,57 @@ pub fn run(cfg: &Config, argv: &[String], timeout: u64) -> JResult<Value> {
         "stderr": out.stderr,
         "command_succeeded": out.code == Some(0) && !out.timed_out,
     }))
+}
+
+/// Execute an allowlisted command through the selected OS sandbox backend and
+/// return both its output and an execution receipt. A profile that requires
+/// confinement fails closed when no backend can satisfy it.
+pub fn run_confined(
+    cfg: &Config,
+    argv: &[String],
+    timeout: u64,
+    profile: SandboxProfile,
+    network: NetworkPolicy,
+) -> JResult<(Value, SandboxReceipt)> {
+    if !cfg.allow_exec {
+        return Err("command execution disabled; --allow-exec required".into());
+    }
+    if !(1..=300).contains(&timeout) {
+        return Err("command timeout must be 1..300 seconds".into());
+    }
+    validate(argv, cfg)?;
+    if argv.first().map(String::as_str) == Some("git")
+        && argv.get(1).map(String::as_str) == Some("commit")
+    {
+        verify_staged_paths(cfg)?;
+    }
+    let manager = SandboxManager::new(cfg);
+    let plan: SandboxPlan = manager.prepare(profile, network)?;
+    let (mut cmd, isolation) = manager.command(&plan, argv)?;
+    let out = execute_with(&mut cmd, &cfg.root, timeout, isolation)?;
+    let termination = if out.timed_out {
+        Some("timeout-or-output-limit".to_string())
+    } else if out.code.is_none() {
+        Some("terminated-by-signal".to_string())
+    } else {
+        None
+    };
+    let succeeded = out.code == Some(0) && !out.timed_out;
+    let network_confined = plan.network_confined;
+    let receipt = plan.receipt(termination);
+    Ok((
+        json!({
+            "exit_code": out.code,
+            "timed_out": out.timed_out,
+            "stdout": out.stdout,
+            "stderr": out.stderr,
+            "command_succeeded": succeeded,
+            "sandbox_backend": receipt.backend,
+            "filesystem_confined": receipt.filesystem_confined,
+            "network_confined": network_confined,
+        }),
+        receipt,
+    ))
 }
 
 // Refuse commits that would include files staged outside the approved edit scope.
@@ -265,16 +319,11 @@ mod tests {
     fn test_config() -> Config {
         Config {
             command: "run".into(),
-            prompt: None,
-            model: "test-model".into(),
-            api_base: "https://localhost/v1".into(),
-            api_key: None,
-            max_steps: 1,
-            root: PathBuf::from("."),
             allow_write: true,
             allow_exec: true,
             write_paths: vec![PathBuf::from("src")],
             exec_programs: vec![],
+            ..Config::baseline()
         }
     }
 

@@ -38,6 +38,26 @@ fn print_does_not_accept_an_option_as_prompt() {
 }
 
 #[test]
+fn shipped_work_contract_example_validates() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs")
+        .join("schemas")
+        .join("work-contract.example.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+        .arg("contract")
+        .arg("validate")
+        .arg(&path)
+        .output()
+        .expect("execute jani");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"ok\": true"));
+}
+
+#[test]
 fn version_ignores_unrelated_invalid_environment() {
     let output = Command::new(env!("CARGO_BIN_EXE_jani"))
         .arg("--version")

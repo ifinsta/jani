@@ -1,0 +1,33 @@
+{
+  "apiVersion": "jani.dev/v1alpha1",
+  "kind": "WorkContract",
+  "metadata": {
+    "taskId": "task-fix-duplicate-callbacks",
+    "tenant": "org-example",
+    "principal": "human-82",
+    "workspace": "payment-service"
+  },
+  "spec": {
+    "purpose": "SOFTWARE_DEV",
+    "capabilities": [
+      "repo.read",
+      "repo.write",
+      "command.exec"
+    ],
+    "writePaths": [
+      "src",
+      "tests"
+    ],
+    "sandboxProfile": "development-confined",
+    "dataClassification": "INTERNAL",
+    "budget": {
+      "maxUsd": 3.0,
+      "maxToolCalls": 50,
+      "deadlineSeconds": 1200
+    },
+    "acceptance": [
+      "callback-idempotency-tests-pass",
+      "changes-limited-to-authorized-paths"
+    ]
+  }
+}

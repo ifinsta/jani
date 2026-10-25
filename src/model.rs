@@ -5,6 +5,12 @@ use std::time::Duration;
 
 const MAX_ATTEMPTS: u64 = 3;
 
+pub struct ModelReply {
+    pub message: Value,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
 pub struct ChatModel {
     client: Client,
     endpoint: String,
@@ -30,7 +36,7 @@ impl ChatModel {
         })
     }
 
-    pub fn complete(&self, messages: &[Value], tools: &[Value]) -> JResult<Value> {
+    pub fn complete(&self, messages: &[Value], tools: &[Value]) -> JResult<ModelReply> {
         let req = json!({"model": self.model, "messages": messages, "tools": tools, "tool_choice": "auto"});
         let mut attempt = 0u64;
         loop {
@@ -47,10 +53,23 @@ impl ChatModel {
             if status.is_success() {
                 let v: Value =
                     serde_json::from_str(&body).map_err(|e| format!("invalid model JSON: {e}"))?;
-                return v
+                let message = v
                     .pointer("/choices/0/message")
                     .cloned()
-                    .ok_or("response missing choices[0].message".into());
+                    .ok_or("response missing choices[0].message")?;
+                let prompt_tokens = v
+                    .pointer("/usage/prompt_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let completion_tokens = v
+                    .pointer("/usage/completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                return Ok(ModelReply {
+                    message,
+                    prompt_tokens,
+                    completion_tokens,
+                });
             }
             // Transient provider failures are retried with a short linear backoff. The
             // turn ceiling still bounds total run time; no monetary budget is implied.
@@ -93,6 +112,15 @@ pub fn specs() -> Vec<Value> {
             json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":300}},"required":["argv","timeout_secs"],"additionalProperties":false}),
         ),
     ]
+}
+
+pub fn tool_schema(name: &str) -> Option<Value> {
+    for spec in specs() {
+        if spec.pointer("/function/name").and_then(Value::as_str) == Some(name) {
+            return spec.pointer("/function/parameters").cloned();
+        }
+    }
+    None
 }
 
 fn function(name: &str, description: &str, parameters: Value) -> Value {

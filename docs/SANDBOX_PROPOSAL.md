@@ -1,6 +1,7 @@
 # Proposal: OS-level execution sandbox for Jani
 
-**Status:** proposal — not implemented, not scheduled
+**Status:** partially implemented — bubblewrap/Job Object selection and receipts exist; see
+[the implementation review](jani_enterprise_proposals/IMPLEMENTATION_REVIEW.md) for platform limits.
 **Date:** 2026-10-25
 **Scope:** confine commands requested through `workspace_command` (and their descendants)
 

@@ -6,13 +6,42 @@ Jani embeds no coordination engine. It works directly in a Git worktree, reads i
 
 **Status: source implementation, not yet production validated.** The project is deliberately strict by default: no edits or command execution unless explicitly enabled. The source archive is not a prebuilt binary. Before using it with a real repository, run the build and acceptance suite described below.
 
+The [enterprise proposal pack](docs/jani_enterprise_proposals/README.md) is
+partially implemented as a trusted local kernel. Its
+[implementation review](docs/jani_enterprise_proposals/IMPLEMENTATION_REVIEW.md)
+records what is enforced, what is missing, and why this build is not an
+enterprise-ready release.
+
 ## What is implemented
 
-- Rust binary with `--print`, `run`, `skills`, `doctor`, `--version` and `--help`.
+- Rust binary with `run`, `--print`, `skills`, `doctor`, `sandbox`,
+  `plugins`, `policy`, `audit`, `inspect`, `approvals`, `budget`, `identity`,
+  `contract`, `--version` and `--help`.
 - Native OpenAI-compatible Chat Completions client with JSON function/tool calling, configurable model, endpoint and bounded turn loop; no Python AI SDK.
 - Discovers installed `SKILL.md` files and reads instructions on demand.
 - Typed tools for non-sensitive working-tree listing and reads, explicitly scoped atomic file writes, and allowlisted test/git commands.
-- Default-deny permissions with explicit relative write scopes.
+- Default-deny permissions with explicit relative write scopes. Operator flags are a
+  ceiling; a signed work contract can narrow them but never widen them.
+- Signed organization policy (Ed25519, tenant-bound, expiring) with default deny,
+  explicit denies, risk tiers, approvals and budgets. Enterprise mode requires a
+  signed policy and identity assertion.
+- Signed identity assertions bound to tenant and principal.
+- Data governance: classification, secret/PII detection and redaction, per-request
+  data envelopes, and a fail-closed provider/region/purpose egress matrix. Empty
+  allowlists deny; `"*"` is the only wildcard.
+- A mediating tool broker that validates every request, enforces policy,
+  capabilities, write scope and budgets, and journals the decision before acting.
+- Hash-chained audit journal (`jani audit verify`, `jani inspect RUN_ID`) with
+  fail-closed behavior when a record cannot be written.
+- Persisted per-task budget ledgers for tool calls, wall time, tokens and priced
+  USD spend, tightened across restarts.
+- Single-use approvals with exact capability/resource/payload binding, TTL and
+  separation of duties.
+- Sandbox selection with no silent fallback: bubblewrap on Linux, a Windows Job
+  Object on Windows, and explicit refusal when an isolation profile cannot be
+  satisfied. Receipts report filesystem and network confinement honestly.
+- Signed plugin manifest registry with capability cataloguing. Plugins are
+  verified but **not executable** in this build.
 - Protection against path traversal, symlink components and common credential paths. Protected paths are not a replacement for OS-level sandboxing.
 - Children run with argv only (no shell), bounded time and output, and without the provider API key in their environment.
 - `git commit` refuses pre-staged files outside the approved edit scope.
@@ -65,15 +94,31 @@ A skill is regular Markdown with a YAML `name` and `description` frontmatter. Ja
 ## Security model
 
 1. **Operator permission:** writes and command execution are default-denied.
-2. **Rust tool boundaries:** only explicit relative paths inside `--write-path` scopes can be written; only allowlisted argv can run; protected and symlinked paths are refused.
-3. **Process boundary:** children receive no shell, no provider API key, and have bounded time and output.
+2. **Signed policy:** in enterprise mode a signed, tenant-bound policy must exist;
+   it is default-deny and can only narrow operator flags. A work contract can only
+   narrow the policy and operator scope.
+3. **Rust tool boundaries:** only explicit relative paths inside `--write-path` scopes can be written; only allowlisted argv can run; protected and symlinked paths are refused. Every call passes through the broker, policy and audit journal.
+4. **Data egress:** secrets are redacted and secret-classified content is never sent to a provider; provider, region, purpose and classification allowlists fail closed.
+5. **Process boundary:** children receive no shell, no provider API key, and have bounded time and output. A verified sandbox backend is required for isolation profiles.
 
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TESTING.md](docs/TESTING.md).
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/TESTING.md](docs/TESTING.md), the [schema notes](docs/schemas/README.md) and the [implementation review](docs/jani_enterprise_proposals/IMPLEMENTATION_REVIEW.md).
 
 ## Security limitations
 
-- Jani is not an OS sandbox and does not prevent arbitrary processes from modifying files outside its guarded interfaces. Use OS/container isolation for untrusted code. See [docs/SANDBOX_PROPOSAL.md](docs/SANDBOX_PROPOSAL.md) for a proposed optional OS-level sandbox.
+- **Platform confinement is incomplete.** bubblewrap provides filesystem and network confinement on Linux hosts that support it. The Windows Job Object bounds only the process tree and cannot satisfy enterprise isolation profiles. macOS has no backend. Do not treat this build as an OS sandbox on Windows or macOS.
+- **Plugins cannot execute.** Manifests are verified and catalogued only; there is no WASM, sidecar or MCP runtime.
+- **No identity or policy control plane.** There is no IdP/SCIM, role claim, policy
+  administration API, key rotation/revocation, signed work contract, signed
+  execution receipt or nonce replay cache. Approval roles are caller-asserted.
+- **State is local and plaintext.** The journal, approvals and budget ledgers are
+  plaintext JSON in `--state-dir`; there is no encryption, tenant partitioning,
+  retention/erasure or external audit anchoring.
+- **Signing interoperability is limited.** Signatures cover this binary's
+  `serde_json` field order, not RFC 8785/JCS, and there is no issuer CLI. See
+  [docs/schemas/README.md](docs/schemas/README.md).
 - Even an allowlisted `cargo test`, `pytest`, `go test` or `npm test` can run malicious build scripts or test code. Use container sandboxing with restricted secrets and a disposable checkout.
 - Path protections are vulnerable to a hostile process racing file replacement; use a sandbox or OS ACLs for isolation.
-- This release uses single-run model context; recovery is reconstructible from repository state, not an automatically replayed Jani conversation transcript.
-- `--max-steps` is a turn ceiling, not a monetary spending limit. Provider usage is not accounted for internally.
+- This release uses single-run model context; recovery is reconstructible from repository state, not an automatically replayed Jani conversation transcript. There are no checkpoints or leases.
+- `--max-steps` is a turn ceiling. Budgets bound tool calls, time, tokens and
+  policy-priced USD, but provider billing is authoritative and is not reconciled
+  after the run.

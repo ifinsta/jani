@@ -157,16 +157,12 @@ mod tests {
     fn test_config(root: PathBuf) -> Config {
         Config {
             command: "run".into(),
-            prompt: None,
-            model: "test-model".into(),
-            api_base: "https://localhost/v1".into(),
-            api_key: None,
-            max_steps: 1,
             root,
             allow_write: false,
             allow_exec: false,
             write_paths: vec![],
             exec_programs: vec![],
+            ..Config::baseline()
         }
     }
 
