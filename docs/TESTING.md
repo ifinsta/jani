@@ -4,17 +4,22 @@
 
 ```bash
 cargo fmt --all -- --check
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release
 ```
 
+The workspace root lists `backend/server` under `default-members`, so the
+`--workspace` flag is required to exercise every crate.
+
 Expected automated coverage in this build:
 
-- 61 unit tests across config, policy, identity, data, broker, journal, approvals,
-  budget, sandbox, process, workspace, skills, schema and plugins.
-- 5 CLI tests, including the shipped work-contract example and the guarantee that
-  `--version`/`--help` need no provider credentials.
+- 95 unit tests across config, policy, identity, data, broker, journal, approvals,
+  budget, sandbox, process, workspace, skills, schema, plugins, native tools,
+  mirror reports and the check/claims tooling.
+- 14 CLI and integration tests: 7 CLI tests including the shipped work-contract
+  example and the guarantee that `--version`/`--help` need no provider credentials,
+  plus MCP gateway, mirror CLI and native tool suites.
 - 1 end-to-end test that starts a fake OpenAI-compatible provider and runs the real
   CLI through policy, gateway, broker, audit and budget accounting.
 

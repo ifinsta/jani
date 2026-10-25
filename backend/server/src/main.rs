@@ -1,12 +1,14 @@
-pub use jani_core::{approvals, budget, config, crypto, data, identity, journal, policy, process, schema, types};
+pub use jani_core::{
+    approvals, budget, config, crypto, data, identity, journal, policy, process, schema, types,
+};
 mod agent;
 mod attention;
 mod broker;
 mod exec;
 mod gateway;
-mod model;
-mod mirror;
 mod mcp;
+mod mirror;
+mod model;
 mod native;
 mod plugins;
 mod sandbox;

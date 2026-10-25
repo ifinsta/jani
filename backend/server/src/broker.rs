@@ -113,17 +113,33 @@ impl<'a> Broker<'a> {
                 if !jani_native::TOOLS.contains(&native) {
                     return Err("unknown native capability".into());
                 }
-                if operation=="verify" && native=="planner" ||
-                   operation=="rollback" && native=="workspace" ||
-                   operation=="run" && native=="verifier" {
+                if operation == "verify" && native == "planner"
+                    || operation == "rollback" && native == "workspace"
+                    || operation == "run" && native == "verifier"
+                {
                     return Err("native privileged action is not available to the model".into());
                 }
-                let is_mutation=jani_native::mutation(native,operation);
+                let is_mutation = jani_native::mutation(native, operation);
                 Ok(Call {
-                    action: if is_mutation { "native.control" } else { "native.read" },
-                    effect: if is_mutation { Effect::Control } else { Effect::Read },
-                    risk: if is_mutation { RiskTier::R1 } else { RiskTier::R0 },
-                    resource: format!("native:{}:{}:{native}:{operation}",self.identity.tenant,self.task_id),
+                    action: if is_mutation {
+                        "native.control"
+                    } else {
+                        "native.read"
+                    },
+                    effect: if is_mutation {
+                        Effect::Control
+                    } else {
+                        Effect::Read
+                    },
+                    risk: if is_mutation {
+                        RiskTier::R1
+                    } else {
+                        RiskTier::R0
+                    },
+                    resource: format!(
+                        "native:{}:{}:{native}:{operation}",
+                        self.identity.tenant, self.task_id
+                    ),
                 })
             }
             "workspace_command" => {
@@ -655,23 +671,41 @@ impl<'a> Broker<'a> {
                 ))
             }
             "native_tool" => {
-                let name = get_str(args,"tool")?;
-                let operation = get_str(args,"operation")?;
-                let extra = args.get("args").and_then(Value::as_array)
+                let name = get_str(args, "tool")?;
+                let operation = get_str(args, "operation")?;
+                let extra = args
+                    .get("args")
+                    .and_then(Value::as_array)
                     .ok_or("native args must be an array")?;
-                if extra.len()>5 {return Err("native argument count exceeds limit".into());}
-                let mut parts=vec![operation.to_string()];
+                if extra.len() > 5 {
+                    return Err("native argument count exceeds limit".into());
+                }
+                let mut parts = vec![operation.to_string()];
                 for item in extra {
-                    parts.push(item.as_str().ok_or("native args must be strings")?.to_owned());
+                    parts.push(
+                        item.as_str()
+                            .ok_or("native args must be strings")?
+                            .to_owned(),
+                    );
                 }
-                if name=="planner" && operation=="verify" ||
-                    name=="workspace" && operation=="rollback" ||
-                    name=="verifier" && operation=="run" {
-                    return Err("native tool cannot perform user-only or ungoverned operations".into());
+                if name == "planner" && operation == "verify"
+                    || name == "workspace" && operation == "rollback"
+                    || name == "verifier" && operation == "run"
+                {
+                    return Err(
+                        "native tool cannot perform user-only or ungoverned operations".into(),
+                    );
                 }
-                let data=jani_native::run(&self.cfg.root,&self.cfg.state_dir,
-                    &self.identity.tenant,&self.task_id,name,&parts,false)?;
-                Ok((data,None,None))
+                let data = jani_native::run(
+                    &self.cfg.root,
+                    &self.cfg.state_dir,
+                    &self.identity.tenant,
+                    &self.task_id,
+                    name,
+                    &parts,
+                    false,
+                )?;
+                Ok((data, None, None))
             }
             "workspace_command" => {
                 let argv = get_argv(args)?;

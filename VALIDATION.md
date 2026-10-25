@@ -3,8 +3,9 @@
 - Source tree built and tested on Windows with the stable Rust 1.95.0 toolchain
   (`x86_64-pc-windows-msvc`).
 - Passing local gates: `cargo fmt --all -- --check`,
-  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets`
-  (61 unit tests + 5 CLI tests + 1 fake-provider E2E test), `cargo build --release`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace --all-targets`
+  (110 tests: 95 unit, 14 CLI/integration, 1 fake-provider E2E), `cargo build --release`,
   `jani --version`, `jani --help`, `jani doctor`, `jani sandbox doctor`.
 - Scope: Jani is a standalone coding agent. It has no coordination engine, identity
   control plane, message bus, merge authority or external coordinator.

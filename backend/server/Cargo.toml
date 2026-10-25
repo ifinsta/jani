@@ -20,6 +20,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
+[dev-dependencies]
+jani-core = { workspace = true, features = ["test-keys"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

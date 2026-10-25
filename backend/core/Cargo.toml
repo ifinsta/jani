@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 build = "build.rs"
 
+[features]
+test-keys = []
+
 [dependencies]
 ed25519-dalek = "2"
 hex.workspace = true

@@ -1,5 +1,5 @@
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-keys"))]
 use ed25519_dalek::{Signer, SigningKey};
 
 fn decode_32(value: &str, what: &str) -> Result<[u8; 32], String> {
@@ -61,14 +61,14 @@ pub fn verify_signature(
 
 /// Signing helpers back unit-test fixtures only. The runtime verifies signatures
 /// and never holds organization signing keys; production signing belongs in KMS/HSM.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-keys"))]
 pub fn sign_hex(secret_hex: &str, message: &[u8]) -> Result<String, String> {
     let bytes = decode_32(secret_hex, "signing key")?;
     let key = SigningKey::from_bytes(&bytes);
     Ok(hex::encode(key.sign(message).to_bytes()))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-keys"))]
 pub fn public_key_hex(secret_hex: &str) -> Result<String, String> {
     let bytes = decode_32(secret_hex, "signing key")?;
     let key = SigningKey::from_bytes(&bytes);

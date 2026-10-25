@@ -1,19 +1,8 @@
 {
-  "documentsScanned": 19,
-  "findings": [
-    {
-      "document": "docs/ARCHITECTURE.md",
-      "id": "ARCH-MCP-EXECUTOR",
-      "kind": "claim_mismatch",
-      "line": 115,
-      "reason": "claim contradicted by source",
-      "statement": "Jani has no MCP executor.",
-      "status": "open",
-      "target": "backend/server/src/main.rs"
-    }
-  ],
-  "open": 1,
+  "documentsScanned": 22,
+  "findings": [],
+  "open": 0,
   "review": 0,
   "schemaVersion": "jani.claims/v1",
-  "verifiedClaims": 2
+  "verifiedClaims": 3
 }

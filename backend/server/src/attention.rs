@@ -16,7 +16,6 @@ use std::fs;
 
 const VERSION: u32 = 1;
 const MAX_ALERTS: usize = 10_000;
-const MAX_STATE_BYTES: u64 = 8_000_000;
 const LEASE_SECS: u64 = 60;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,24 +82,40 @@ fn key(tenant: &str, id: &str) -> String {
 fn identifier(name: &str, value: &str) -> JResult<()> {
     if value.is_empty()
         || value.len() > 96
-        || !value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
     {
-        return Err(format!("{name} must contain 1..96 ASCII letters, digits, '.', '-' or '_'"));
+        return Err(format!(
+            "{name} must contain 1..96 ASCII letters, digits, '.', '-' or '_'"
+        ));
     }
     Ok(())
 }
 
 fn argument<'a>(cfg: &'a Config, index: usize, name: &str) -> JResult<&'a str> {
-    let value = cfg.positional.get(index).map(String::as_str)
+    let value = cfg
+        .positional
+        .get(index)
+        .map(String::as_str)
         .ok_or_else(|| format!("missing {name} at argument {}", index + 1))?;
     identifier(name, value)?;
     Ok(value)
 }
 
-fn actor(cfg: &Config, action: &str, recipient: &str, risk: RiskTier, effect: Effect, own: bool) -> JResult<identity::VerifiedIdentity> {
+fn actor(
+    cfg: &Config,
+    action: &str,
+    recipient: &str,
+    risk: RiskTier,
+    effect: Effect,
+    own: bool,
+) -> JResult<identity::VerifiedIdentity> {
     let id = identity::load(cfg)?;
     if cfg.is_enterprise() && (!id.verified || (own && id.principal != recipient)) {
-        return Err("enterprise agent inbox operations require the recipient's verified identity".into());
+        return Err(
+            "enterprise agent inbox operations require the recipient's verified identity".into(),
+        );
     }
     let engine = PolicyEngine::load(cfg)?;
     let request = ActionRequest {
@@ -117,7 +132,10 @@ fn actor(cfg: &Config, action: &str, recipient: &str, risk: RiskTier, effect: Ef
     };
     let decision = engine.evaluate(cfg, &request);
     if decision.decision != Decision::Permit {
-        return Err(format!("attention policy denied {action}: {}", decision.reason_code));
+        return Err(format!(
+            "attention policy denied {action}: {}",
+            decision.reason_code
+        ));
     }
     Ok(id)
 }
@@ -153,10 +171,17 @@ where
 }
 
 fn lookup_agent<'a>(s: &'a mut Snapshot, tenant: &str, id: &str) -> JResult<&'a mut AgentRecord> {
-    s.agents.get_mut(&key(tenant, id)).ok_or_else(|| format!("agent '{id}' is not registered"))
+    s.agents
+        .get_mut(&key(tenant, id))
+        .ok_or_else(|| format!("agent '{id}' is not registered"))
 }
 
-fn lookup_alert<'a>(s: &'a mut Snapshot, tenant: &str, agent: &str, alert: &str) -> JResult<&'a mut AlertRecord> {
+fn lookup_alert<'a>(
+    s: &'a mut Snapshot,
+    tenant: &str,
+    agent: &str,
+    alert: &str,
+) -> JResult<&'a mut AlertRecord> {
     let value = s.alerts.get_mut(alert).ok_or("alert not found")?;
     if value.tenant != tenant || value.recipient != agent {
         return Err("alert not found in recipient inbox".into());
@@ -165,7 +190,10 @@ fn lookup_alert<'a>(s: &'a mut Snapshot, tenant: &str, agent: &str, alert: &str)
 }
 
 pub fn command(cfg: &Config) -> JResult<Value> {
-    let verb = cfg.sub.as_deref().ok_or("attention command needs a subcommand")?;
+    let verb = cfg
+        .sub
+        .as_deref()
+        .ok_or("attention command needs a subcommand")?;
     if cfg.command == "wake" && verb == "watch" {
         // The watcher is only a lightweight poller; it never runs the model or
         // accepts a message as permission. Recheck identity and policy each tick.
@@ -181,13 +209,23 @@ pub fn command(cfg: &Config) -> JResult<Value> {
     }
     let agent = argument(cfg, 0, "agent id")?;
     let action = format!("attention.{}.{}", cfg.command, verb);
-    let own = !matches!((cfg.command.as_str(), verb), ("agent", "register") | ("alerts", "send"));
-    let effect = if matches!((cfg.command.as_str(), verb), ("agent", "status") | ("alerts", "list") | ("wake", "poll")) {
+    let own = !matches!(
+        (cfg.command.as_str(), verb),
+        ("agent", "register") | ("alerts", "send")
+    );
+    let effect = if matches!(
+        (cfg.command.as_str(), verb),
+        ("agent", "status") | ("alerts", "list") | ("wake", "poll")
+    ) {
         Effect::Read
     } else {
         Effect::Control
     };
-    let risk = if matches!((cfg.command.as_str(), verb), ("alerts", "send")) { RiskTier::R2 } else { RiskTier::R1 };
+    let risk = if matches!((cfg.command.as_str(), verb), ("alerts", "send")) {
+        RiskTier::R2
+    } else {
+        RiskTier::R1
+    };
     let identity = actor(cfg, &action, agent, risk, effect, own)?;
     let tenant = identity.tenant;
     let principal = identity.principal;
@@ -215,7 +253,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         ("agent", "sleep") => transaction(cfg, &principal, &action, |s| {
             let a = lookup_agent(s, &tenant, agent)?;
             if a.phase != Phase::Ready {
-                return Err("sleep requires ready state; active work must checkpoint separately".into());
+                return Err(
+                    "sleep requires ready state; active work must checkpoint separately".into(),
+                );
             }
             if !a.phase.can_transition(Phase::Sleeping) {
                 return Err("lifecycle transition is not allowed by contract".into());
@@ -228,7 +268,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         ("agent", "wake") => transaction(cfg, &principal, &action, |s| {
             let a = lookup_agent(s, &tenant, agent)?;
             if a.phase != Phase::Sleeping {
-                return Err("wake requires sleeping state; paused/quarantined agents cannot wake".into());
+                return Err(
+                    "wake requires sleeping state; paused/quarantined agents cannot wake".into(),
+                );
             }
             if !a.phase.can_transition(Phase::Ready) {
                 return Err("lifecycle transition is not allowed by contract".into());
@@ -241,21 +283,34 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         }),
         ("wake", "poll") => transaction(cfg, &principal, &action, |s| {
             let a = lookup_agent(s, &tenant, agent)?.clone();
-            let pending = s.alerts.values().filter(|e| {
-                e.tenant == tenant && e.recipient == agent && e.phase == AlertPhase::Pending
-            }).count();
-            Ok((json!({"phase": a.phase, "wakeRequested": a.wake_requested, "pending": pending, "generation": a.generation}), false))
+            let pending = s
+                .alerts
+                .values()
+                .filter(|e| {
+                    e.tenant == tenant && e.recipient == agent && e.phase == AlertPhase::Pending
+                })
+                .count();
+            Ok((
+                json!({"phase": a.phase, "wakeRequested": a.wake_requested, "pending": pending, "generation": a.generation}),
+                false,
+            ))
         }),
         ("wake", "once") => transaction(cfg, &principal, &action, |s| {
             let a = lookup_agent(s, &tenant, agent)?;
             if a.phase != Phase::Sleeping || !a.wake_requested {
-                return Ok((json!({"woke":false, "phase":a.phase, "generation":a.generation}), false));
+                return Ok((
+                    json!({"woke":false, "phase":a.phase, "generation":a.generation}),
+                    false,
+                ));
             }
             a.phase = Phase::Ready;
             a.wake_requested = false;
             a.updated_at = now;
             a.generation += 1;
-            Ok((json!({"woke":true,"phase":a.phase,"generation":a.generation}),true))
+            Ok((
+                json!({"woke":true,"phase":a.phase,"generation":a.generation}),
+                true,
+            ))
         }),
         ("alerts", "send") => {
             let event = argument(cfg, 1, "event")?;
@@ -268,8 +323,17 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             let dedupe = argument(cfg, 5, "idempotency key")?;
             transaction(cfg, &principal, &action, |s| {
                 let _ = lookup_agent(s, &tenant, agent)?;
-                if let Some(a) = s.alerts.values().find(|a| a.tenant == tenant && a.sender == principal && a.dedupe_key == dedupe) {
-                    if a.source != source || a.event != event || a.reference != reference || a.recipient != agent || a.severity != severity {
+                if let Some(a) = s
+                    .alerts
+                    .values()
+                    .find(|a| a.tenant == tenant && a.sender == principal && a.dedupe_key == dedupe)
+                {
+                    if a.source != source
+                        || a.event != event
+                        || a.reference != reference
+                        || a.recipient != agent
+                        || a.severity != severity
+                    {
                         return Err("idempotency key reused with different alert contents".into());
                     }
                     return Ok((json!({"alert":a,"replayed":true}), false));
@@ -307,12 +371,18 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         }
         ("alerts", "list") => transaction(cfg, &principal, &action, |s| {
             let _ = lookup_agent(s, &tenant, agent)?;
-            let alerts = s.alerts.values().filter(|a| a.tenant == tenant && a.recipient == agent)
-                .map(|a| json!({
-                    "id":a.id,"event":a.event,"source":a.source,"reference":a.reference,
-                    "severity":a.severity,"phase":a.phase,"attempts":a.attempts,
-                    "createdAt":a.created_at,"evidence":a.evidence
-                })).collect::<Vec<_>>();
+            let alerts = s
+                .alerts
+                .values()
+                .filter(|a| a.tenant == tenant && a.recipient == agent)
+                .map(|a| {
+                    json!({
+                        "id":a.id,"event":a.event,"source":a.source,"reference":a.reference,
+                        "severity":a.severity,"phase":a.phase,"attempts":a.attempts,
+                        "createdAt":a.created_at,"evidence":a.evidence
+                    })
+                })
+                .collect::<Vec<_>>();
             Ok((json!(alerts), false))
         }),
         ("alerts", "claim") => transaction(cfg, &principal, &action, |s| {
@@ -320,19 +390,38 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             if !matches!(state.phase, Phase::Ready | Phase::Running) {
                 return Err("agent must be ready before claiming an alert".into());
             }
-            let candidate = s.alerts.values_mut().filter(|a|
-                a.tenant == tenant && a.recipient == agent
-                && (a.phase == AlertPhase::Pending || (a.phase == AlertPhase::Leased && a.lease.as_ref().is_some_and(|l| l.expires_at <= now)))
-                && a.next_attempt_at <= now
-            ).min_by_key(|a| (a.created_at, a.id.clone()));
+            let candidate = s
+                .alerts
+                .values_mut()
+                .filter(|a| {
+                    a.tenant == tenant
+                        && a.recipient == agent
+                        && (a.phase == AlertPhase::Pending
+                            || (a.phase == AlertPhase::Leased
+                                && a.lease.as_ref().is_some_and(|l| l.expires_at <= now)))
+                        && a.next_attempt_at <= now
+                })
+                .min_by_key(|a| (a.created_at, a.id.clone()));
             if let Some(a) = candidate {
                 a.attempts = a.attempts.saturating_add(1);
+                if a.phase == AlertPhase::Leased {
+                    // An expired lease is released back to pending before re-claiming.
+                    if !a.phase.can_transition(AlertPhase::Pending) {
+                        return Err("expired alert lease cannot be released by contract".into());
+                    }
+                    a.phase = AlertPhase::Pending;
+                    a.lease = None;
+                }
                 if !a.phase.can_transition(AlertPhase::Leased) {
                     return Err("alert transition is not allowed by contract".into());
                 }
                 a.phase = AlertPhase::Leased;
                 a.updated_at = now;
-                a.lease = Some(Lease { consumer: principal.clone(), token: new_id("receipt"), expires_at: now + LEASE_SECS });
+                a.lease = Some(Lease {
+                    consumer: principal.clone(),
+                    token: new_id("receipt"),
+                    expires_at: now + LEASE_SECS,
+                });
                 return Ok((json!({"alert":a}), true));
             }
             Ok((json!({"alert":null}), false))
@@ -346,7 +435,8 @@ pub fn command(cfg: &Config) -> JResult<Value> {
                     return Err("alert is not leased".into());
                 }
                 let lease = a.lease.as_ref().ok_or("alert lease missing")?;
-                if lease.consumer != principal || lease.token != receipt || lease.expires_at <= now {
+                if lease.consumer != principal || lease.token != receipt || lease.expires_at <= now
+                {
                     return Err("stale or incorrect receipt; refusing action".into());
                 }
                 if verb == "accept" {
@@ -374,7 +464,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             transaction(cfg, &principal, &action, |s| {
                 let a = lookup_alert(s, &tenant, agent, alert)?;
                 if a.phase != AlertPhase::Accepted {
-                    return Err("resolve requires an accepted alert; verification is external".into());
+                    return Err(
+                        "resolve requires an accepted alert; verification is external".into(),
+                    );
                 }
                 if !a.phase.can_transition(AlertPhase::Resolved) {
                     return Err("alert resolution transition is not allowed by contract".into());
@@ -418,16 +510,44 @@ mod tests {
         let mut cfg = fixture();
         call(&mut cfg, "agent", "register", &["worker"]).unwrap();
         call(&mut cfg, "agent", "sleep", &["worker"]).unwrap();
-        let first = call(&mut cfg, "alerts", "send", &["worker","payment.failed","bank","case-42","high","key-1"]).unwrap();
+        let first = call(
+            &mut cfg,
+            "alerts",
+            "send",
+            &[
+                "worker",
+                "payment.failed",
+                "bank",
+                "case-42",
+                "high",
+                "key-1",
+            ],
+        )
+        .unwrap();
         assert_eq!(first["replayed"], false);
-        assert_eq!(call(&mut cfg, "wake", "poll", &["worker"]).unwrap()["wakeRequested"], true);
-        assert_eq!(call(&mut cfg, "wake", "once", &["worker"]).unwrap()["woke"], true);
+        assert_eq!(
+            call(&mut cfg, "wake", "poll", &["worker"]).unwrap()["wakeRequested"],
+            true
+        );
+        assert_eq!(
+            call(&mut cfg, "wake", "once", &["worker"]).unwrap()["woke"],
+            true
+        );
         let claimed = call(&mut cfg, "alerts", "claim", &["worker"]).unwrap();
         let id = claimed["alert"]["id"].as_str().unwrap().to_string();
-        let receipt = claimed["alert"]["lease"]["token"].as_str().unwrap().to_string();
-        call(&mut cfg, "alerts", "accept", &["worker",&id,&receipt]).unwrap();
-        assert!(call(&mut cfg, "alerts", "accept", &["worker",&id,&receipt]).is_err());
-        let done = call(&mut cfg, "alerts", "resolve", &["worker",&id,"evidence-123"]).unwrap();
+        let receipt = claimed["alert"]["lease"]["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        call(&mut cfg, "alerts", "accept", &["worker", &id, &receipt]).unwrap();
+        assert!(call(&mut cfg, "alerts", "accept", &["worker", &id, &receipt]).is_err());
+        let done = call(
+            &mut cfg,
+            "alerts",
+            "resolve",
+            &["worker", &id, "evidence-123"],
+        )
+        .unwrap();
         assert_eq!(done["phase"], "resolved");
         let _ = fs::remove_dir_all(&cfg.root);
     }
@@ -441,7 +561,13 @@ mod tests {
         let two = call(&mut cfg, "alerts", "send", &args).unwrap();
         assert_eq!(one["alert"]["id"], two["alert"]["id"]);
         assert_eq!(two["replayed"], true);
-        assert!(call(&mut cfg, "alerts", "send", &["a","build.failed","ci","job-11","normal","dedupe-1"]).is_err());
+        assert!(call(
+            &mut cfg,
+            "alerts",
+            "send",
+            &["a", "build.failed", "ci", "job-11", "normal", "dedupe-1"]
+        )
+        .is_err());
         let _ = fs::remove_dir_all(&cfg.root);
     }
 
@@ -449,19 +575,29 @@ mod tests {
     fn stale_receipts_cannot_ack_after_reclaim() {
         let mut cfg = fixture();
         call(&mut cfg, "agent", "register", &["a"]).unwrap();
-        call(&mut cfg, "alerts", "send", &["a","job.failed","ci","job-10","high","k"]).unwrap();
+        call(
+            &mut cfg,
+            "alerts",
+            "send",
+            &["a", "job.failed", "ci", "job-10", "high", "k"],
+        )
+        .unwrap();
         let first = call(&mut cfg, "alerts", "claim", &["a"]).unwrap();
         let id = first["alert"]["id"].as_str().unwrap().to_string();
-        let stale = first["alert"]["lease"]["token"].as_str().unwrap().to_string();
-        transaction(&cfg,"test","test", |s| {
+        let stale = first["alert"]["lease"]["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        transaction(&cfg, "test", "test", |s| {
             let a = s.alerts.get_mut(&id).unwrap();
             a.lease.as_mut().unwrap().expires_at = 0;
             Ok((json!({"forced":"expiry"}), true))
-        }).unwrap();
+        })
+        .unwrap();
         let second = call(&mut cfg, "alerts", "claim", &["a"]).unwrap();
         let fresh = second["alert"]["lease"]["token"].as_str().unwrap();
         assert_ne!(stale, fresh);
-        assert!(call(&mut cfg, "alerts", "accept", &["a",&id,&stale]).is_err());
+        assert!(call(&mut cfg, "alerts", "accept", &["a", &id, &stale]).is_err());
         let _ = fs::remove_dir_all(&cfg.root);
     }
 
@@ -469,10 +605,11 @@ mod tests {
     fn quarantined_agent_cannot_be_woken() {
         let mut cfg = fixture();
         call(&mut cfg, "agent", "register", &["a"]).unwrap();
-        transaction(&cfg,"test","test", |s| {
+        transaction(&cfg, "test", "test", |s| {
             lookup_agent(s, "sample", "a")?.phase = Phase::Quarantined;
             Ok((json!({"ok":true}), true))
-        }).unwrap();
+        })
+        .unwrap();
         assert!(call(&mut cfg, "agent", "wake", &["a"]).is_err());
         let _ = fs::remove_dir_all(&cfg.root);
     }
@@ -481,7 +618,12 @@ mod tests {
     fn corrupt_state_fails_closed() {
         let mut cfg = fixture();
         call(&mut cfg, "agent", "register", &["a"]).unwrap();
-        fs::write(cfg.state_dir.join("attention/state.json"), b"{invalid").unwrap();
+        for suffix in ["state.sqlite3", "state.sqlite3-wal", "state.sqlite3-shm"] {
+            let path = cfg.state_dir.join("attention").join(suffix);
+            if path.exists() {
+                fs::write(path, b"not a database").unwrap();
+            }
+        }
         assert!(call(&mut cfg, "agent", "status", &["a"]).is_err());
         let _ = fs::remove_dir_all(&cfg.root);
     }

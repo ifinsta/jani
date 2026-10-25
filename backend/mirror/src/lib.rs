@@ -76,9 +76,11 @@ pub struct Comparison {
 // Only report stable, non-sensitive code-like identifiers; no prompts, paths,
 // arguments, model messages, resource digests or tool results are included.
 fn safe(value: &str) -> String {
-    if value.len() > 96 || !value.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
-    }) {
+    if value.len() > 96
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
         return "redacted_identifier".into();
     }
     value.to_string()
@@ -118,20 +120,22 @@ fn terminal(events: &[&AuditEvent]) -> Option<&'static str> {
     events
         .iter()
         .rev()
-        .find(|e| e.action == "agent.run" &&
-            matches!(e.decision.as_str(), "completed" | "failed"))
-        .map(|e| if e.decision == "completed" { "completed" } else { "failed" })
+        .find(|e| e.action == "agent.run" && matches!(e.decision.as_str(), "completed" | "failed"))
+        .map(|e| {
+            if e.decision == "completed" {
+                "completed"
+            } else {
+                "failed"
+            }
+        })
 }
 
-pub fn run_report(
-    events: &[AuditEvent],
-    tenant: &str,
-    run_id: &str,
-) -> Result<RunReport, String> {
+pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<RunReport, String> {
     if run_id.is_empty() || run_id.len() > 128 {
         return Err("run id must be 1..128 bytes".into());
     }
-    let relevant: Vec<&AuditEvent> = events.iter()
+    let relevant: Vec<&AuditEvent> = events
+        .iter()
         .filter(|e| e.tenant_id == tenant && e.run_id == run_id)
         .collect();
     if relevant.is_empty() {
@@ -148,19 +152,31 @@ pub fn run_report(
     let outcome = terminal(&relevant).unwrap_or("incomplete").to_string();
     let mut findings = Vec::new();
     if outcome == "incomplete" {
-        let evidence = relevant.last().map(|e| vec![e.event_id.clone()]).unwrap_or_default();
+        let evidence = relevant
+            .last()
+            .map(|e| vec![e.event_id.clone()])
+            .unwrap_or_default();
         findings.push(finding(run_id, "run_incomplete", "high",
             "No trusted agent.run completion or failure event is recorded.",
             "Inspect worker termination, journal durability and checkpoint ownership; do not claim completion.",
             evidence));
     }
     if outcome == "failed" {
-        let evidence: Vec<String> = relevant.iter().rev()
+        let evidence: Vec<String> = relevant
+            .iter()
+            .rev()
             .filter(|e| e.action == "agent.run" && e.decision == "failed")
-            .take(1).map(|e| e.event_id.clone()).collect();
-        let step_limit = relevant.iter().any(|e| e.action == "agent.run" &&
-            e.reason_code == "step_limit");
-        let code = if step_limit { "step_budget_exhausted" } else { "failed_run" };
+            .take(1)
+            .map(|e| e.event_id.clone())
+            .collect();
+        let step_limit = relevant
+            .iter()
+            .any(|e| e.action == "agent.run" && e.reason_code == "step_limit");
+        let code = if step_limit {
+            "step_budget_exhausted"
+        } else {
+            "failed_run"
+        };
         let reason = if step_limit {
             "The run exhausted its configured step limit without a final answer."
         } else {
@@ -171,29 +187,47 @@ pub fn run_report(
         } else {
             "Inspect the failure reason and provider/tool receipts before changing the workflow."
         };
-        findings.push(finding(run_id, code, "high", reason, recommendation, evidence));
+        findings.push(finding(
+            run_id,
+            code,
+            "high",
+            reason,
+            recommendation,
+            evidence,
+        ));
     }
     // Ignore operational outcomes on agent.run; only repeated tool denials
     // should trigger a redundant-denial warning.
     let mut denials: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for e in &relevant {
         if e.action != "agent.run" && is_denied(e) {
-            denials.entry((safe(&e.action), safe(&e.reason_code)))
-                .or_default().push(e.event_id.clone());
+            denials
+                .entry((safe(&e.action), safe(&e.reason_code)))
+                .or_default()
+                .push(e.event_id.clone());
         }
     }
-    let loops: Vec<Vec<String>> = denials.into_values()
-        .filter(|ids| ids.len() >= 2).collect();
+    let loops: Vec<Vec<String>> = denials.into_values().filter(|ids| ids.len() >= 2).collect();
     if !loops.is_empty() {
         findings.push(finding(run_id, "repeated_denial", "medium",
             "An identical action and reason were denied repeatedly during the run.",
             "Treat an authorization refusal as terminal for that action; request operator approval or revise the plan rather than retrying.",
             loops.into_iter().flat_map(|v| v.into_iter().take(3)).take(12).collect()));
     }
-    let wrote = relevant.iter().any(|e| e.action.starts_with("repo.write") &&
-        matches!(e.decision.as_str(), "permit" | "permitted" | "completed" | "succeeded"));
-    let tested = relevant.iter().any(|e| e.action == "command.exec" &&
-        matches!(e.decision.as_str(), "permit" | "permitted" | "completed" | "succeeded"));
+    let wrote = relevant.iter().any(|e| {
+        e.action.starts_with("repo.write")
+            && matches!(
+                e.decision.as_str(),
+                "permit" | "permitted" | "completed" | "succeeded"
+            )
+    });
+    let tested = relevant.iter().any(|e| {
+        e.action == "command.exec"
+            && matches!(
+                e.decision.as_str(),
+                "permit" | "permitted" | "completed" | "succeeded"
+            )
+    });
     if wrote && !tested {
         findings.push(finding(run_id, "verification_evidence_gap", "low",
             "A repository write is recorded without a permitted command.exec event in this run.",
@@ -202,15 +236,19 @@ pub fn run_report(
                 .take(2).map(|e| e.event_id.clone()).collect()));
     }
     let timeline_truncated = relevant.len() > MAX_TIMELINE;
-    let timeline: Vec<Observation> = relevant.iter()
-        .rev().take(MAX_TIMELINE).rev()
+    let timeline: Vec<Observation> = relevant
+        .iter()
+        .rev()
+        .take(MAX_TIMELINE)
+        .rev()
         .map(|e| Observation {
             event_id: e.event_id.clone(),
             at: e.timestamp,
             action: safe(&e.action),
             decision: safe(&e.decision),
             reason: safe(&e.reason_code),
-        }).collect();
+        })
+        .collect();
     Ok(RunReport {
         version: VERSION,
         run_id: safe(run_id),
@@ -228,9 +266,11 @@ pub fn run_report(
 }
 
 pub fn workflow_report(events: &[AuditEvent], tenant: &str) -> WorkflowReport {
-    let mut run_ids: Vec<(u64, String)> = events.iter()
+    let mut run_ids: Vec<(u64, String)> = events
+        .iter()
         .filter(|e| e.tenant_id == tenant && e.action == "agent.run")
-        .map(|e| (e.timestamp, e.run_id.clone())).collect();
+        .map(|e| (e.timestamp, e.run_id.clone()))
+        .collect();
     run_ids.sort_by(|a, b| b.cmp(a));
     let mut seen = BTreeSet::new();
     let mut runs = Vec::new();
@@ -241,7 +281,9 @@ pub fn workflow_report(events: &[AuditEvent], tenant: &str) -> WorkflowReport {
         if let Ok(report) = run_report(events, tenant, &id) {
             runs.push(report);
         }
-        if runs.len() >= MAX_WORKFLOW_RUNS { break; }
+        if runs.len() >= MAX_WORKFLOW_RUNS {
+            break;
+        }
     }
     let completed = runs.iter().filter(|r| r.outcome == "completed").count();
     let failed = runs.iter().filter(|r| r.outcome == "failed").count();
@@ -261,8 +303,8 @@ pub fn workflow_report(events: &[AuditEvent], tenant: &str) -> WorkflowReport {
 
 pub fn compare(a: RunReport, b: RunReport) -> Comparison {
     let denial_count = |r: &RunReport| -> i64 {
-        r.decisions.get("denied").copied().unwrap_or(0) as i64 +
-        r.decisions.get("deny").copied().unwrap_or(0) as i64
+        r.decisions.get("denied").copied().unwrap_or(0) as i64
+            + r.decisions.get("deny").copied().unwrap_or(0) as i64
     };
     Comparison {
         version: VERSION,
@@ -278,31 +320,54 @@ mod tests {
     use super::*;
     use jani_core::types::Classification;
 
-    fn e(run: &str, tenant: &str, action: &str, decision: &str, reason: &str, i: u64) -> AuditEvent {
+    fn e(
+        run: &str,
+        tenant: &str,
+        action: &str,
+        decision: &str,
+        reason: &str,
+        i: u64,
+    ) -> AuditEvent {
         AuditEvent {
-            event_version: "1.0".into(), event_id: format!("e-{run}-{i}"),
-            tenant_id: tenant.into(), task_id: run.into(), run_id: run.into(),
-            invocation_id: format!("inv-{i}"), actor_id: "worker".into(), worker_id: "worker".into(),
-            action: action.into(), resource_digest: "secret-resource-digest".into(),
-            decision: decision.into(), reason_code: reason.into(), policy_revision: "1".into(),
-            approval_id: None, sandbox_receipt_id: None, data_classification: Classification::Internal,
-            timestamp: i, previous_event_digest: String::new(), event_digest: String::new(),
+            event_version: "1.0".into(),
+            event_id: format!("e-{run}-{i}"),
+            tenant_id: tenant.into(),
+            task_id: run.into(),
+            run_id: run.into(),
+            invocation_id: format!("inv-{i}"),
+            actor_id: "worker".into(),
+            worker_id: "worker".into(),
+            action: action.into(),
+            resource_digest: "secret-resource-digest".into(),
+            decision: decision.into(),
+            reason_code: reason.into(),
+            policy_revision: "1".into(),
+            approval_id: None,
+            sandbox_receipt_id: None,
+            data_classification: Classification::Internal,
+            timestamp: i,
+            previous_event_digest: String::new(),
+            event_digest: String::new(),
         }
     }
 
     #[test]
     fn incomplete_and_repeated_denial_report_is_grounded() {
         let events = vec![
-            e("a","t","agent.run","started","run_started",1),
-            e("a","t","repo.write","denied","permission",2),
-            e("a","t","repo.write","denied","permission",3),
-            e("a","other","agent.run","failed","step_limit",4),
+            e("a", "t", "agent.run", "started", "run_started", 1),
+            e("a", "t", "repo.write", "denied", "permission", 2),
+            e("a", "t", "repo.write", "denied", "permission", 3),
+            e("z", "other", "agent.run", "failed", "step_limit", 4),
         ];
-        let r = run_report(&events,"t","a").unwrap();
-        assert_eq!(r.outcome,"incomplete");
+        let r = run_report(&events, "t", "a").unwrap();
+        assert_eq!(r.outcome, "incomplete");
         assert!(r.findings.iter().any(|f| f.code == "run_incomplete"));
-        let d = r.findings.iter().find(|f| f.code == "repeated_denial").unwrap();
-        assert_eq!(d.evidence.len(),2);
+        let d = r
+            .findings
+            .iter()
+            .find(|f| f.code == "repeated_denial")
+            .unwrap();
+        assert_eq!(d.evidence.len(), 2);
         let serialized = serde_json::to_string(&r).unwrap();
         assert!(!serialized.contains("secret-resource-digest"));
         assert!(run_report(&events, "other", "a").is_err());
@@ -311,27 +376,29 @@ mod tests {
     #[test]
     fn failed_and_completed_runs_are_distinguished() {
         let events = vec![
-            e("a","t","agent.run","started","run_started",1),
-            e("a","t","agent.run","failed","step_limit",2),
-            e("b","t","agent.run","started","run_started",3),
-            e("b","t","agent.run","completed","final_answer",4),
+            e("a", "t", "agent.run", "started", "run_started", 1),
+            e("a", "t", "agent.run", "failed", "step_limit", 2),
+            e("b", "t", "agent.run", "started", "run_started", 3),
+            e("b", "t", "agent.run", "completed", "final_answer", 4),
         ];
-        let a = run_report(&events,"t","a").unwrap();
-        let b = run_report(&events,"t","b").unwrap();
+        let a = run_report(&events, "t", "a").unwrap();
+        let b = run_report(&events, "t", "b").unwrap();
         assert!(a.findings.iter().any(|f| f.code == "step_budget_exhausted"));
         assert!(b.findings.is_empty());
-        let w = workflow_report(&events,"t");
-        assert_eq!((w.completed,w.failed,w.incomplete),(1,1,0));
-        assert_eq!(compare(a,b).event_count_delta_b_minus_a,0);
+        let w = workflow_report(&events, "t");
+        assert_eq!((w.completed, w.failed, w.incomplete), (1, 1, 0));
+        assert_eq!(compare(a, b).event_count_delta_b_minus_a, 0);
     }
 
     #[test]
     fn no_false_success_and_bounded_timeline() {
-        let mut events = vec![e("a","t","agent.run","started","run_started",1)];
-        for i in 2..400 { events.push(e("a","t","skill.read","permit","ok",i)); }
-        let r = run_report(&events,"t","a").unwrap();
-        assert_eq!(r.outcome,"incomplete");
-        assert_eq!(r.timeline.len(),MAX_TIMELINE);
+        let mut events = vec![e("a", "t", "agent.run", "started", "run_started", 1)];
+        for i in 2..400 {
+            events.push(e("a", "t", "skill.read", "permit", "ok", i));
+        }
+        let r = run_report(&events, "t", "a").unwrap();
+        assert_eq!(r.outcome, "incomplete");
+        assert_eq!(r.timeline.len(), MAX_TIMELINE);
         assert!(r.timeline_truncated);
     }
 }

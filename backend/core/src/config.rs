@@ -278,15 +278,36 @@ impl Config {
         }
 
         let mut i = 0;
+        let mut command_seen = false;
         while i < args.len() {
             let a = args[i].as_str();
+            // Once a command is selected, bare words belong to it: an operation such as
+            // `jani native simulator run` must not be re-parsed as the top-level `run`.
+            if command_seen && !a.starts_with('-') {
+                cfg.positional.push(a.to_string());
+                i += 1;
+                continue;
+            }
             match a {
-                "--version" | "version" => cfg.command = "version".into(),
-                "--help" | "-h" | "help" => cfg.command = "help".into(),
-                "doctor" => cfg.command = "doctor".into(),
-                "skills" => cfg.command = "skills".into(),
+                "--version" | "version" => {
+                    cfg.command = "version".into();
+                    command_seen = true;
+                }
+                "--help" | "-h" | "help" => {
+                    cfg.command = "help".into();
+                    command_seen = true;
+                }
+                "doctor" => {
+                    cfg.command = "doctor".into();
+                    command_seen = true;
+                }
+                "skills" => {
+                    cfg.command = "skills".into();
+                    command_seen = true;
+                }
                 "run" => {
                     cfg.command = "run".into();
+                    command_seen = true;
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with("--") {
                             cfg.prompt = Some(take_value(args, &mut i, "run")?);
@@ -295,6 +316,7 @@ impl Config {
                 }
                 "--print" => {
                     cfg.command = "run".into();
+                    command_seen = true;
                     let value = take_value(args, &mut i, a)?;
                     if value.starts_with("--") {
                         return Err("--print requires a prompt, not an option".into());
@@ -302,8 +324,10 @@ impl Config {
                     cfg.prompt = Some(value);
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "approvals" | "budget"
-                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp" | "native" => {
+                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp"
+                | "native" => {
                     cfg.command = a.into();
+                    command_seen = true;
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {
                             cfg.sub = Some(take_value(args, &mut i, a)?);
@@ -312,6 +336,7 @@ impl Config {
                 }
                 "inspect" => {
                     cfg.command = "inspect".into();
+                    command_seen = true;
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {
                             cfg.positional.push(take_value(args, &mut i, "inspect")?);
@@ -350,14 +375,26 @@ impl Config {
                     cfg.plugin_dir = Some(PathBuf::from(take_value(args, &mut i, a)?))
                 }
                 "--plugin-key" => cfg.plugin_keys.push(take_value(args, &mut i, a)?),
-                "--mcp-contract" => cfg.mcp_contract_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
-                "--mcp-delegation" => cfg.mcp_delegation_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
-                "--mcp-arguments" => cfg.mcp_input_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
-                "--mcp-response" => cfg.mcp_response_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
-                "--mcp-token-file" => cfg.mcp_token_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--mcp-contract" => {
+                    cfg.mcp_contract_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
+                "--mcp-delegation" => {
+                    cfg.mcp_delegation_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
+                "--mcp-arguments" => {
+                    cfg.mcp_input_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
+                "--mcp-response" => {
+                    cfg.mcp_response_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
+                "--mcp-token-file" => {
+                    cfg.mcp_token_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
                 "--mcp-agent" => cfg.mcp_agent = take_value(args, &mut i, a)?,
                 "--mcp-contract-key" => cfg.mcp_contract_keys.push(take_value(args, &mut i, a)?),
-                "--mcp-delegation-key" => cfg.mcp_delegation_keys.push(take_value(args, &mut i, a)?),
+                "--mcp-delegation-key" => {
+                    cfg.mcp_delegation_keys.push(take_value(args, &mut i, a)?)
+                }
                 "--mcp-receipt-key" => cfg.mcp_receipt_keys.push(take_value(args, &mut i, a)?),
                 "--approval" => cfg.approval_ids.push(take_value(args, &mut i, a)?),
                 "--provider-region" => cfg.provider_region = take_value(args, &mut i, a)?,
@@ -392,6 +429,10 @@ impl Config {
                 other => cfg.positional.push(other.to_string()),
             }
             i += 1;
+        }
+
+        if !command_seen && !cfg.positional.is_empty() {
+            return Err(format!("unknown command: {}", cfg.positional[0]));
         }
 
         if matches!(cfg.command.as_str(), "version" | "help") {
@@ -530,6 +571,32 @@ mod tests {
         assert!(validate_relative(Path::new("../secrets")).is_err());
         assert!(validate_relative(Path::new(".git/config")).is_err());
         assert!(validate_relative(Path::new("src/main.rs")).is_ok());
+    }
+
+    #[test]
+    fn subcommand_operands_are_not_reparsed_as_commands() {
+        let args: Vec<String> = ["native", "simulator", "run", "42", "--tenant", "team-1"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let cfg = Config::from_args(&args).unwrap();
+        assert_eq!(cfg.command, "native");
+        assert_eq!(cfg.sub.as_deref(), Some("simulator"));
+        assert_eq!(cfg.positional, vec!["run", "42"]);
+        assert_eq!(cfg.tenant, "team-1");
+    }
+
+    #[test]
+    fn unknown_command_is_rejected() {
+        let result = Config::from_args(&["unsupported-command".to_string()]);
+        assert!(matches!(&result, Err(message) if message.contains("unknown command")));
+    }
+
+    #[test]
+    fn bare_invocation_still_prints_help() {
+        let cfg = Config::from_args(&[]).unwrap();
+        assert_eq!(cfg.command, "help");
+        assert!(cfg.positional.is_empty());
     }
 
     #[test]

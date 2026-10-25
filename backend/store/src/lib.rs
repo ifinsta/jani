@@ -1,7 +1,7 @@
-pub mod mirror;
 //! Transactional single-host SQLite state and transition outbox.
 //! No network service or coordinator is required.
 //! External side effects are never claimed atomic with a SQLite commit.
+pub mod mirror;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -101,11 +101,9 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin attention transaction: {e}"))?;
         let existing: Option<String> = tx
-            .query_row(
-                "SELECT body FROM attention_state WHERE id=1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT body FROM attention_state WHERE id=1", [], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(|e| e.to_string())?;
         let legacy_present = existing.is_none() && legacy_path.exists();
@@ -173,7 +171,9 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let revision: Option<i64> = self
             .db
-            .query_row("SELECT revision FROM attention_state WHERE id=1", [], |r| r.get(0))
+            .query_row("SELECT revision FROM attention_state WHERE id=1", [], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(|e| e.to_string())?;
         Ok(json!({
@@ -248,16 +248,20 @@ mod tests {
         let legacy = dir.join("attention/state.json");
         {
             let mut store = Store::open(&dir).unwrap();
-            store.transact(&legacy, Counter { count: 0 }, event(), |s| {
-                s.count += 1;
-                Ok(((), true))
-            }).unwrap();
+            store
+                .transact(&legacy, Counter { count: 0 }, event(), |s| {
+                    s.count += 1;
+                    Ok(((), true))
+                })
+                .unwrap();
             assert_eq!(store.verify().unwrap()["outboxEvents"], 1);
         }
         let mut reopened = Store::open(&dir).unwrap();
-        let count = reopened.transact(&legacy, Counter { count: 0 }, event(), |s| {
-            Ok((s.count, false))
-        }).unwrap();
+        let count = reopened
+            .transact(&legacy, Counter { count: 0 }, event(), |s| {
+                Ok((s.count, false))
+            })
+            .unwrap();
         assert_eq!(count, 1);
         drop(reopened);
         fs::remove_dir_all(dir).unwrap();
@@ -268,15 +272,11 @@ mod tests {
         let dir = temp();
         let legacy = dir.join("attention/state.json");
         let mut store = Store::open(&dir).unwrap();
-        let result: Result<(), String> = store.transact(
-            &legacy,
-            Counter { count: 0 },
-            event(),
-            |s| {
+        let result: Result<(), String> =
+            store.transact(&legacy, Counter { count: 0 }, event(), |s| {
                 s.count = 99;
                 Err("rejected".into())
-            },
-        );
+            });
         assert!(result.is_err());
         assert_eq!(store.verify().unwrap()["outboxEvents"], 0);
         drop(store);
@@ -290,9 +290,11 @@ mod tests {
         let legacy = dir.join("attention/state.json");
         fs::write(&legacy, r#"{"count":7}"#).unwrap();
         let mut store = Store::open(&dir).unwrap();
-        let value = store.transact(&legacy, Counter { count: 0 }, event(), |s| {
-            Ok((s.count, false))
-        }).unwrap();
+        let value = store
+            .transact(&legacy, Counter { count: 0 }, event(), |s| {
+                Ok((s.count, false))
+            })
+            .unwrap();
         assert_eq!(value, 7);
         assert_eq!(store.verify().unwrap()["snapshotRevision"], 1);
         drop(store);

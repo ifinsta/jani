@@ -32,13 +32,17 @@ fn generate(out: &mut String, path: &Path) {
     for (from, destinations) in transitions {
         assert!(states.contains(&from.as_str()), "unknown transition source");
         for to in destinations.as_array().expect("destinations") {
-            assert!(states.contains(&to.as_str().expect("destination")), "unknown transition destination");
+            assert!(
+                states.contains(&to.as_str().expect("destination")),
+                "unknown transition destination"
+            );
         }
     }
     writeln!(
         out,
         "#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]"
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(out, "#[serde(rename_all = \"snake_case\")]").unwrap();
     writeln!(out, "pub enum {name} {{").unwrap();
     for state in &states {
@@ -46,20 +50,30 @@ fn generate(out: &mut String, path: &Path) {
     }
     writeln!(out, "}}").unwrap();
     writeln!(out, "impl {name} {{").unwrap();
-    writeln!(out, "    pub fn can_transition(self, next: Self) -> bool {{").unwrap();
-    writeln!(out, "        match (self, next) {{").unwrap();
-
+    writeln!(
+        out,
+        "    pub fn can_transition(self, next: Self) -> bool {{"
+    )
+    .unwrap();
+    let mut allowed = Vec::new();
     for state in &states {
         if let Some(destinations) = transitions.get(*state).and_then(Value::as_array) {
             for to in destinations {
                 let to = to.as_str().expect("destination");
-                writeln!(out, "            (Self::{}, Self::{}) => true,", variant(state), variant(to)).unwrap();
-
+                allowed.push(format!("(Self::{}, Self::{})", variant(state), variant(to)));
             }
         }
     }
-    writeln!(out, "            _ => false,").unwrap();
-    writeln!(out, "        }}").unwrap();
+    if allowed.is_empty() {
+        writeln!(out, "        false").unwrap();
+    } else {
+        writeln!(
+            out,
+            "        matches!((self, next), {})",
+            allowed.join(" | ")
+        )
+        .unwrap();
+    }
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
 }
