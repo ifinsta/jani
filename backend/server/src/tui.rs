@@ -313,11 +313,12 @@ fn run_turn(
     state.live = Some(LiveTurn::default());
     std::thread::scope(|scope| -> JResult<()> {
         let worker_cancel = Arc::clone(&cancellation);
-        let handle = scope.spawn(|| {
+        let worker_agent = &mut *agent;
+        let handle = scope.spawn(move || {
             let mut send = |event: TurnEvent| {
                 let _ = tx.send(event);
             };
-            agent.run_turn_events_with_cancel(&prompt, &mut send, worker_cancel.as_ref())
+            worker_agent.run_turn_events_with_cancel(&prompt, &mut send, worker_cancel.as_ref())
         });
         loop {
             while let Ok(event) = rx.try_recv() {
@@ -2012,7 +2013,7 @@ fn meta_line(state: &State, width: usize) -> Line<'static> {
             "  ctrl+c requests cancellation at the next safe boundary".to_string()
         } else {
             format!(
-                "  {below} lines below · end resumes  ctrl+c requests cancellation",
+                "  {below} line{} below · end resumes  ctrl+c requests cancellation",
                 plural(below)
             )
         };
