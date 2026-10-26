@@ -25,7 +25,7 @@ Use this page to find the command family or safety switch you need. It is an ent
 | --- | --- |
 | `run` / `--print` | Execute a model-driven task subject to operator scope, policy and budgets |
 | `repl`, bare `jani` | Open an interactive session that keeps conversation across turns under one task; bare `jani` does this only when stdin is a terminal, otherwise it prints help |
-| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect environment, configuration, unfinished runs and safety state |
+| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `evidence RUN_ID`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect configuration, unfinished runs, audited evidence and safety state |
 | `agent`, `alerts`, `wake` | Operate local attention state; neither alerts nor wake automatically invokes a model |
 | `mirror` | Produce deterministic critique and evidence-linked proposals from recorded runs |
 | `mcp` | Access governed MCP sources under signed contracts and task delegation |
@@ -115,6 +115,10 @@ Approvals stay external. A denied or approval-gated tool call reports the reques
 - `--mode enterprise`, `--policy`, `--policy-key`, `--identity` and `--contract` supply enterprise authorization. Missing or invalid authority is refused.
 - `--approve` in native planner verification is permitted only for a verified human identity.
 - `--sandbox-mode` and network restrictions must not be used to weaken required confinement. `jani sandbox doctor` reports support, not certification.
+
+## Reproducible run evidence
+
+`jani evidence RUN_ID` verifies the journal hash chain before returning `jani.run-evidence/v1` with task/run IDs, recorded model outcome, count of audited invocations and decisions, and the final run-event digest. It deliberately includes `outcomeVerified: false`, `effectsReconciled: false` and `safeToAutoReplay: false`. It is an audit-only receipt, **not** an independent code/test verifier or a signed attestation. Corrupted journals are refused.
 
 ## Operational rules
 
