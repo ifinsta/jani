@@ -60,6 +60,13 @@ fn run() -> JResult<()> {
     if cfg.command == "native" {
         return print_json(&native::command(&cfg)?);
     }
+    // Crash triage must not depend on available skills, model credentials or providers.
+    if cfg.command == "recovery" {
+        return match cfg.sub.as_deref() {
+            None | Some("status") => print_json(&recovery::status(&cfg.state_dir)?),
+            Some(other) => Err(format!("unknown recovery subcommand '{other}'")),
+        };
+    }
     let catalog = Catalog::load(&cfg)?;
     match cfg.command.as_str() {
         "skills" => {
@@ -82,10 +89,6 @@ fn run() -> JResult<()> {
         "plugins" => plugins_command(&cfg),
         "policy" => policy_command(&cfg),
         "audit" => audit_command(&cfg),
-        "recovery" => match cfg.sub.as_deref() {
-            None | Some("status") => print_json(&recovery::status(&cfg.state_dir)?),
-            Some(other) => Err(format!("unknown recovery subcommand '{other}'")),
-        },
         "inspect" => inspect_command(&cfg),
         "approvals" => approvals_command(&cfg),
         "budget" => budget_command(&cfg),
