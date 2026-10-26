@@ -360,6 +360,30 @@ fn run_turn(
                 state.push(Entry::new(Kind::Reasoning, live.reasoning).folded(open));
             }
             state.push(Entry::new(Kind::Assistant, answer.trim_end()));
+            let audited = match agent.run_evidence() {
+                Ok(receipt) => {
+                    let status = if receipt["journalChainVerified"] == true {
+                        "verified"
+                    } else {
+                        "FAILED"
+                    };
+                    format!(
+                        "audit chain {status} · {} events · {} denials",
+                        receipt["auditEventCount"].as_u64().unwrap_or(0),
+                        receipt["decisionDenials"].as_u64().unwrap_or(0)
+                    )
+                }
+                Err(error) => format!("audit verification unavailable: {error}"),
+            };
+            state.push(Entry::new(
+                Kind::Note,
+                format!(
+                    "Run {} · tools: {} ok, {} failed · {audited}. Task outcome NOT independently verified. Use /inspect for evidence.",
+                    agent.last_run_id().unwrap_or("unknown"),
+                    live.tools_succeeded,
+                    live.tools_failed
+                ),
+            ));
         }
         Err(error) => {
             state.push(Entry::new(Kind::Error, format!("jani: {error}")));
@@ -602,6 +626,8 @@ struct LiveTurn {
     answer: String,
     reasoning: String,
     reasoning_open: bool,
+    tools_succeeded: usize,
+    tools_failed: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -893,12 +919,17 @@ impl State {
                 live.activity = format!("step {step}/{max_steps}");
             }
             TurnEvent::ToolStarted { activity, .. } => live.activity = activity,
-            TurnEvent::ToolFinished { activity, ok, .. } => {
+            TurnEvent::ToolFinished { name, activity, ok } => {
                 live.activity = "thinking".into();
-                let text = if ok {
-                    activity
+                if ok {
+                    live.tools_succeeded += 1;
                 } else {
-                    format!("{activity} (failed)")
+                    live.tools_failed += 1;
+                }
+                let text = if ok {
+                    format!("{name} · {activity}")
+                } else {
+                    format!("{name} · {activity} (failed)")
                 };
                 self.entries.push(Entry::new(Kind::Tool, text));
             }
@@ -3277,6 +3308,7 @@ mod tests {
 
         let text = render(&mut state, 80, 30);
         assert!(text.contains("reading notes.txt"), "{text}");
+        assert_eq!(state.live.as_ref().unwrap().tools_succeeded, 1);
         assert!(text.contains("Answer"), "{text}");
         assert!(text.contains("reasoning line"), "{text}");
         assert!(!text.contains("compare both options"), "{text}");
@@ -3307,7 +3339,8 @@ mod tests {
         assert!(state
             .entries
             .iter()
-            .any(|entry| entry.text == "reading missing.txt (failed)"));
+            .any(|entry| entry.text == "workspace_read · reading missing.txt (failed)"));
+        assert_eq!(state.live.as_ref().unwrap().tools_failed, 1);
     }
 
     #[test]
