@@ -1,5 +1,5 @@
 pub use jani_core::{
-    approvals, budget, config, crypto, data, identity, journal, permissions, policy, process,
+    approvals, budget, config, crypto, data, evidence, identity, journal, permissions, policy, process,
     recovery, schema, types,
 };
 mod agent;
@@ -66,6 +66,12 @@ fn run() -> JResult<()> {
             None | Some("status") => print_json(&recovery::status(&cfg.state_dir)?),
             Some(other) => Err(format!("unknown recovery subcommand '{other}'")),
         };
+    }
+    if cfg.command == "evidence" {
+        let run_id = cfg.run_id.as_ref()
+            .or_else(|| cfg.positional.first())
+            .ok_or("evidence requires a run ID")?;
+        return print_json(&evidence::receipt(&cfg.state_dir, run_id)?);
     }
     let catalog = Catalog::load(&cfg)?;
     match cfg.command.as_str() {
