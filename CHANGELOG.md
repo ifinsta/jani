@@ -45,7 +45,7 @@ This page records what changed and what it means for compatibility. It is a deve
 - The installer now asks before adding its install directory to the user `PATH`, defaults to no, never prompts in a non-interactive session, and accepts `-NoPath` to suppress the question or `-AddToPath` to add the entry without prompting.
 - `tools/release.ps1` now measures dirty state over tracked build inputs only, records commit, build time and dirty state per artifact, refuses to mix commits within a version, and requires `-Replace` to rebuild an existing target from a different commit.
 - Rebuilt the `v0.1.0` Windows artifact from clean build inputs at `c9e3f3b`, so its manifest records `"dirty": false`. The first local build had recorded `"dirty": true` while the release tooling was uncommitted.
-- Repackaged the typed `releases/agent/windows/v0.1.0/` artifact from commit `a3f7b03` with clean build inputs (SHA-256 `ea3cb340…`), so the typed channel matches the installed Markdown/rollback build. The legacy `releases/v0.1.0/` alias remains the earlier `c9e3f3b` artifact.
+- Repackaged the typed `releases/agent/windows/v0.1.0/` artifact from commit `feaed0e` with clean build inputs (SHA-256 `bc8b4d69…`), so the typed channel matches the installed streaming build. The legacy `releases/v0.1.0/` alias remains the earlier `c9e3f3b` artifact.
 - Rewrote the root guides so each has one purpose: evaluation and quick start (README), evidence and gaps (VALIDATION), reporting and guarantees (SECURITY), the contribution gate (CONTRIBUTING) and this record.
 - Documented `--settings`, `--model-profile` and `JANI_SETTINGS` in the CLI and configuration references.
 - Corrected the contribution instructions to use `jani-claims sync` then `check`; `scan` only prints findings.

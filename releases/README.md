@@ -27,7 +27,7 @@ Component identifiers: `agent` (`jani`), `client` (`jani-probe`) and `gateway` (
 
 `{type}/{platform}/latest.json` has `jani.release-channel/v2`, exact `type`, exact `platform`, and `latest` version. Versioned `manifest.json` uses `jani.release/v2`, `type`, `platform`, `package`, `version`, `tag`, `commit`, `dirty`, `builtAt`, and an artifact array. Each artifact binds target triple, filename, SHA-256, size, source commit, dirty flag and build time. A release cannot silently mix commits across targets.
 
-The typed Windows agent release at [agent/windows/v0.1.0](agent/windows/v0.1.0/manifest.json) was repackaged from commit `a3f7b03` on 2026-10-26, with clean build inputs and its own SHA-256. The old `releases/v0.1.0/` remains a compatibility alias for existing installers and still holds the earlier `c9e3f3b` build; do not create new legacy releases. No client or gateway artifacts are currently published.
+The typed Windows agent release at [agent/windows/v0.1.0](agent/windows/v0.1.0/manifest.json) was repackaged from commit `feaed0e` on 2026-10-26, with clean build inputs and its own SHA-256. The old `releases/v0.1.0/` remains a compatibility alias for existing installers and still holds the earlier `c9e3f3b` build; do not create new legacy releases. No client or gateway artifacts are currently published.
 
 ## Installer
 
