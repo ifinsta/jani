@@ -560,18 +560,6 @@ impl<'a> Agent<'a> {
         self.run_turn_with(prompt, true)
     }
 
-    /// Runs a turn while forwarding inspected answer previews and tool activity.
-    pub fn run_turn_events(
-        &mut self,
-        prompt: &str,
-        events: &mut dyn FnMut(TurnEvent),
-    ) -> JResult<String> {
-        let cfg = self.cfg;
-        let catalog = self.catalog;
-        self.session
-            .run_turn(cfg, catalog, prompt, false, Some(events), None)
-    }
-
     /// Cooperative cancellation between model calls and tool invocations.
     /// A blocked provider request or already-running command is not preempted.
     pub fn run_turn_events_with_cancel(
