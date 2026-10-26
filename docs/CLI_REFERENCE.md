@@ -62,6 +62,7 @@ Keys in the full-screen interface:
 | Key | Effect |
 | --- | --- |
 | `Enter` | Submit the current input; with the command palette open, run the highlighted command |
+| `Shift+Enter` | Insert a newline into the bounded composer; pasted text keeps its line breaks |
 | `F1`–`F4` | On the empty welcome screen, prepare (without submitting) a safe repository inspection, plan, risk review or test-coverage draft |
 | `/` | On an empty input, open the command palette |
 | `Tab` | Complete a slash command; with the palette open, fill the highlighted command name or model profile into the input |
@@ -74,7 +75,7 @@ Keys in the full-screen interface:
 | `Ctrl+T` | Expand or fold the most recent thinking block; blocks start folded |
 | `Esc` | Clear the input; with the palette open, close it and clear the input |
 | `Ctrl+U` | Clear the input before the cursor |
-| `Ctrl+C` | Clear a non-empty input, or exit on an empty input; during a turn it exits after that turn |
+| `Ctrl+C` | Clear non-empty idle input or exit with empty idle input; during execution request cooperative cancellation at the next safe boundary |
 | `Ctrl+D` | Exit when the input is empty |
 
 Typing `/` into an empty input opens a command palette above the input box. It lists every slash command with its usage and a one-line summary; typing filters by command name, `Up`/`Down` move through the matches, `Enter` runs the highlighted command through the same checked path as typed input, `Tab` fills the name into the input for review, and `Esc` closes the palette and clears the input. `/approval` requires an ID, so selecting it fills `/approval ` and leaves the cursor in the input for the ID; every other command runs immediately (`/inspect` uses the latest turn). The palette reads the same command catalog as `/help` and is only a launcher: it never widens scopes, never decides an approval and never bypasses the frozen authority checks.
@@ -87,7 +88,7 @@ The interface never decides an approval and never prints provider credentials. T
 
 While a turn runs, the interface streams progress. The meta line shows the current step and action, each finished tool adds a `tool` entry with a short summary (for example `reading notes.txt`), and the answer preview is rendered as Markdown as it arrives. Model reasoning, when the provider emits it, becomes its own thinking block with a one-line `▸ think` summary: click that line, or press `Ctrl+T` for the newest block, to expand it, and a block you left open stays open once the turn is committed to the transcript. The view is pinned to the newest line until you scroll up with `PgUp`, the mouse wheel or `Home`; the tip line then counts the lines below the bottom, and `PgDn`, `End` or a wheel-down gesture resumes following.
 
-Streaming keeps the same output inspection as non-streaming turns: preview text is inspected before it is shown, only complete lines are released, and an unterminated private-key block is withheld from its header. As a consequence, an answer with no newlines appears only when the turn completes, and a streaming request cannot be retried after the provider has sent response headers. Providers must support SSE streaming; line mode uses the non-streaming request path.
+Streaming keeps the same output inspection as non-streaming turns: preview text is inspected before it is shown, only complete lines are released, and an unterminated private-key block is withheld from its header. As a consequence, an answer with no newlines appears only when the turn completes, and a streaming request cannot be retried after the provider has sent response headers. Providers must support SSE streaming; line mode uses the non-streaming request path. Ctrl+C requests cancellation at a safe agent boundary; it does not preempt an already-running command or a blocking model HTTP request. Earlier tool effects may remain and require reconciliation.
 
 Slash commands are read-only with respect to authority:
 
