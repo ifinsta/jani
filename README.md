@@ -1,16 +1,16 @@
 # Jani
 
-**Native Sentinel pilot and compliance:** [JSMT/1 Rust Probe and Gateway](docs/PROBE_GATEWAY_GUIDE.md) · [wire specification](protocol/jsmt/v1/SPEC.md). Source and local unit tests are provided, but do not assume production host coverage or a published binary.
+**Engineering with boundaries. Execution with evidence.**
 
-**Release catalogue:** [typed agent/client/gateway releases](releases/README.md). **Open-source JSMT/1 protocol:** [specification](protocol/jsmt/v1/SPEC.md) and [reproducible Python reference](protocol/jsmt/v1/README.md). Only an existing Windows agent binary is currently published; client and gateway binaries are not yet released.
+Jani is an open-source, Rust-native coding agent for working inside a Git worktree under explicit operator authority. It can read files and skills, consult a configured model, propose changes and run separately authorised tools. A Rust execution broker mediates operations against scopes, policy, data-egress rules, approvals and budgets, recording what happened in an audit journal.
 
-**Sentinel roadmap and compliance:** [monitoring and security contract](docs/SENTINEL_CONTRACT.md) · [release gates](docs/SENTINEL_RELEASE_GATES.md). The proprietary JSMT client/server reference implementation is deliberately not published in this public repository. No production monitoring functionality is implied.
+**Start safely:** follow the [read-only quick start](#quick-start), inspect active authority with `jani doctor`, and use the interactive terminal to explore your repository before granting any write or command rights.
 
-**A Rust-native coding agent that works only inside authority you grant explicitly.**
+**Current status: supervised prototype — not enterprise certified or production-validated.** Windows Job Objects are not filesystem/network confinement, macOS has no sandbox backend, executable plugins and durable model checkpoints are not implemented, and no live-provider engineering session is recorded. See [validation evidence](VALIDATION.md) and [security boundaries](SECURITY.md) before allowing untrusted command execution.
 
-Jani reads skills, calls an OpenAI-compatible model and edits a Git worktree. Every read, write and command passes through a Rust broker that checks operator scopes, signed policy, data-egress rules and budgets, then journals the decision before acting. Model output, skill text and tool responses are never treated as authority.
+**Development direction:** [product and execution excellence programme](docs/PRODUCT_EXECUTION_PROGRAM.md) · [engineering roadmap](docs/ROADMAP.md) · [release acceptance](docs/RELEASE_ACCEPTANCE.md).
 
-> **Status: supervised prototype, not production-validated.** The source builds and its local gates pass, but this is not an enterprise-certified release. Windows and macOS cannot satisfy enterprise isolation profiles, plugins do not execute, and no live-provider end-to-end session is recorded. Read [VALIDATION.md](VALIDATION.md) for the evidence and the remaining gaps before relying on it.
+**Separate experimental track:** [Sentinel probe/gateway guide](docs/PROBE_GATEWAY_GUIDE.md) · [open JSMT/1 protocol](protocol/jsmt/v1/SPEC.md) · [operational release gates](docs/SENTINEL_OPERATIONS.md). Source exists for experimental components; do not assume fleet monitoring coverage or released client/gateway binaries. The only currently published agent binary is for Windows. [Release catalogue](releases/README.md).
 
 ## Choose your path
 
