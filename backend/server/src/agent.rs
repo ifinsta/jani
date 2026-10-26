@@ -740,6 +740,10 @@ impl<'a> Agent<'a> {
             .map(str::to_owned)
             .or_else(|| self.session.last_run_id.clone())
             .ok_or("no run has been recorded in this session yet")?;
+        let integrity = journal::verify(&self.cfg.state_dir)?;
+        if integrity["ok"] != true {
+            return Err("audit journal integrity failed: refusing unverified inspection".into());
+        }
         let events = journal::read_run(&self.cfg.state_dir.join(journal::JOURNAL_FILE), &run_id)?;
         if events.is_empty() {
             return Err(format!("no journal events for run '{run_id}'"));
