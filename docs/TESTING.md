@@ -1,6 +1,6 @@
 # Testing and acceptance plan
 
-## Pending first-run terminal gate (new source, unverified)
+## Pending terminal, cancellation and recovery gates (new source, unverified)
 
 The new F1–F4 shortcut suite in `backend/server/src/tui.rs` must prove shortcuts draft but do not send model requests, overwrite an existing draft, enable writes or act while busy. Its 80x24 rendering test checks every shortcut is visible. The updated Windows console probe sends a real F1 keyboard record and checks that text appears without a provider request, then clears it before starting the existing fake-provider flow.
 
@@ -13,6 +13,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify_tui_phase1.ps1
 ```
 
 It runs formatting, clippy, workspace tests, architecture and claims checks, documentation validation, a locked release build and the real-console probe, then reports commit and binary SHA-256. It does not publish or install the build. Its existence is not proof that it has run.
+
+Additional gates: `cargo test -p jani-core recovery`, `cargo test -p jani cancelled_turn_never_invokes_a_model_or_tool`, CLI recovery integration against a built executable, journal corruption refusal, multiline paste and Shift+Enter, cancellation while work is already running, and independent confirmation that no follow-up tools execute after the cancellation boundary.
 
 The baseline counts below predate this slice. Do not increase passing test counts until the new runs execute.
 
