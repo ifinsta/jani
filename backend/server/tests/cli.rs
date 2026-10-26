@@ -32,6 +32,70 @@ fn help_documents_permissions() {
 }
 
 #[test]
+fn recovery_cli_reports_unknown_then_completed_without_model_access() {
+    use jani_core::journal::{EventInput, Journal};
+    use jani_core::types::Classification;
+    let root = settings_workspace(r#"{"version":1}"#);
+    let state_dir = root.join("state");
+    let mut journal = Journal::open(&state_dir).unwrap();
+    let mut record = |decision: &str| {
+        journal.record(EventInput {
+            tenant_id: "tenant-1",
+            task_id: "task-test",
+            run_id: "run-test",
+            invocation_id: "run",
+            actor_id: "operator",
+            worker_id: "operator",
+            action: "agent.run",
+            resource_digest: "digest",
+            decision,
+            reason_code: decision,
+            policy_revision: "runtime",
+            approval_id: None,
+            sandbox_receipt_id: None,
+            data_classification: Classification::Internal,
+        }).unwrap();
+    };
+    let root_str = root.to_str().unwrap().to_string();
+    let state_str = state_dir.to_str().unwrap().to_string();
+    let invoke = |command: &[&str]| {
+        support::jani()
+            .args(command)
+            .args(["--repo", root_str.as_str(), "--state-dir", state_str.as_str()])
+            .env_remove("JANI_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .output()
+            .unwrap()
+    };
+    record("started");
+    let uncertain = invoke(&["recovery", "status"]);
+    assert!(uncertain.status.success(), "{}", String::from_utf8_lossy(&uncertain.stderr));
+    let output = String::from_utf8_lossy(&uncertain.stdout);
+    assert!(output.contains("unknown_requires_reconciliation"), "{output}");
+    assert!(output.contains("\"safeToAutoReplay\": false"), "{output}");
+
+    record("completed");
+    drop(record);
+    drop(journal);
+    let completed = invoke(&["recovery", "status"]);
+    assert!(completed.status.success(), "{}", String::from_utf8_lossy(&completed.stderr));
+    assert!(String::from_utf8_lossy(&completed.stdout).contains("recorded_model_complete"));
+    assert!(invoke(&["inspect", "run-test"]).status.success());
+
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(state_dir.join("journal.jsonl"))
+        .unwrap();
+    writeln!(file, "{{}}").unwrap();
+    drop(file);
+    let corrupted = invoke(&["recovery", "status"]);
+    assert!(!corrupted.status.success());
+    assert!(!invoke(&["inspect", "run-test"]).status.success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn repl_rejects_a_fixed_run_id() {
     let output = support::jani()
         .args(["repl", "--run", "run-fixed"])
