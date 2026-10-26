@@ -59,19 +59,22 @@ Keys in the full-screen interface:
 
 | Key | Effect |
 | --- | --- |
-| `Enter` | Submit the current input |
-| `Tab` | Complete a slash command |
-| `Up` / `Down` | Walk input history; the in-progress draft is restored when you return |
+| `Enter` | Submit the current input; with the command palette open, run the highlighted command |
+| `/` | On an empty input, open the command palette |
+| `Tab` | Complete a slash command; with the palette open, fill the highlighted name into the input |
+| `Up` / `Down` | Walk input history; with the palette open, move the selection and wrap at the ends |
 | `Left` / `Right`, `Home` / `End` | Move the cursor; `Ctrl+A` / `Ctrl+E` jump to the ends. With an empty input, or with `Ctrl` held, `Home` jumps the transcript to its top and `End` resumes following |
 | `Backspace` / `Delete` | Edit by Unicode scalar, not byte |
 | `PgUp` / `PgDn` | Scroll the transcript ten lines; scrolling up pauses follow mode until you return to the bottom |
 | Mouse wheel | Scroll the transcript three lines per notch; `Home` / `End` and `PgDn` also resume following |
 | Mouse click | On a `▸ think` label, expand or fold that one block; on the scrollbar, jump to that proportion of the transcript |
 | `Ctrl+T` | Expand or fold the most recent thinking block; blocks start folded |
-| `Esc` | Clear the input |
+| `Esc` | Clear the input; with the palette open, close it and clear the input |
 | `Ctrl+U` | Clear the input before the cursor |
 | `Ctrl+C` | Clear a non-empty input, or exit on an empty input; during a turn it exits after that turn |
 | `Ctrl+D` | Exit when the input is empty |
+
+Typing `/` into an empty input opens a command palette above the input box. It lists every slash command with its usage and a one-line summary; typing filters by command name, `Up`/`Down` move through the matches, `Enter` runs the highlighted command through the same checked path as typed input, `Tab` fills the name into the input for review, and `Esc` closes the palette and clears the input. `/approval` requires an ID, so selecting it fills `/approval ` and leaves the cursor in the input for the ID; every other command runs immediately (`/inspect` uses the latest turn). The palette reads the same command catalog as `/help` and is only a launcher: it never widens scopes, never decides an approval and never bypasses the frozen authority checks.
 
 Once the transcript is taller than the viewport, Jani reserves its rightmost column for a vertical scrollbar and the tip line reports how many lines sit below the bottom; windows at the 40-column minimum keep the full width for text and scroll without a bar. Follow mode pins the view to the newest line; any scroll-up gesture unpins it and the view stays where you put it while the next turn streams. Mouse capture is on, so the pointer scrolls and clicks instead of selecting text in the window — use the terminal's own selection override (Shift in Windows Terminal and most emulators) to copy.
 

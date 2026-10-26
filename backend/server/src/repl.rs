@@ -8,18 +8,91 @@ const BANNER: &str = "Jani interactive terminal. Conversation is retained for th
 Commands: /help /status /skills /inspect /budget /approvals /approval /new /exit\n\
 Authority is fixed at startup; restart to change write, command or policy scopes.";
 
-const HELP: &str = "\
-/help              Show this help
-/status            Show frozen authority, task, model and history size
-/skills            List discovered skills
-/inspect [RUN_ID]  Show journal events (default: latest turn)
-/budget            Show the persisted task budget
-/approvals         List approval requests
-/approval ID       Attach an approval already decided by a verified approver
-/new               Clear conversation history; task and budget continue
-/exit, /quit       End the session
+#[derive(Clone, Copy)]
+pub(crate) struct Command {
+    pub name: &'static str,
+    pub usage: &'static str,
+    pub summary: &'static str,
+    pub requires_argument: bool,
+}
 
-Any other input is sent to the model as a task.";
+pub(crate) static COMMANDS: [Command; 10] = [
+    Command {
+        name: "help",
+        usage: "",
+        summary: "Show this help",
+        requires_argument: false,
+    },
+    Command {
+        name: "status",
+        usage: "",
+        summary: "Show frozen authority, task, model and history size",
+        requires_argument: false,
+    },
+    Command {
+        name: "skills",
+        usage: "",
+        summary: "List discovered skills",
+        requires_argument: false,
+    },
+    Command {
+        name: "inspect",
+        usage: "[RUN_ID]",
+        summary: "Show journal events (default: latest turn)",
+        requires_argument: false,
+    },
+    Command {
+        name: "budget",
+        usage: "",
+        summary: "Show the persisted task budget",
+        requires_argument: false,
+    },
+    Command {
+        name: "approvals",
+        usage: "",
+        summary: "List approval requests",
+        requires_argument: false,
+    },
+    Command {
+        name: "approval",
+        usage: "ID",
+        summary: "Attach an approval a verified approver already decided",
+        requires_argument: true,
+    },
+    Command {
+        name: "new",
+        usage: "",
+        summary: "Clear conversation history; task and budget continue",
+        requires_argument: false,
+    },
+    Command {
+        name: "exit",
+        usage: "",
+        summary: "End the session",
+        requires_argument: false,
+    },
+    Command {
+        name: "quit",
+        usage: "",
+        summary: "End the session (alias of /exit)",
+        requires_argument: false,
+    },
+];
+
+pub(crate) fn help_text() -> String {
+    let mut text = String::new();
+    for command in &COMMANDS {
+        let usage = if command.usage.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", command.usage)
+        };
+        let entry = format!("/{}{}", command.name, usage);
+        text.push_str(&format!("{entry:<19}{}\n", command.summary));
+    }
+    text.push_str("\nAny other input is sent to the model as a task.");
+    text
+}
 
 pub(crate) const COMMAND_NAMES: [&str; 10] = [
     "help",
@@ -124,7 +197,7 @@ pub(crate) fn execute_command(
     let name = parts.next().unwrap_or("").to_ascii_lowercase();
     let argument = parts.next().unwrap_or("").trim();
     let text = match name.as_str() {
-        "help" | "?" => HELP.to_string(),
+        "help" | "?" => help_text(),
         "exit" | "quit" => return Ok((Flow::Exit, String::new())),
         "new" => {
             agent.reset_conversation();
@@ -205,6 +278,29 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn the_command_index_matches_the_names_list() {
+        let names: Vec<&str> = COMMANDS.iter().map(|command| command.name).collect();
+        assert_eq!(names, COMMAND_NAMES.to_vec());
+        assert!(COMMANDS
+            .iter()
+            .any(|command| command.requires_argument && command.name == "approval"));
+    }
+
+    #[test]
+    fn help_lists_every_command_and_the_task_fallback() {
+        let help = help_text();
+        for name in COMMAND_NAMES {
+            assert!(help.contains(&format!("/{name}")), "{help}");
+        }
+        assert!(help.contains("/inspect [RUN_ID]"), "{help}");
+        assert!(help.contains("/approval ID"), "{help}");
+        assert!(
+            help.contains("Any other input is sent to the model"),
+            "{help}"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::agent::{Agent, TurnEvent};
 use crate::config::{Config, JResult};
-use crate::repl::{execute_command, Flow, COMMAND_NAMES};
+use crate::repl::{execute_command, Command, Flow, COMMANDS, COMMAND_NAMES};
 use crate::skills::Catalog;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
@@ -16,7 +16,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
@@ -35,6 +35,7 @@ const ACCENT: Color = Color::Rgb(94, 208, 230);
 const USER: Color = Color::Rgb(240, 184, 96);
 const ERROR: Color = Color::Rgb(240, 110, 110);
 const CODE: Color = Color::Rgb(150, 214, 170);
+const SELECT: Color = Color::Rgb(30, 36, 44);
 
 const MIN_WIDTH: u16 = 40;
 const MIN_HEIGHT: u16 = 10;
@@ -164,9 +165,16 @@ fn handle_event(
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if key.code == KeyCode::Enter {
-                submit(terminal, state, agent, catalog)?;
+                if state.palette.is_some() {
+                    palette_run(state, agent, catalog);
+                } else {
+                    submit(terminal, state, agent, catalog)?;
+                }
             } else if is_ctrl(&key, 'c') {
-                if state.editor.is_empty() {
+                if state.palette.is_some() {
+                    state.palette = None;
+                    state.editor.clear();
+                } else if state.editor.is_empty() {
                     state.quit = true;
                 } else {
                     state.editor.clear();
@@ -177,7 +185,10 @@ fn handle_event(
                 editor_key(state, key);
             }
         }
-        Event::Paste(text) => state.editor.insert_str(&text),
+        Event::Paste(text) => {
+            state.editor.insert_str(&text);
+            state.reconcile_palette(true);
+        }
         Event::Mouse(mouse) => handle_mouse(state, mouse),
         Event::Resize(_, _) => {}
         _ => {}
@@ -206,25 +217,8 @@ fn submit(
     }
     state.follow = true;
     if line.starts_with('/') {
-        let name = command_name(&line);
-        let result = execute_command(agent, catalog, &line);
-        if name == "new" {
-            state.entries.clear();
-            state.scroll_top = 0;
-        }
-        state.push(Entry::new(Kind::Command, line.clone()));
-        match result {
-            Ok((flow, text)) => {
-                if !text.is_empty() {
-                    state.push(Entry::new(Kind::Note, text));
-                }
-                if matches!(flow, Flow::Exit) {
-                    state.quit = true;
-                }
-            }
-            Err(error) => state.push(Entry::new(Kind::Error, format!("jani: {error}"))),
-        }
-        state.sync(agent);
+        state.palette = None;
+        run_command(state, agent, catalog, line);
         return Ok(());
     }
 
@@ -235,6 +229,48 @@ fn submit(
     outcome?;
     state.sync(agent);
     Ok(())
+}
+
+fn run_command(state: &mut State, agent: &mut Agent<'_>, catalog: &Catalog, line: String) {
+    let name = command_name(&line);
+    let result = execute_command(agent, catalog, &line);
+    if name == "new" {
+        state.entries.clear();
+        state.scroll_top = 0;
+    }
+    state.push(Entry::new(Kind::Command, line));
+    match result {
+        Ok((flow, text)) => {
+            if !text.is_empty() {
+                state.push(Entry::new(Kind::Note, text));
+            }
+            if matches!(flow, Flow::Exit) {
+                state.quit = true;
+            }
+        }
+        Err(error) => state.push(Entry::new(Kind::Error, format!("jani: {error}"))),
+    }
+    state.sync(agent);
+}
+
+fn palette_run(state: &mut State, agent: &mut Agent<'_>, catalog: &Catalog) {
+    let Some(target) = palette_target(state) else {
+        return;
+    };
+    state.palette = None;
+    match target {
+        PaletteTarget::Prefill(command) => {
+            state.editor.text = format!("/{} ", command.name);
+            state.editor.cursor = state.editor.text.len();
+        }
+        PaletteTarget::Run(command) => {
+            state.editor.text = format!("/{}", command.name);
+            state.editor.cursor = state.editor.text.len();
+            let line = state.editor.take();
+            state.follow = true;
+            run_command(state, agent, catalog, line);
+        }
+    }
 }
 
 fn run_turn(
@@ -320,6 +356,28 @@ fn editor_key(state: &mut State, key: KeyEvent) {
         }
         return;
     }
+    if state.palette.is_some() {
+        match key.code {
+            KeyCode::Up => {
+                state.palette_move(-1);
+                return;
+            }
+            KeyCode::Down => {
+                state.palette_move(1);
+                return;
+            }
+            KeyCode::Tab => {
+                palette_complete(state);
+                return;
+            }
+            KeyCode::Esc => {
+                state.palette = None;
+                state.editor.clear();
+                return;
+            }
+            _ => {}
+        }
+    }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::PageUp => state.scroll_by(-PAGE_STEP),
@@ -330,7 +388,20 @@ fn editor_key(state: &mut State, key: KeyEvent) {
     }
 }
 
+fn palette_complete(state: &mut State) {
+    let Some(command) = state.palette_choice() else {
+        return;
+    };
+    state.palette = None;
+    state.editor.text = format!("/{}", command.name);
+    if command.requires_argument {
+        state.editor.text.push(' ');
+    }
+    state.editor.cursor = state.editor.text.len();
+}
+
 fn editor_only_key(state: &mut State, key: KeyEvent) {
+    let before = state.editor.text.clone();
     let editor = &mut state.editor;
     match key.code {
         KeyCode::Left => editor.left(),
@@ -356,6 +427,8 @@ fn editor_only_key(state: &mut State, key: KeyEvent) {
         }
         _ => {}
     }
+    let changed = state.editor.text != before;
+    state.reconcile_palette(changed);
 }
 
 fn is_ctrl(key: &KeyEvent, ch: char) -> bool {
@@ -416,6 +489,7 @@ struct State {
     meta: Meta,
     entries: Vec<Entry>,
     editor: Editor,
+    palette: Option<Palette>,
     live: Option<LiveTurn>,
     scroll_top: usize,
     viewport: usize,
@@ -447,12 +521,69 @@ struct LiveTurn {
     reasoning_open: bool,
 }
 
+#[derive(Default)]
+struct Palette {
+    selected: usize,
+}
+
+impl Palette {
+    fn query<'a>(&self, editor: &'a Editor) -> Option<&'a str> {
+        let body = editor.text.strip_prefix('/')?;
+        if body.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(body)
+    }
+
+    fn matches(&self, editor: &Editor) -> Vec<&'static Command> {
+        let Some(query) = self.query(editor) else {
+            return Vec::new();
+        };
+        let query = query.to_ascii_lowercase();
+        COMMANDS
+            .iter()
+            .filter(|command| command.name.starts_with(&query))
+            .collect()
+    }
+
+    fn choice(&self, editor: &Editor) -> Option<&'static Command> {
+        let matches = self.matches(editor);
+        if matches.is_empty() {
+            return None;
+        }
+        Some(matches[self.selected.min(matches.len() - 1)])
+    }
+
+    fn move_selection(&mut self, delta: isize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let selected = self.selected.min(len - 1) as isize + delta;
+        self.selected = selected.rem_euclid(len as isize) as usize;
+    }
+}
+
+enum PaletteTarget {
+    Run(&'static Command),
+    Prefill(&'static Command),
+}
+
+fn palette_target(state: &State) -> Option<PaletteTarget> {
+    let command = state.palette_choice()?;
+    Some(if command.requires_argument {
+        PaletteTarget::Prefill(command)
+    } else {
+        PaletteTarget::Run(command)
+    })
+}
+
 impl State {
     fn new(meta: Meta, turns: u64, pending: usize) -> Self {
         Self {
             meta,
             entries: Vec::new(),
             editor: Editor::default(),
+            palette: None,
             live: None,
             scroll_top: 0,
             viewport: 0,
@@ -473,6 +604,35 @@ impl State {
 
     fn push(&mut self, entry: Entry) {
         self.entries.push(entry);
+    }
+
+    fn palette_choice(&self) -> Option<&'static Command> {
+        self.palette.as_ref()?.choice(&self.editor)
+    }
+
+    fn palette_move(&mut self, delta: isize) {
+        let len = self
+            .palette
+            .as_ref()
+            .map(|palette| palette.matches(&self.editor).len())
+            .unwrap_or(0);
+        if let Some(palette) = self.palette.as_mut() {
+            palette.move_selection(delta, len);
+        }
+    }
+
+    fn reconcile_palette(&mut self, text_changed: bool) {
+        let Some(palette) = self.palette.as_mut() else {
+            if !self.busy && self.editor.text == "/" {
+                self.palette = Some(Palette::default());
+            }
+            return;
+        };
+        if palette.query(&self.editor).is_none() {
+            self.palette = None;
+        } else if text_changed {
+            palette.selected = 0;
+        }
     }
 
     fn max_top(&self) -> usize {
@@ -919,6 +1079,7 @@ fn draw(frame: &mut Frame, state: &mut State) {
     }
     draw_transcript(frame, state, chunks[1]);
     draw_input(frame, state, chunks[2]);
+    draw_palette(frame, state, content, chunks[2]);
     draw_hints(frame, state, chunks[3]);
     if show_tips {
         draw_tip(frame, state, chunks[4]);
@@ -1327,6 +1488,140 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
     }
 }
 
+fn draw_palette(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
+    let Some(palette) = state.palette.as_ref() else {
+        return;
+    };
+    let Some(query) = palette.query(&state.editor) else {
+        return;
+    };
+    let available = input.y.saturating_sub(content.y);
+    let width = content.width.min(80);
+    if available < 4 || width < 20 {
+        return;
+    }
+    let matches = palette.matches(&state.editor);
+    let max_rows = usize::from(available.saturating_sub(3)).max(1);
+    let rows = matches.len().clamp(1, max_rows);
+    let height = (rows as u16 + 3).min(available);
+    let area = Rect::new(
+        content.x + (content.width - width) / 2,
+        input.y - height,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    let title = if query.is_empty() {
+        " commands ".to_string()
+    } else {
+        format!(" commands · {query} ")
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(Span::styled(title, Style::default().fg(DIM)))
+        .style(Style::default().bg(PANEL));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 2 || inner.width < 6 {
+        return;
+    }
+    let list_height = usize::from(inner.height) - 1;
+    let selected = palette.selected.min(matches.len().saturating_sub(1));
+    let first = if matches.len() > list_height {
+        selected
+            .saturating_sub(list_height / 2)
+            .min(matches.len() - list_height)
+    } else {
+        0
+    };
+    let name_width = COMMANDS
+        .iter()
+        .map(|command| command_label(command).width())
+        .max()
+        .unwrap_or(0);
+    let description_width = usize::from(inner.width).saturating_sub(name_width + 4);
+    let mut lines = Vec::new();
+    if matches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  no command matches \"/{query}\""),
+            Style::default().fg(DIM),
+        )));
+    } else {
+        for (offset, command) in matches[first..first + rows].iter().enumerate() {
+            let active = first + offset == selected;
+            let marker = if active { "› " } else { "  " };
+            let label = command_label(command);
+            let mut line = Line::from(vec![
+                Span::styled(
+                    marker,
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{label:<name_width$}"),
+                    Style::default().fg(if active { ACCENT } else { TEXT }),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    clip(command.summary, description_width),
+                    Style::default().fg(DIM),
+                ),
+            ]);
+            if active {
+                line = line.style(Style::default().bg(SELECT));
+            }
+            lines.push(line);
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(PANEL)),
+        Rect::new(inner.x, inner.y, inner.width, list_height as u16),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            clip(
+                "enter run · tab complete · esc close",
+                usize::from(inner.width),
+            ),
+            Style::default().fg(FAINT),
+        )))
+        .style(Style::default().bg(PANEL)),
+        Rect::new(inner.x, inner.y + list_height as u16, inner.width, 1),
+    );
+}
+
+fn command_label(command: &Command) -> String {
+    if command.usage.is_empty() {
+        format!("/{}", command.name)
+    } else {
+        format!("/{} {}", command.name, command.usage)
+    }
+}
+
+fn clip(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if text.width() <= width {
+        return text.to_string();
+    }
+    if width == 1 {
+        return "…".into();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if used + ch_width > width - 1 {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out.push('…');
+    out
+}
+
 fn meta_line(state: &State, width: usize) -> Line<'static> {
     if state.busy {
         let spinner = SPINNER[state.spinner % SPINNER.len()];
@@ -1464,7 +1759,14 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let line = if state.busy {
+    let line = if state.palette.is_some() {
+        hints_line(&[
+            ("↑↓", " select  "),
+            ("enter", " run  "),
+            ("tab", " complete  "),
+            ("esc", " close"),
+        ])
+    } else if state.busy {
         hints_line(&[
             ("pgup/wheel", " scroll  "),
             ("ctrl+t", " thinking  "),
@@ -2740,5 +3042,170 @@ mod tests {
         assert!(state.follow);
         editor_key(&mut state, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         assert_eq!(state.editor.cursor, 5);
+    }
+
+    fn open_palette(state: &mut State, query: &str) {
+        state.editor.clear();
+        editor_only_key(state, KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        for ch in query.chars() {
+            editor_only_key(state, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+    }
+
+    fn workspace(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "jani-tui-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn typing_slash_opens_a_filterable_command_palette() {
+        let mut state = State::new(meta(), 0, 0);
+        open_palette(&mut state, "");
+        assert!(state.palette.is_some());
+        let text = render(&mut state, 100, 30);
+        assert!(text.contains("commands"), "{text}");
+        assert!(text.contains("/status"), "{text}");
+        assert!(text.contains("Show frozen authority"), "{text}");
+        assert!(text.contains("enter run"), "{text}");
+        assert!(text.contains('›'), "{text}");
+
+        for ch in "st".chars() {
+            editor_only_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
+        }
+        let text = render(&mut state, 100, 30);
+        assert!(text.contains("commands · st"), "{text}");
+        assert!(text.contains("/status"), "{text}");
+        assert!(!text.contains("/budget"), "{text}");
+        assert_eq!(state.palette_choice().unwrap().name, "status");
+    }
+
+    #[test]
+    fn palette_navigation_cycles_and_resets_on_filter_edits() {
+        let mut state = State::new(meta(), 0, 0);
+        open_palette(&mut state, "s");
+        assert_eq!(state.palette_choice().unwrap().name, "status");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.palette_choice().unwrap().name, "skills");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.palette_choice().unwrap().name, "status");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.palette_choice().unwrap().name, "skills");
+
+        open_palette(&mut state, "");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.palette_choice().unwrap().name, "status");
+        editor_only_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.palette_choice().unwrap().name, "new");
+    }
+
+    #[test]
+    fn palette_tab_fills_the_name_and_escape_clears() {
+        let mut state = State::new(meta(), 0, 0);
+        open_palette(&mut state, "sta");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(state.palette.is_none());
+        assert_eq!(state.editor.text, "/status");
+
+        open_palette(&mut state, "appr");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        editor_key(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(state.palette.is_none());
+        assert_eq!(state.editor.text, "/approval ");
+
+        open_palette(&mut state, "sta");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(state.palette.is_none());
+        assert!(state.editor.is_empty());
+    }
+
+    #[test]
+    fn deleting_the_slash_closes_the_palette() {
+        let mut state = State::new(meta(), 0, 0);
+        open_palette(&mut state, "s");
+        editor_only_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        assert!(state.palette.is_some());
+        editor_only_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        assert!(state.palette.is_none());
+        assert!(state.editor.is_empty());
+    }
+
+    #[test]
+    fn the_palette_does_not_open_while_a_turn_runs() {
+        let mut state = State::new(meta(), 0, 0);
+        state.busy = true;
+        editor_only_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        );
+        assert!(state.palette.is_none());
+        assert_eq!(state.editor.text, "/");
+    }
+
+    #[test]
+    fn palette_marks_commands_that_still_need_an_argument() {
+        let mut state = State::new(meta(), 0, 0);
+        open_palette(&mut state, "appr");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        match palette_target(&state) {
+            Some(PaletteTarget::Prefill(command)) => assert_eq!(command.name, "approval"),
+            _ => panic!("expected an argument prompt"),
+        }
+        open_palette(&mut state, "sta");
+        match palette_target(&state) {
+            Some(PaletteTarget::Run(command)) => assert_eq!(command.name, "status"),
+            _ => panic!("expected an immediate action"),
+        }
+    }
+
+    #[test]
+    fn palette_enter_runs_the_selected_command_end_to_end() {
+        let root = workspace("palette");
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        cfg.tenant = "t1".into();
+        cfg.principal = "p1".into();
+        cfg.task_id = Some("task-1".into());
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        let mut state = State::new(meta(), 0, 0);
+        state.push(Entry::new(Kind::User, "previous"));
+
+        open_palette(&mut state, "ne");
+        assert_eq!(state.palette_choice().unwrap().name, "new");
+        palette_run(&mut state, &mut agent, &catalog);
+
+        assert!(state.palette.is_none());
+        assert!(state.editor.is_empty());
+        assert!(!state.entries.iter().any(|entry| entry.text == "previous"));
+        assert!(state
+            .entries
+            .iter()
+            .any(|entry| entry.kind == Kind::Command && entry.text == "/new"));
+        assert!(state
+            .entries
+            .iter()
+            .any(|entry| entry.text.contains("Conversation cleared")));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

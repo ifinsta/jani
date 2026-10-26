@@ -14,12 +14,13 @@ The workspace root lists `backend/server` under `default-members`, so the
 
 Expected automated coverage in this build:
 
-- 184 unit tests across config, policy, identity, data, broker, journal, approvals,
+- 193 unit tests across config, policy, identity, data, broker, journal, approvals,
   budget, sandbox, process, workspace, skills, schema, plugins, project settings,
   Claude-style permission matching, model transport and SSE assembly, streaming
   output inspection, native tools, mirror reports, the interactive terminal
-  editor, live turn state, transcript scrolling and per-block thinking folds, the
-  Markdown renderer, and the check/claims tooling.
+  editor, command catalog, slash-command palette filtering, navigation and
+  selection, live turn state, transcript scrolling and per-block thinking folds,
+  the Markdown renderer, and the check/claims tooling.
 - 24 CLI and integration tests: 17 CLI tests including the shipped work-contract
   example, settings precedence, inline-credential redaction, profile credential
   binding, top-level `model` selection, `permissions` diagnostics, the guarantee
@@ -80,7 +81,7 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `EnterpriseRestricted` profile on Windows | Refused; Job Object never claims filesystem/network confinement |
 | `EnterpriseRestricted` profile on Linux with bwrap available | bubblewrap plan; receipt reports filesystem and network confinement |
 | Linux and Windows builds | Toolchain gates pass on both |
-| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a live step and the `reading notes.txt` tool entry appear, a fake-provider SSE answer renders as Markdown (bullets, no raw `**` or backticks) with its thinking block folded, `/help` overflows the viewport so the scrollbar and the `N lines below the bottom` tip appear, `PgUp`, the injected wheel and a click on the `▸ think` label each move or fold the view, wheel-down resumes following, exactly two streaming requests carry no API key, exit 0 and `PROBE_RESULT=PASS` |
+| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a live step and the `reading notes.txt` tool entry appear, a fake-provider SSE answer renders as Markdown (bullets, no raw `**` or backticks) with its thinking block folded, `/help` overflows the viewport so the scrollbar and the `N lines below the bottom` tip appear, `PgUp`, the injected wheel and a click on the `▸ think` label each move or fold the view, wheel-down resumes following, `/` opens the command palette and `st` filters it to `/status`, `Esc` closes it, `Down` selects `/status` and Enter runs it, `/new` runs through reopen-the-palette and clears the transcript, exactly two streaming requests carry no API key, exit 0 and `PROBE_RESULT=PASS` |
 
 The console probe is a manual Windows trial, not a CI gate. It proves the
 rendered buffer in a real console, and key, wheel and click handling for events

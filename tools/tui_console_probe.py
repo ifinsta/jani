@@ -59,7 +59,9 @@ MOUSE_WHEELED = 0x0004
 ENABLE_MOUSE_INPUT = 0x0010
 ENABLE_EXTENDED_FLAGS = 0x0080
 VK_RETURN = 0x0D
+VK_ESCAPE = 0x1B
 VK_PAGE_UP = 0x21
+VK_DOWN = 0x28
 
 kernel32.GetCurrentProcess.restype = wintypes.HANDLE
 kernel32.CreateFileW.restype = wintypes.HANDLE
@@ -301,6 +303,15 @@ def row_of(screen, needle):
         if needle in line:
             return index
     return -1
+
+
+def palette_body(screen):
+    rows = screen.split("\n")
+    start = next((index for index, row in enumerate(rows) if "commands" in row), None)
+    end = next((index for index, row in enumerate(rows) if "enter run" in row), None)
+    if start is None or end is None or end < start:
+        return ""
+    return "\n".join(rows[start : end + 1])
 
 
 class FakeProvider(BaseHTTPRequestHandler):
@@ -556,6 +567,65 @@ def main():
         print("wheel_resume_follow:", "below the bottom" not in resumed)
         print("back_at_bottom:", "Any other input" in resumed and "Jani v0.1.0" not in resumed)
 
+        # Slash palette: "/" opens a modal, the query filters it, the arrow keys
+        # select, and Enter runs the highlighted command end to end.
+        type_text(stdin_handle, "/")
+        palette = stable_screen(width, height, "enter run", timeout=10.0)
+        print("--- command palette ---")
+        print(palette)
+        body = palette_body(palette)
+        palette_open = (
+            "commands" in body
+            and "/status" in body
+            and "Show frozen authority" in body
+        )
+        print("palette_opens:", palette_open)
+
+        type_text(stdin_handle, "st")
+        filtered = stable_screen(width, height, "commands · st", timeout=10.0)
+        print("--- command palette filter ---")
+        print(filtered)
+        filtered_body = palette_body(filtered)
+        palette_filter = (
+            "commands · st" in filtered_body
+            and "/status" in filtered_body
+            and "/budget" not in filtered_body
+        )
+        print("palette_filters:", palette_filter)
+
+        key(stdin_handle, VK_ESCAPE, "\x1b")
+        closed = stable_screen(width, height, "Any other input", timeout=10.0)
+        print("--- palette closed ---")
+        print(closed)
+        palette_escape = "enter run" not in closed
+        print("palette_escape_closes:", palette_escape)
+
+        type_text(stdin_handle, "/")
+        stable_screen(width, height, "enter run", timeout=10.0)
+        key(stdin_handle, VK_DOWN)
+        type_text(stdin_handle, "\r")
+        executed = wait_until_idle(
+            width, height, "Project permissions: mode=default", timeout=15.0
+        )
+        print("--- palette ran status ---")
+        print(executed)
+        palette_ran = (
+            "Project permissions: mode=default" in executed
+            and "enter run" not in executed
+        )
+        print("palette_runs_selected:", palette_ran)
+
+        type_text(stdin_handle, "/new\r")
+        cleared = stable_screen(width, height, "Conversation cleared", timeout=10.0)
+        print("--- palette ran new ---")
+        print(cleared)
+        palette_new = (
+            "Conversation cleared" in cleared
+            and "Project permissions:" not in cleared
+            and "enter run" not in cleared
+        )
+        print("palette_runs_new:", palette_new)
+
         type_text(stdin_handle, "/exit\r")
         try:
             code = process.wait(timeout=15)
@@ -594,6 +664,11 @@ def main():
             and "below the bottom" not in resumed
             and "Any other input" in resumed
             and "Jani v0.1.0" not in resumed
+            and palette_open
+            and palette_filter
+            and palette_escape
+            and palette_ran
+            and palette_new
             and len(FakeProvider.captured) == 2
             and bool(requests)
             and all(request.get("stream") is True for request in requests)
