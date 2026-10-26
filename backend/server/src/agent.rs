@@ -902,6 +902,7 @@ mod tests {
         let result = agent.run_turn_events_with_cancel("new-failed-turn", &mut sink, &cancellation);
         assert!(result.is_err());
         assert_eq!(agent.session.messages, before);
+        drop(agent);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -927,6 +928,7 @@ mod tests {
         let records = agent.inspect(None).unwrap();
         assert_eq!(records[0]["decision"], "started");
         assert_eq!(records[1]["reason_code"], "cancelled_by_operator");
+        drop(agent);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -939,6 +941,7 @@ mod tests {
         let catalog = Catalog::default();
         let agent = Agent::new(&cfg, &catalog).unwrap();
         assert!(agent.run_evidence().unwrap_err().contains("no run"));
+        drop(agent);
         std::fs::remove_dir_all(root).unwrap();
     }
 
