@@ -780,7 +780,6 @@ impl State {
             scrollbar_col: None,
             follow: true,
             busy: false,
-            quit_after_turn: false,
             spinner: 0,
             pending,
             seen_approvals: Vec::new(),
