@@ -1,3 +1,9 @@
+## Pending validation — terminal UX slice (2026-10-26, source only)
+
+The latest `main` source now includes four read-only starter **draft** shortcuts, a first-run task menu, engineering-agent branding and a status line that calls the configured sandbox a **profile**, not OS confinement. Unit tests were added in `backend/server/src/tui.rs` and the Windows console probe was extended to assert that F1 drafts text without invoking a provider. These changes were **not compiled or exercised** in the environment that authored them: Rust/Cargo and a Windows console were unavailable. The 225-test baseline elsewhere on this page predates this slice and is not proof that the new changes pass. No binary was published.
+
+Before releasing, run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`, `cargo build --locked --release -p jani`, `python tools/doccheck.py`, `cargo run -p jani-claims -- check` and `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` on a real Windows test host. Review F1–F4 handling and terminal sizes of 40x10, 80x24 and 120x40. Mark this gate passed only after independently saving receipts tied to a commit and artifact SHA.
+
 ## Sentinel hardening: 2026-10-25 (unreleased, non-production)
 
 Native source staged for Linux file/journald collectors, standardized CPU/memory/disk/process metrics, bounded systemd inventory, 64 MiB identity-bound offline spool, runtime certificate revocation, normalized transactional SQLite tables, tenant-specific incidents and configurable 1–90 day data retention. Dedicated systemd service examples and security regression tests are included.
