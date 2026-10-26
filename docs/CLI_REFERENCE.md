@@ -34,8 +34,8 @@ Use this page to find the command family or safety switch you need. It is an ent
 
 ## Model and settings switches
 
-- `--settings FILE` loads project settings from an explicit path. `JANI_SETTINGS` supplies the same path through the environment. Relative paths resolve against the worktree. An explicitly named missing file fails closed.
-- Without `--settings` or `JANI_SETTINGS`, Jani reads `.jani/settings.json` if it exists. A missing default file is not an error.
+- `--settings FILE` loads settings from an explicit path. `JANI_SETTINGS` supplies the same path through the environment. Relative paths resolve against the worktree. An explicitly named missing file fails closed.
+- Without `--settings` or `JANI_SETTINGS`, Jani reads `<worktree>/.jani/settings.json`, then the user-wide `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows). `JANI_USER_SETTINGS` overrides the user-wide path. Only the first file found is used; files are not merged. A missing default file is not an error.
 - `--model-profile NAME` selects a named profile from the settings file. Without it, a top-level `model` naming a profile applies, then `defaultModel`. Selecting a profile when no settings file exists is an error.
 - `--model ID` overrides the selected profile's model. `--protocol openai|anthropic` and `--max-output-tokens N` override profile transport settings; `JANI_PROTOCOL` and `JANI_MAX_OUTPUT_TOKENS` are the environment equivalents.
 - Precedence is **CLI flag > environment variable > settings file > built-in default**.

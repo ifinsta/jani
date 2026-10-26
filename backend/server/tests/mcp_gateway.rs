@@ -6,7 +6,9 @@ use jani_core::types::{now_unix, Classification};
 use jani_mcp::{Delegation, McpContract, Mode, Operation, Server, Signature, PROTOCOL};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
+use std::{collections::BTreeMap, fs, path::PathBuf};
+
+mod support;
 
 fn key(seed: u8, label: &str) -> String {
     let sk = SigningKey::from_bytes(&[seed; 32]);
@@ -130,7 +132,7 @@ fn verified_initiator_can_read_news_but_not_commit_records() {
     )
     .unwrap();
     let run = |op: &str, resource: &str| {
-        Command::new(env!("CARGO_BIN_EXE_jani"))
+        support::jani()
             .args([
                 "mcp",
                 "authorize",
@@ -196,7 +198,7 @@ fn verified_initiator_can_read_news_but_not_commit_records() {
 #[test]
 fn unsigned_mcp_contract_fails_closed() {
     let root = dir();
-    let result = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let result = support::jani()
         .args(["mcp", "verify", "--repo", root.to_str().unwrap()])
         .env_remove("JANI_POLICY")
         .env_remove("JANI_IDENTITY")

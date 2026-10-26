@@ -160,7 +160,7 @@ OPTIONS:
   --api-base URL          API base (JANI_API_BASE)
   --protocol P            openai or anthropic (auto-detected from API host)
   --max-output-tokens N   Provider output ceiling (default 4096, 1..200000)
-  --settings FILE         Project settings JSON (default .jani/settings.json; JANI_SETTINGS)
+  --settings FILE         Settings JSON (default .jani/settings.json, then ~/.jani/settings.json; JANI_SETTINGS)
   --model-profile NAME    Model profile from settings (default top-level model)
   --repo PATH             Assigned Git worktree; defaults to current directory
   --max-steps N           Maximum model turns (default 20, ceiling 80)
@@ -189,15 +189,20 @@ ENVIRONMENT:
   JANI_POLICY, JANI_POLICY_KEYS, JANI_IDENTITY, JANI_CONTRACT
   JANI_STATE_DIR, JANI_SANDBOX, JANI_SANDBOX_NET
   JANI_PLUGIN_DIR, JANI_PLUGIN_KEYS, JANI_PROVIDER_REGION, JANI_PROVIDER_CLASS
-  JANI_SETTINGS            Alternate project settings file
+  JANI_SETTINGS            Alternate settings file
+  JANI_USER_SETTINGS       Override the user-wide settings path
 
 SETTINGS:
-  .jani/settings.json (or --settings / JANI_SETTINGS) supplies a top-level
-  model selector (a profile name or model ID), named model profiles, maxSteps
-  and Claude-style permissions. A profile may set model, apiBase, protocol,
-  maxOutputTokens, apiKeyEnv or an inline apiKey. Precedence is CLI, then
-  environment, then settings; a profile's own credential binding is
-  authoritative so a generic key is never sent to another provider.
+  Jani loads settings from --settings / JANI_SETTINGS when given, otherwise
+  <worktree>/.jani/settings.json when present, otherwise the user-wide
+  ~/.jani/settings.json (%USERPROFILE%\.jani\settings.json on Windows;
+  JANI_USER_SETTINGS overrides that path). Only the first file found is used,
+  with no merging. It supplies a top-level model selector (a profile name or
+  model ID), named model profiles, maxSteps and Claude-style permissions. A
+  profile may set model, apiBase, protocol, maxOutputTokens, apiKeyEnv or an
+  inline apiKey. Precedence is CLI, then environment, then settings; a
+  profile's own credential binding is authoritative so a generic key is never
+  sent to another provider.
   permissions.defaultMode is default, acceptEdits or plan; allow/ask/deny take
   rules such as Bash(cargo test *) and Read(./.env). Settings rules can only
   narrow the CLI grants, contract and signed policy: they never enable writes,
@@ -391,25 +396,52 @@ impl Config {
             .settings_path
             .clone()
             .or_else(|| env_nonempty("JANI_SETTINGS").map(PathBuf::from));
-        let (path, required) = match explicit {
-            Some(path) => {
-                let path = if path.is_relative() {
-                    cfg.root.join(path)
-                } else {
-                    path
-                };
-                (path, true)
-            }
-            None => (cfg.root.join(".jani").join("settings.json"), false),
-        };
-        if !path.exists() {
-            if required {
+        Self::resolve_settings(&cfg.root, explicit, Self::user_settings_path())
+    }
+
+    fn resolve_settings(
+        root: &Path,
+        explicit: Option<PathBuf>,
+        user: Option<PathBuf>,
+    ) -> JResult<Option<(PathBuf, Settings)>> {
+        if let Some(path) = explicit {
+            let path = if path.is_relative() {
+                root.join(path)
+            } else {
+                path
+            };
+            if !path.exists() {
                 return Err(format!("settings file not found: {}", path.display()));
             }
-            return Ok(None);
+            let settings = Settings::load(&path)?;
+            return Ok(Some((path, settings)));
         }
-        let settings = Settings::load(&path)?;
-        Ok(Some((path, settings)))
+        let user = user.map(|path| {
+            if path.is_relative() {
+                root.join(path)
+            } else {
+                path
+            }
+        });
+        for path in std::iter::once(root.join(".jani").join("settings.json")).chain(user) {
+            if path.exists() {
+                let settings = Settings::load(&path)?;
+                return Ok(Some((path, settings)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn user_settings_path() -> Option<PathBuf> {
+        if let Some(path) = env_nonempty("JANI_USER_SETTINGS").map(PathBuf::from) {
+            return Some(path);
+        }
+        let home = if cfg!(windows) {
+            env::var_os("USERPROFILE").or_else(|| env::var_os("HOME"))
+        } else {
+            env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"))
+        }?;
+        Some(PathBuf::from(home).join(".jani").join("settings.json"))
     }
 
     fn apply_env(cfg: &mut Config, credential: &CredentialBinding) -> JResult<()> {
@@ -832,6 +864,21 @@ pub fn validate_relative(p: &Path) -> JResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
+
+    // Unit tests must never read the developer's real user-wide settings.
+    fn isolate() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            std::env::set_var(
+                "JANI_USER_SETTINGS",
+                std::env::temp_dir().join(format!(
+                    "jani-config-no-user-settings-{}.json",
+                    std::process::id()
+                )),
+            );
+        });
+    }
 
     #[test]
     fn traversal_is_rejected() {
@@ -846,6 +893,7 @@ mod tests {
             .iter()
             .map(|value| value.to_string())
             .collect();
+        isolate();
         let cfg = Config::from_args(&args).unwrap();
         assert_eq!(cfg.command, "native");
         assert_eq!(cfg.sub.as_deref(), Some("simulator"));
@@ -855,12 +903,14 @@ mod tests {
 
     #[test]
     fn unknown_command_is_rejected() {
+        isolate();
         let result = Config::from_args(&["unsupported-command".to_string()]);
         assert!(matches!(&result, Err(message) if message.contains("unknown command")));
     }
 
     #[test]
     fn bare_invocation_selects_the_terminal_or_help() {
+        isolate();
         assert_eq!(default_command(true), "repl");
         assert_eq!(default_command(false), "help");
 
@@ -877,6 +927,7 @@ mod tests {
 
     #[test]
     fn repl_is_a_command_without_a_prompt() {
+        isolate();
         let cfg = Config::from_args(&["repl".to_string()]).unwrap();
         assert_eq!(cfg.command, "repl");
         assert!(cfg.prompt.is_none());
@@ -888,6 +939,7 @@ mod tests {
             .iter()
             .map(|value| value.to_string())
             .collect();
+        isolate();
         let error = match Config::from_args(&args) {
             Ok(_) => panic!("expected repl to reject a fixed run id"),
             Err(error) => error,
@@ -904,6 +956,7 @@ mod tests {
             .iter()
             .map(|value| value.to_string())
             .collect();
+        isolate();
         let error = match Config::from_args(&args) {
             Ok(_) => panic!("expected repl to reject a positional prompt"),
             Err(error) => error,
@@ -925,6 +978,7 @@ mod tests {
         .iter()
         .map(|value| value.to_string())
         .collect();
+        isolate();
         let error = match Config::from_args(&base) {
             Ok(_) => panic!("expected enterprise repl to require an identity"),
             Err(error) => error,
@@ -957,6 +1011,7 @@ mod tests {
     }"#;
 
     fn temp_workspace(settings: Option<&str>) -> PathBuf {
+        isolate();
         let root = std::env::temp_dir().join(format!(
             "jani-config-settings-{}-{}",
             std::process::id(),
@@ -1060,5 +1115,108 @@ mod tests {
             "custom.json"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    const USER_SETTINGS: &str = r#"{
+        "version": 1,
+        "model": "user-profile",
+        "models": {
+            "user-profile": {"model": "user-model", "apiBase": "https://user.test/v1"}
+        }
+    }"#;
+
+    fn temp_settings_file(name: &str, body: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "jani-config-{name}-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn user_settings_are_used_when_the_worktree_has_none() {
+        let root = temp_workspace(None);
+        let user = temp_settings_file("user", USER_SETTINGS);
+        let (path, settings) = Config::resolve_settings(&root, None, Some(user.clone()))
+            .unwrap()
+            .expect("user settings should be found");
+        assert_eq!(path, user);
+        assert_eq!(
+            settings.selected_profile(None).unwrap().as_deref(),
+            Some("user-profile")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(user).unwrap();
+    }
+
+    #[test]
+    fn project_settings_take_precedence_over_user_settings() {
+        let root = temp_workspace(Some(SETTINGS));
+        let user = temp_settings_file("shadowed-user", USER_SETTINGS);
+        let (path, settings) = Config::resolve_settings(&root, None, Some(user.clone()))
+            .unwrap()
+            .expect("project settings should be found");
+        assert_eq!(path, root.join(".jani").join("settings.json"));
+        assert_eq!(
+            settings.selected_profile(None).unwrap().as_deref(),
+            Some("fast")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(user).unwrap();
+    }
+
+    #[test]
+    fn explicit_settings_take_precedence_over_project_and_user() {
+        let root = temp_workspace(Some(SETTINGS));
+        let explicit = temp_settings_file("explicit", r#"{"version":1,"model":"explicit-model"}"#);
+        let user = temp_settings_file("ignored-user", USER_SETTINGS);
+        let (path, settings) =
+            Config::resolve_settings(&root, Some(explicit.clone()), Some(user.clone()))
+                .unwrap()
+                .expect("explicit settings should be found");
+        assert_eq!(path, explicit);
+        assert_eq!(settings.model_override(), Some("explicit-model"));
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(explicit).unwrap();
+        std::fs::remove_file(user).unwrap();
+    }
+
+    #[test]
+    fn missing_explicit_settings_fail_even_with_user_settings() {
+        let root = temp_workspace(None);
+        let user = temp_settings_file("fallback", USER_SETTINGS);
+        let missing = root.join("missing.json");
+        let error = match Config::resolve_settings(&root, Some(missing), Some(user.clone())) {
+            Ok(_) => panic!("expected explicit settings to fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("settings file not found"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(user).unwrap();
+    }
+
+    #[test]
+    fn broken_user_settings_fail_closed() {
+        let root = temp_workspace(None);
+        let user = temp_settings_file("broken-user", "{not json");
+        let error = match Config::resolve_settings(&root, None, Some(user.clone())) {
+            Ok(_) => panic!("expected invalid user settings to fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("invalid settings JSON"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(user).unwrap();
+    }
+
+    #[test]
+    fn user_settings_path_honors_the_environment_override() {
+        isolate();
+        let expected = std::env::var("JANI_USER_SETTINGS").unwrap();
+        assert_eq!(Config::user_settings_path(), Some(PathBuf::from(expected)));
     }
 }

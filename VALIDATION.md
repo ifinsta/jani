@@ -14,7 +14,7 @@ See [Sentinel operational gates](docs/SENTINEL_OPERATIONS.md).
 
 This page answers one question: *what has actually been executed, and what does that evidence allow you to claim?* It is a snapshot, not a permanent certification. Source code and executable tests are the authority; a passing count here does not extend to platforms or providers that were never run.
 
-Snapshot: 2026-10-25, Windows `x86_64-pc-windows-msvc`, Rust 1.95.0 pinned by `rust-toolchain.toml`.
+Snapshot: 2026-10-26, Windows `x86_64-pc-windows-msvc`, Rust 1.95.0 pinned by `rust-toolchain.toml`.
 
 ## What is proven
 
@@ -22,11 +22,11 @@ Snapshot: 2026-10-25, Windows `x86_64-pc-windows-msvc`, Rust 1.95.0 pinned by `r
 | --- | --- | --- |
 | Formatting | `cargo fmt --all -- --check` | Clean |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | Zero warnings |
-| Tests | `cargo test --workspace --all-targets` | 179 passed, 0 failed: 156 unit, 21 CLI/integration, 2 fake-provider E2E |
+| Tests | `cargo test --workspace --all-targets` | 188 passed, 0 failed: 162 unit, 24 CLI/integration, 2 fake-provider E2E |
 | Release build | `cargo build --release -p jani` | Succeeds; `jani --version` and `jani --help` run |
 | CLI smoke | `jani doctor`, `jani sandbox doctor` | Report worktree, skills, model, settings source, permissions and sandbox support |
 | Architecture gate | `cargo run -p jani-check` | Passes |
-| Documentation manifest | `python tools/doccheck.py` | 54 normative documents and the 12 mandatory core contracts validate |
+| Documentation manifest | `python tools/doccheck.py` | 57 normative documents and the 12 mandatory core contracts validate |
 | Claims register | `cargo run -p jani-claims -- check` | Register current; 0 unresolved deterministic findings |
 | Synthetic corpus | `python -m synthetic.generate generate` / `verify` | 5,000,000 cases generated and integrity-verified locally |
 | Native corpus | `python -m synthetic.native_tools generate` / `verify` | Generated and verified; CI exercises 2,400 cases |
@@ -92,7 +92,7 @@ Record the commit SHA, platform, runner identity and artifact digests if you rel
 - **No Linux execution on this host.** bubblewrap confinement and the `cfg(unix)` test path were not run here. CI targets Ubuntu, but a green CI job is not a penetration test.
 - **No sandbox-escape or crash-recovery trial.** Confinement is asserted by selection and refusal tests, not by adversarial escape attempts.
 - **No executed 5M corpus.** Generating and verifying inputs proves corpus integrity only. There are no per-case Jani execution receipts, so the corpus is not evidence of runtime correctness.
-- **Release installer coverage is narrow, and the installed copy is not the committed release artifact.** `releases/v0.1.0/` still contains the artifact built from commit `c9e3f3b` (SHA-256 `860d934d…`). For this settings/permissions work, a local release build from the dirty worktree (SHA-256 `ab2b8605541b9c8985eb7349b1ddba4be9afca8796bdc3bcf84b6676b5c7db90`) was copied to `%LOCALAPPDATA%\Jani\bin\jani.exe` and the console probe against that installed path passed. Re-running `install.ps1` would replace it with the older committed artifact. The non-interactive PATH branch was tested; the interactive yes branch was not. There is no code signing, no clean-machine test, no Linux artifact install and no auto-update or rollback test.
+- **Release installer coverage is narrow, and the installed copy is not the committed release artifact.** `releases/v0.1.0/` still contains the artifact built from commit `c9e3f3b` (SHA-256 `860d934d…`). For this settings/permissions work, a local release build from the dirty worktree (SHA-256 `6405485163971ed2135c0cdc6c33d7905b5df0a6ba2473ccf4371f2b57d4d835`) was copied to `%LOCALAPPDATA%\Jani\bin\jani.exe` on 2026-10-26; `jani doctor --repo C:\Users\user\CascadeProjects\ifinpay` then reported `Settings: C:\Users\user\.jani\settings.json (profile deepseek)` and `Model: deepseek-chat`, proving the user-wide fallback. Re-running `install.ps1` would replace it with the older committed artifact. The non-interactive PATH branch was tested; the interactive yes branch was not. There is no code signing, no clean-machine test, no Linux artifact install and no auto-update or rollback test.
 - **No independent signoff.** All evidence here was produced locally or in CI without an external reviewer. See the receipt and reviewer fields in [docs/RELEASE_ACCEPTANCE.md](docs/RELEASE_ACCEPTANCE.md).
 - **No enterprise controls.** There is no IdP/SCIM, policy administration, key rotation/revocation, encrypted tenant storage, signed execution receipt, plugin runtime or portable OS sandbox. See the [implementation review](docs/jani_enterprise_proposals/IMPLEMENTATION_REVIEW.md).
 

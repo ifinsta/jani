@@ -3,8 +3,8 @@ id: JANI-OPS-002
 title: "Configuration reference"
 status: implemented-partial
 owner: backend/core/src/config.rs
-version: 1.1.0
-last-reviewed: 2026-10-25
+version: 1.2.0
+last-reviewed: 2026-10-26
 source:
   - backend/core/src/config.rs
   - backend/core/src/settings.rs
@@ -18,17 +18,21 @@ Configuration is resolved in the Rust CLI parser. This page explains where value
 ## How configuration is resolved
 
 1. Built-in defaults.
-2. `.jani/settings.json`, or the file named by `--settings` / `JANI_SETTINGS`.
-3. Environment variables.
-4. CLI flags.
+2. User-wide settings from `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows).
+3. Worktree settings from `<worktree>/.jani/settings.json`, or the file named by `--settings` / `JANI_SETTINGS`.
+4. Environment variables.
+5. CLI flags.
 
-Each layer overrides the one below it. A missing default settings file is fine; an explicitly named file that does not exist is an error. Relative settings paths resolve against the worktree selected by `--repo`.
+Each layer overrides the one below it. Settings files do not merge: Jani uses the first file found in the order explicit path, worktree file, user file, and ignores the others. A missing default settings file is fine; an explicitly named file that does not exist is an error. Relative settings and `JANI_USER_SETTINGS` paths resolve against the worktree selected by `--repo`. `JANI_USER_SETTINGS` overrides the user-wide path, which is useful for tests and non-standard home directories.
 
 | Source | Selection | Missing behavior |
 | --- | --- | --- |
 | CLI | `--settings FILE` | Error |
-| Environment | `JANI_SETTINGS` | Falls through to the default path |
-| Default | `<worktree>/.jani/settings.json` | Ignored if absent |
+| Environment | `JANI_SETTINGS` | Falls through to the worktree file |
+| Default | `<worktree>/.jani/settings.json` | Falls through to the user file |
+| User | `~/.jani/settings.json` (`JANI_USER_SETTINGS` overrides) | Ignored if absent |
+
+A user-wide file is a convenience for personal defaults such as a model profile; project files shadow it entirely. Keep provider keys in environment variables or a user-only file, never in a committed worktree file.
 
 ## Settings file
 
@@ -86,7 +90,7 @@ Permission rules use `Read(./path)`, `Write(./path)` and `Bash(command *)`. Eval
 
 Rules map to the model-facing tools: `Read` covers `workspace_read` and `workspace_list` (directory), `Write` covers `workspace_write`, and `Bash` covers `workspace_command`. Native capabilities are separate `native.read` / `native.control` actions governed by the work contract and signed policy; their repository index excludes `.git`, `.jani`, `.env`, `target`, `claims`, generated directories and protected path components, but a project `Read` deny rule is not applied as an index filter.
 
-The full example is [settings.example.json](schemas/settings.example.json) and the JSON Schema is [settings.schema.json](schemas/settings.schema.json); field notes and signing formats are in [schema notes](schemas/README.md). Only `.jani/settings.json` is unignored, so journals, approvals and ledgers remain untracked.
+The full example is [settings.example.json](schemas/settings.example.json) and the JSON Schema is [settings.schema.json](schemas/settings.schema.json); field notes and signing formats are in [schema notes](schemas/README.md). The worktree `.jani/settings.json` is unignored so a project can commit non-secret settings; journals, approvals and ledgers remain untracked, and the user-wide file lives outside the repository.
 
 ## Credentials
 

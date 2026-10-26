@@ -1,4 +1,4 @@
-use std::process::Command;
+mod support;
 
 #[test]
 fn mirror_is_offline_and_reports_empty_workflow_without_a_journal() {
@@ -12,7 +12,7 @@ fn mirror_is_offline_and_reports_empty_workflow_without_a_journal() {
     ));
     std::fs::create_dir_all(&root).unwrap();
     let state = root.join(".jani");
-    let out = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let out = support::jani()
         .args([
             "mirror",
             "workflows",
@@ -35,7 +35,7 @@ fn mirror_is_offline_and_reports_empty_workflow_without_a_journal() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["consideredRuns"], 0);
     assert_eq!(v["version"], "mirror/v1");
-    let bad = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let bad = support::jani()
         .args([
             "mirror",
             "inspect",
@@ -95,7 +95,7 @@ fn mirror_reads_verified_run_and_records_proposal_idempotently() {
         }
     }
     let invoke = |sub: &str| {
-        Command::new(env!("CARGO_BIN_EXE_jani"))
+        support::jani()
             .args([
                 "mirror",
                 sub,
@@ -136,7 +136,7 @@ fn mirror_reads_verified_run_and_records_proposal_idempotently() {
     let duplicate: serde_json::Value = serde_json::from_slice(&invoke("record").stdout).unwrap();
     assert_eq!(duplicate["recorded"], 0);
 
-    let history = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let history = support::jani()
         .args([
             "mirror",
             "history",
@@ -159,7 +159,7 @@ fn mirror_reads_verified_run_and_records_proposal_idempotently() {
     let stored: serde_json::Value = serde_json::from_slice(&history.stdout).unwrap();
     assert_eq!(stored["recommendations"].as_array().unwrap().len(), 1);
 
-    let other = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let other = support::jani()
         .args([
             "mirror",
             "inspect",
@@ -192,7 +192,7 @@ fn mirror_refuses_unverified_audit_data() {
     let state = root.join(".jani");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(state.join("journal.jsonl"), "{broken\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .args([
             "mirror",
             "workflows",

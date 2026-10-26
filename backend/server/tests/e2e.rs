@@ -2,10 +2,12 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod support;
 
 fn temp_root() -> PathBuf {
     let stamp = std::time::SystemTime::now()
@@ -134,7 +136,7 @@ fn governed_run_calls_a_local_provider_and_records_evidence() {
     let (base, bodies, provider) =
         start_provider(vec![tool_call.to_string(), final_answer.to_string()]);
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let mut child = support::jani()
         .args([
             "--print",
             "read src/one.txt",
@@ -191,7 +193,7 @@ fn governed_run_calls_a_local_provider_and_records_evidence() {
         .any(|event| { event["action"] == "agent.run" && event["decision"] == "completed" }));
     let task_id = events[0]["task_id"].as_str().unwrap().to_string();
 
-    let audit = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let audit = support::jani()
         .args(["audit", "verify", "--state-dir", state.to_str().unwrap()])
         .output()
         .expect("verify audit journal");
@@ -199,7 +201,7 @@ fn governed_run_calls_a_local_provider_and_records_evidence() {
     let audit_json: Value = serde_json::from_slice(&audit.stdout).unwrap();
     assert_eq!(audit_json["ok"], true);
 
-    let budget = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let budget = support::jani()
         .args([
             "budget",
             "show",
@@ -238,7 +240,7 @@ fn repl_keeps_conversation_and_budget_across_turns() {
     let (base, bodies, provider) =
         start_provider(vec![first_answer.to_string(), second_answer.to_string()]);
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let mut child = support::jani()
         .arg("repl")
         .args([
             "--repo",
@@ -330,7 +332,7 @@ fn repl_keeps_conversation_and_budget_across_turns() {
         .all(|event| event["task_id"].as_str() == Some(task_id.as_str())));
     assert_ne!(completed[0]["run_id"], completed[1]["run_id"]);
 
-    let budget = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let budget = support::jani()
         .args([
             "budget",
             "show",

@@ -1,9 +1,10 @@
 use std::fs;
-use std::process::Command;
+
+mod support;
 
 #[test]
 fn version_runs_without_provider_credentials() {
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("--version")
         .env_remove("JANI_API_KEY")
         .env_remove("OPENAI_API_KEY")
@@ -16,7 +17,7 @@ fn version_runs_without_provider_credentials() {
 
 #[test]
 fn help_documents_permissions() {
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("--help")
         .output()
         .expect("execute jani");
@@ -32,7 +33,7 @@ fn help_documents_permissions() {
 
 #[test]
 fn repl_rejects_a_fixed_run_id() {
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .args(["repl", "--run", "run-fixed"])
         .env_remove("JANI_API_KEY")
         .env_remove("OPENAI_API_KEY")
@@ -44,7 +45,7 @@ fn repl_rejects_a_fixed_run_id() {
 
 #[test]
 fn bare_invocation_prints_help_without_a_terminal() {
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .env_remove("JANI_MODE")
         .env_remove("JANI_POLICY")
         .env_remove("JANI_IDENTITY")
@@ -62,7 +63,7 @@ fn bare_invocation_prints_help_without_a_terminal() {
 
 #[test]
 fn print_does_not_accept_an_option_as_prompt() {
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .args(["--print", "--allow-write"])
         .output()
         .expect("execute jani");
@@ -77,7 +78,7 @@ fn shipped_work_contract_example_validates() {
         .join("docs")
         .join("schemas")
         .join("work-contract.example.json");
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("contract")
         .arg("validate")
         .arg(&path)
@@ -93,7 +94,7 @@ fn shipped_work_contract_example_validates() {
 
 #[test]
 fn unknown_subcommand_fails_instead_of_printing_help() {
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("unsupported-command")
         .env_remove("JANI_API_KEY")
         .env_remove("OPENAI_API_KEY")
@@ -123,7 +124,7 @@ fn native_operation_named_run_is_not_the_agent_command() {
     let repo = root.to_str().unwrap().to_string();
     let state = root.join(".jani").to_str().unwrap().to_string();
     let invoke = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_jani"))
+        support::jani()
             .args(args)
             .args([
                 "--repo",
@@ -161,7 +162,7 @@ fn native_operation_named_run_is_not_the_agent_command() {
 
 #[test]
 fn version_ignores_unrelated_invalid_environment() {
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("--version")
         .env("JANI_AGENT_NAME", "INVALID")
         .env("JANI_WRITE_PATHS", "../escape")
@@ -195,13 +196,133 @@ fn settings_workspace(settings: &str) -> std::path::PathBuf {
     root
 }
 
+fn empty_workspace() -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "jani-cli-empty-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(root.join(".jani")).unwrap();
+    root
+}
+
+fn user_settings_file(body: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "jani-cli-user-settings-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(&path, body).unwrap();
+    path
+}
+
+const USER_SETTINGS: &str = r#"{
+    "version": 1,
+    "model": "user-profile",
+    "models": {
+        "user-profile": {"model": "user-model", "apiBase": "https://user.test/v1"}
+    },
+    "maxSteps": 11
+}"#;
+
+fn doctor_for(root: &std::path::Path, user: &std::path::Path, extra: &[&str]) -> String {
+    let state = root.join(".jani");
+    let output = support::jani_with_user_settings(user.to_path_buf())
+        .arg("doctor")
+        .args(["--repo", root.to_str().unwrap(), "--state-dir"])
+        .arg(&state)
+        .args(extra)
+        .env_remove("JANI_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_MODEL")
+        .env_remove("OPENAI_MODEL")
+        .env_remove("JANI_API_BASE")
+        .env_remove("JANI_SETTINGS")
+        .output()
+        .expect("execute jani");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn user_settings_load_when_the_worktree_has_none() {
+    let root = empty_workspace();
+    let user = user_settings_file(USER_SETTINGS);
+    let stdout = doctor_for(&root, &user, &[]);
+    assert!(
+        stdout.contains(&format!(
+            "Settings: {} (profile user-profile)",
+            user.display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Model: user-model"), "{stdout}");
+    assert!(
+        stdout.contains("Model API: openai https://user.test/v1"),
+        "{stdout}"
+    );
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_file(user).unwrap();
+}
+
+#[test]
+fn project_settings_shadow_user_settings_without_merging() {
+    let root = settings_workspace(SETTINGS);
+    let user = user_settings_file(USER_SETTINGS);
+    let stdout = doctor_for(&root, &user, &[]);
+    assert!(
+        stdout.contains(&format!(
+            "Settings: {} (profile fast)",
+            root.join(".jani").join("settings.json").display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Model: profile-model"), "{stdout}");
+    assert!(!stdout.contains("user-model"), "{stdout}");
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_file(user).unwrap();
+}
+
+#[test]
+fn explicit_settings_shadow_project_and_user_settings() {
+    let root = empty_workspace();
+    fs::write(
+        root.join("custom.json"),
+        r#"{"version":1,"model":"explicit-model","apiBase":"https://explicit.test/v1"}"#,
+    )
+    .unwrap();
+    let user = user_settings_file(USER_SETTINGS);
+    let stdout = doctor_for(&root, &user, &["--settings", "custom.json"]);
+    assert!(
+        stdout.contains(&format!("Settings: {}", root.join("custom.json").display())),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Model: explicit-model"), "{stdout}");
+    assert!(
+        stdout.contains("Model API: openai https://explicit.test/v1"),
+        "{stdout}"
+    );
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_file(user).unwrap();
+}
+
 #[test]
 fn settings_profiles_supply_model_with_env_and_cli_overrides() {
     let root = settings_workspace(SETTINGS);
     let repo = root.to_str().unwrap().to_string();
     let state = root.join(".jani").to_str().unwrap().to_string();
     let invoke = |extra: &[&str], env_model: Option<&str>| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_jani"));
+        let mut command = support::jani();
         command
             .arg("doctor")
             .args(["--repo", repo.as_str(), "--state-dir", state.as_str()])
@@ -255,7 +376,7 @@ fn settings_inline_credentials_are_accepted_and_diagnosed_without_echo() {
         r#"{"version":1,"models":{"fast":{"model":"m","apiKey":"fixture-inline-credential"}},"defaultModel":"fast"}"#,
     );
     let repo = root.to_str().unwrap().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("doctor")
         .args(["--repo", repo.as_str()])
         .env_remove("JANI_API_KEY")
@@ -277,7 +398,7 @@ fn settings_inline_credentials_are_accepted_and_diagnosed_without_echo() {
     assert!(!stdout.contains("fixture-inline-credential"), "{stdout}");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-inline-credential"));
 
-    let help = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let help = support::jani()
         .args(["--help", "--repo", repo.as_str()])
         .output()
         .expect("execute jani");
@@ -292,7 +413,7 @@ fn settings_profile_credential_binding_beats_a_generic_environment_key() {
         r#"{"version":1,"models":{"fast":{"model":"m","apiKeyEnv":"PROFILE_TEST_KEY"}},"defaultModel":"fast"}"#,
     );
     let repo = root.to_str().unwrap().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("doctor")
         .args(["--repo", repo.as_str()])
         .env("PROFILE_TEST_KEY", "profile-key")
@@ -339,7 +460,7 @@ fn settings_permissions_and_top_level_model_reach_doctor() {
         }"#,
     );
     let repo = root.to_str().unwrap().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .arg("doctor")
         .args(["--repo", repo.as_str()])
         .env_remove("JANI_API_KEY")
@@ -379,7 +500,7 @@ fn settings_raw_top_level_model_works_without_a_default_profile() {
     );
     let repo = root.to_str().unwrap().to_string();
     let run = |extra: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_jani"));
+        let mut command = support::jani();
         command
             .arg("doctor")
             .args(["--repo", repo.as_str()])

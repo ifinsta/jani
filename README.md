@@ -102,7 +102,7 @@ Writes require explicit relative scopes, and commands must match the allowlist. 
 
 ## Settings
 
-`.jani/settings.json` holds model profiles, a model selector and Claude-style permission rules. A missing file is fine. Precedence is **CLI flag > environment variable > settings file > built-in default**.
+Settings hold model profiles, a model selector and Claude-style permission rules. Jani reads `<worktree>/.jani/settings.json` when present, otherwise the user-wide `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows); the first file found wins and files are not merged. A missing file is fine. Precedence is **CLI flag > environment variable > settings file > built-in default**.
 
 ```json
 {
@@ -131,13 +131,13 @@ Writes require explicit relative scopes, and commands must match the allowlist. 
 }
 ```
 
-The top-level `model` is a profile name or a raw model ID. `--model-profile deep` overrides it. Use `--settings FILE` or `JANI_SETTINGS` for a different file; relative paths resolve against the worktree.
+The top-level `model` is a profile name or a raw model ID. `--model-profile deep` overrides it. Use `--settings FILE` or `JANI_SETTINGS` for a different file; `JANI_USER_SETTINGS` overrides the user-wide path. Relative paths resolve against the worktree.
 
 Each profile may set `model`, `apiBase`, `apiKey`, `apiKeyEnv`, `protocol` (`openai` or `anthropic`) and `maxOutputTokens`. An inline `apiKey` is accepted for convenience but `doctor` warns that the file now holds a secret; prefer `apiKeyEnv`. Key values are never printed. Anthropic's Messages API is selected automatically for `api.anthropic.com`; `--protocol` or `JANI_PROTOCOL` overrides detection.
 
 Permission rules use `Read(./path)`, `Write(./path)` and `Bash(command *)`. Evaluation is deny > plan read-only > ask > per-category allowlist. If any `allow` rule exists for a category, unmatched calls in that category are denied. These rules only narrow: they cannot enable a write or command that the CLI, contract or signed policy did not already permit, and `bypassPermissions` is refused. Unknown fields fail closed. The full example is [docs/schemas/settings.example.json](docs/schemas/settings.example.json); the JSON Schema is [docs/schemas/settings.schema.json](docs/schemas/settings.schema.json).
 
-Only `.jani/settings.json` is unignored; journals, approvals and other state stay out of Git.
+The worktree `.jani/settings.json` is unignored so a project can commit non-secret settings; journals, approvals and other state stay out of Git. The user-wide file is outside the repository and should be readable only by the operator.
 
 ## How authority works
 

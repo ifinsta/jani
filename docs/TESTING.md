@@ -40,6 +40,7 @@ child environment so it exercises local-unmanaged mode deterministically.
 |---|---|
 | `jani --version`, `jani --help`, `jani skills`, `jani doctor` | Finite output, no model call required |
 | `.jani/settings.json` then `--model-profile NAME` | `doctor` reports the profile; CLI flags override env, env overrides settings |
+| Worktree without settings + `~/.jani/settings.json` | `doctor` reports the user-wide path; a worktree settings file shadows it entirely |
 | Settings with an unknown field or malformed rule | Refused before work |
 | Settings with an inline `apiKey` | Accepted, reported as `settings (inline)` with a warning; the value never appears in output |
 | Settings permissions `deny` / `ask` / `allow` | Deny is journaled; ask requires an external `settings-permission` approval; allow never widens CLI, contract or policy |

@@ -18,7 +18,7 @@ events, which are `snake_case`.
 | `plugin-manifest/v1alpha1` | `PluginManifest` | `--plugin-dir` | Ed25519 over the manifest digest |
 | Organization policy (proposal 03) | `PolicyBundle` | `--policy` | Ed25519 over the bundle without `signature` |
 | Identity assertion (proposal 03) | `IdentityAssertion` | `--identity` | Ed25519 over the assertion without `signature` |
-| Project settings (not in the proposal table) | `Settings` | `.jani/settings.json`, `--settings`, `JANI_SETTINGS` | No; an inline key is accepted but discouraged |
+| Project settings (not in the proposal table) | `Settings` | `.jani/settings.json`, `~/.jani/settings.json`, `--settings`, `JANI_SETTINGS`, `JANI_USER_SETTINGS` | No; an inline key is accepted but discouraged |
 
 ### 1.1 Work contract
 
@@ -167,12 +167,14 @@ model egress; `"*"` is the only wildcard. `maxRisk` is `R0`–`R4`; `effect` is
 assertions and an empty nonce are rejected. The nonce is not replay-checked and
 there is no audience field yet.
 
-### 1.5 Project settings
+### 1.5 Settings
 
 See [settings.example.json](settings.example.json) and the JSON Schema
 [settings.schema.json](settings.schema.json). Settings supply named model
 profiles, a model selector, transport settings, a `maxSteps` limit and
 Claude-style `permissions` rules; they cannot grant write or command authority.
+A worktree `.jani/settings.json` shadows the user-wide
+`~/.jani/settings.json`; files are not merged.
 
 Required: `version: 1`. If `models` is non-empty, `defaultModel` must name one of
 them unless a top-level `model` selector is present. Each profile

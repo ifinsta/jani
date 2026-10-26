@@ -3,8 +3,8 @@ id: JANI-GOV-002
 title: "Changelog"
 status: implemented-partial
 owner: project
-version: 1.2.0
-last-reviewed: 2026-10-25
+version: 1.2.1
+last-reviewed: 2026-10-26
 source:
   - README.md
 tests: []
@@ -24,6 +24,7 @@ This page records what changed and what it means for compatibility. It is a deve
 ## Unreleased
 
 - Staged Sentinel native hardening for read-only Linux journald/file collection, per-source coverage, bounded persistent spooling, operator mTLS enrollment and revocation, normalized central metrics/logs/incidents, data retention and supervised systemd pilot templates. Source and tests are not a production-certified release.
+- Settings now fall back to a user-wide file: Jani reads `--settings` / `JANI_SETTINGS` when given, then `<worktree>/.jani/settings.json`, then `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows). Only the first file found is used; files are not merged. `JANI_USER_SETTINGS` overrides the user-wide path. A malformed or explicitly named missing file still fails closed, and integration tests point `JANI_USER_SETTINGS` at a nonexistent path so a developer's personal settings cannot change test behavior.
 - `.jani/settings.json` now follows Claude Code conventions: optional `$schema`, a top-level `model` selector that is a profile name or a raw model ID, per-profile `protocol` and `maxOutputTokens`, and a `permissions` block with `defaultMode`, `allow`, `ask` and `deny`. The legacy `defaultModel` remains accepted.
 - Inline `apiKey` values are now accepted when explicitly configured, alongside `apiKeyEnv`. Values are redacted from `Debug`, diagnostics and errors; `doctor` reports only the source and warns that the file holds a secret. This supersedes the earlier rejection of inline keys.
 - Added Claude-style permission rules `Read(./path)`, `Write(./path)` and `Bash(command *)`, enforced in the broker after the work contract and before policy. Evaluation is deny > plan read-only > ask > per-category allowlist. Settings denies are journaled; ask matches require an external `settings-permission` approval; allow rules never widen CLI grants, contract capabilities or signed policy. `bypassPermissions` is refused.

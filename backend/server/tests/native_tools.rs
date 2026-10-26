@@ -2,8 +2,9 @@ use serde_json::{json, Value};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
+
+mod support;
 
 fn workspace() -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -23,7 +24,7 @@ fn workspace() -> PathBuf {
     root
 }
 fn invoke(root: &Path, tool: &str, args: &[&str]) -> (bool, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_jani"));
+    let mut command = support::jani();
     command.arg("native").arg(tool);
     for arg in args {
         command.arg(arg);
@@ -99,7 +100,7 @@ fn native_tenant_scoping_and_mutations_are_not_implicitly_authorized() {
     let root = workspace();
     assert!(invoke(&root, "index", &["build"]).0);
     assert!(invoke(&root, "planner", &["create", "plan.json"]).0);
-    let output = Command::new(env!("CARGO_BIN_EXE_jani"))
+    let output = support::jani()
         .args([
             "native",
             "planner",
