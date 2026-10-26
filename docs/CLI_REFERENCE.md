@@ -53,6 +53,8 @@ See [Configuration reference](CONFIGURATION_REFERENCE.md) for the schema and [th
 - A failed turn rolls the conversation back to the checkpoint taken before that prompt, so a partial tool call cannot poison later turns. The rolled-back prompt and any partial tool results are not model context: the next prompt continues from the last successful turn, and the interface says so. History itself is process-local and is not persisted across restarts.
 - With redirected or piped stdin, `jani repl` warns that stdin is not a terminal and reads commands until EOF. Answers go to stdout; the banner and `jani> ` prompt go to stderr.
 
+On the initial empty full-screen view, `F1`–`F4` prefill read-only starter task drafts (repository map, change plan, security review, test coverage). Shortcuts never submit a prompt or execute a tool; review and press Enter to send. The terminal displays a configured sandbox **profile**, not proof of operating-system isolation. Use `jani sandbox doctor` for the actual backend capabilities.
+
 When **both** stdin and stdout are terminals, the session runs as a full-screen terminal interface: an alternate-screen workspace with a scrollable conversation transcript and its scrollbar, a multi-line input box, a frozen-authority meta line, key hints, a rotating tip and a status bar. Rendering requires a terminal of at least 40x10; smaller windows show a resize message instead of a clipped layout. A terminal emulator is not required for correctness: if either stream is redirected, Jani falls back to line mode with a warning, so pipes and existing automation keep working.
 
 Keys in the full-screen interface:
@@ -60,6 +62,7 @@ Keys in the full-screen interface:
 | Key | Effect |
 | --- | --- |
 | `Enter` | Submit the current input; with the command palette open, run the highlighted command |
+| `F1`–`F4` | On the empty welcome screen, prepare (without submitting) a safe repository inspection, plan, risk review or test-coverage draft |
 | `/` | On an empty input, open the command palette |
 | `Tab` | Complete a slash command; with the palette open, fill the highlighted command name or model profile into the input |
 | `Up` / `Down` | Walk input history; with the palette open, move the selection and wrap at the ends |
