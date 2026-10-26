@@ -13,6 +13,7 @@ pub mod journal;
 pub mod permissions;
 pub mod policy;
 pub mod process;
+pub mod recovery;
 pub mod schema;
 pub mod settings;
 pub mod types;
