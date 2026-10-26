@@ -60,6 +60,7 @@ ENABLE_MOUSE_INPUT = 0x0010
 ENABLE_EXTENDED_FLAGS = 0x0080
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
+VK_F1 = 0x70
 VK_PAGE_UP = 0x21
 VK_DOWN = 0x28
 
@@ -494,6 +495,18 @@ def main():
         print("welcome_hints:", "ctrl+c" in welcome)
         print("env_model_applied:", "probe-model" in welcome)
 
+        # F1 must only draft text; no provider or tool request is allowed.
+        key(stdin_handle, VK_F1)
+        drafted = stable_screen(width, height, "Map modules and dependencies.", timeout=10.0)
+        starter_drafted = "Map modules and dependencies." in drafted
+        starter_no_request = len(FakeProvider.captured) == 0
+        print("starter_drafted:", starter_drafted)
+        print("starter_no_request:", starter_no_request)
+        key(stdin_handle, VK_ESCAPE)
+        cleared = stable_screen(width, height, "Type a message", timeout=10.0)
+        starter_cleared = "Map modules and dependencies." not in cleared
+        print("starter_cleared:", starter_cleared)
+
         type_text(stdin_handle, "/status\r")
         status = stable_screen(width, height, "Task:")
         print("--- status screen ---")
@@ -730,6 +743,9 @@ def main():
             and "Type a message" in welcome
             and "ctrl+c" in welcome
             and "probe-model" in welcome
+            and starter_drafted
+            and starter_no_request
+            and starter_cleared
             and "Task:" in status
             and "USAGE:" not in status
             and permissions_loaded
