@@ -1,4 +1,4 @@
-## Pending validation — terminal, cancellation, recovery and evidence slices (2026-10-26, source only)
+## Pending validation — terminal, cancellation, recovery, evidence and context-restoration slices (2026-10-26, source only)
 
 The latest `main` source now includes four read-only starter **draft** shortcuts, a first-run task menu, engineering-agent branding and a status line that calls the configured sandbox a **profile**, not OS confinement. Unit tests were added in `backend/server/src/tui.rs` and the Windows console probe was extended to assert that F1 drafts text without invoking a provider. These changes were **not compiled or exercised** in the environment that authored them: Rust/Cargo and a Windows console were unavailable. The 225-test baseline elsewhere on this page predates this slice and is not proof that the new changes pass. No binary was published.
 
