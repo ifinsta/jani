@@ -31,6 +31,10 @@ The interactive terminal uses an atomic cancellation token. Ctrl+C requests canc
 
 `jani recovery status` emits `jani.recovery-status/v1` with tenant/task/run IDs, last recorded run outcome, event counts and denials. Every run has `safeToAutoReplay: false`. A crash between the actual effect and its journal outcome can remain ambiguous even if the hash chain validates; only independent source reconciliation can resolve that. Three unit tests cover abandoned runs, recorded model completions and tampered journals.
 
+## Evidence for independent review
+
+`jani evidence RUN_ID` produces a verified audit-only run receipt without executing models or tools. It records a digest and outcomes as observed in the journal, explicitly distinguishing these from acceptance test results. A matching CLI integration test checks both valid evidence and refusal of corrupted evidence. No autonomous resume or signed attestation is implied.
+
 ## Current gaps
 - No persisted model message cursor, tool-outcome reconciler or external effect transaction exists.
 - Planner checkpoint resume explicitly reports agentExecutionResumed false and externalSideEffectsReplayed false.
