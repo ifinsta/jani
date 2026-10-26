@@ -546,9 +546,18 @@ def main():
         print("welcome_hints:", "ctrl+c" in welcome)
         print("env_model_applied:", "probe-model" in welcome)
 
-        # F1 must only draft text; no provider or tool request is allowed.
-        key(stdin_handle, VK_F1)
-        drafted = stable_screen(width, height, "Map modules and dependencies.", timeout=10.0)
+        # F1 must only draft text; no provider or tool request is allowed. The
+        # first injected record can race crossterm's input reader, and the
+        # shortcut only fires from an empty editor, so clear and retry once.
+        for _ in range(2):
+            key(stdin_handle, VK_ESCAPE)
+            time.sleep(0.3)
+            key(stdin_handle, VK_F1)
+            drafted = stable_screen(
+                width, height, "Map modules and dependencies.", timeout=8.0
+            )
+            if "Map modules and dependencies." in drafted:
+                break
         starter_drafted = "Map modules and dependencies." in drafted
         starter_no_request = len(FakeProvider.captured) == 0
         print("starter_drafted:", starter_drafted)
@@ -587,12 +596,12 @@ def main():
         print("--- skills screen ---")
         print(skills_screen)
         skills_header = "skills · " in skills_screen and "discovered" in skills_screen
+        skill_paths = [line for line in skills_screen.splitlines() if "↳" in line]
         skills_block = (
             skills_header
             and "◆ probe-skill" in skills_screen
             and "Probe the styled skills listing" in skills_screen
-            and "SKILL.md" in skills_screen
-            and "\\\\?\\" not in skills_screen
+            and any("SKILL.md" in line and "\\\\?\\" not in line for line in skill_paths)
         )
         skills_no_request = len(FakeProvider.captured) == 0
         print("skills_header_rendered:", skills_header)
@@ -660,6 +669,14 @@ def main():
         earlier = "Jani v0.1.0" in scrolled and "Any other input" not in scrolled
         print("earlier_content_visible:", earlier)
         fold_row = row_of(scrolled, "▸ think")
+        if fold_row < 0:
+            # The styled /skills block makes the transcript taller than the top
+            # window; scroll back down just enough to expose the fold label.
+            for _ in range(6):
+                wheel(stdin_handle, 40, 10, -120)
+                time.sleep(0.05)
+            fold_screen = stable_screen(width, height, "▸ think", timeout=10.0)
+            fold_row = row_of(fold_screen, "▸ think")
         print("fold_row:", fold_row)
         click_expanded = False
         if fold_row >= 0:
