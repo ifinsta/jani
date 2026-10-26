@@ -22,7 +22,8 @@ use ratatui::{Frame, Terminal};
 use serde_json::Value;
 use std::io::{self, IsTerminal, Stdout};
 use std::panic;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -308,13 +309,15 @@ fn run_turn(
 ) -> JResult<()> {
     let mut outcome: Option<JResult<String>> = None;
     let (tx, rx) = mpsc::channel::<TurnEvent>();
+    let cancellation = Arc::new(AtomicBool::new(false));
     state.live = Some(LiveTurn::default());
     std::thread::scope(|scope| -> JResult<()> {
+        let worker_cancel = Arc::clone(&cancellation);
         let handle = scope.spawn(|| {
             let mut send = |event: TurnEvent| {
                 let _ = tx.send(event);
             };
-            agent.run_turn_events(&prompt, &mut send)
+            agent.run_turn_events_with_cancel(&prompt, &mut send, worker_cancel.as_ref())
         });
         loop {
             while let Ok(event) = rx.try_recv() {
@@ -334,7 +337,10 @@ fn run_turn(
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if is_ctrl(&key, 'c') {
-                            state.quit_after_turn = true;
+                            cancellation.store(true, Ordering::SeqCst);
+                            if let Some(live) = state.live.as_mut() {
+                                live.activity = "cancellation requested; waiting for safe boundary".into();
+                            }
                         } else {
                             editor_key(state, key);
                         }
@@ -392,10 +398,6 @@ fn run_turn(
                 FAILED_TURN_NOTE,
             ));
         }
-    }
-    if state.quit_after_turn {
-        state.quit_after_turn = false;
-        state.quit = true;
     }
     Ok(())
 }
@@ -606,7 +608,6 @@ struct State {
     scrollbar_col: Option<u16>,
     follow: bool,
     busy: bool,
-    quit_after_turn: bool,
     spinner: usize,
     pending: usize,
     seen_approvals: Vec<String>,
@@ -2009,10 +2010,10 @@ fn meta_line(state: &State, width: usize) -> Line<'static> {
             .unwrap_or("working");
         let below = state.lines_below();
         let suffix = if state.follow || below == 0 {
-            "  ctrl+c exits after this turn".to_string()
+            "  ctrl+c requests cancellation at the next safe boundary".to_string()
         } else {
             format!(
-                "  {below} line{} below · end resumes  ctrl+c exits after this turn",
+                "  {below} lines below · end resumes  ctrl+c requests cancellation",
                 plural(below)
             )
         };
@@ -2150,7 +2151,7 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
         hints_line(&[
             ("pgup/wheel", " scroll  "),
             ("ctrl+t", " thinking  "),
-            ("ctrl+c", " exits after the current turn"),
+            ("ctrl+c", " request cancellation"),
         ])
     } else if area.width < 64 {
         hints_line(&[
@@ -3293,7 +3294,7 @@ mod tests {
         state.busy = true;
         let text = render(&mut state, 100, 30);
         assert!(text.contains("working"), "{text}");
-        assert!(text.contains("ctrl+c exits after this turn"), "{text}");
+        assert!(text.contains("ctrl+c requests cancellation"), "{text}");
     }
 
     #[test]
