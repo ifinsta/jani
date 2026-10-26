@@ -25,7 +25,7 @@ Use this page to find the command family or safety switch you need. It is an ent
 | --- | --- |
 | `run` / `--print` | Execute a model-driven task subject to operator scope, policy and budgets |
 | `repl`, bare `jani` | Open an interactive session that keeps conversation across turns under one task; bare `jani` does this only when stdin is a terminal, otherwise it prints help |
-| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect environment, configuration and safety state |
+| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect environment, configuration, unfinished runs and safety state |
 | `agent`, `alerts`, `wake` | Operate local attention state; neither alerts nor wake automatically invokes a model |
 | `mirror` | Produce deterministic critique and evidence-linked proposals from recorded runs |
 | `mcp` | Access governed MCP sources under signed contracts and task delegation |
