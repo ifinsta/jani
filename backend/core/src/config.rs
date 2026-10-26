@@ -162,6 +162,7 @@ USAGE:
   jani plugins list|inspect|verify [ID] [OPTIONS]
   jani policy check|explain [OPTIONS]
   jani audit verify [--run RUN_ID] [OPTIONS]
+  jani recovery status [OPTIONS]     Read-only unreconciled-run inventory
   jani inspect RUN_ID [OPTIONS]
   jani approvals list|decide APPROVAL_ID --approve|--reject [OPTIONS]
   jani budget show [--task TASK_ID] [OPTIONS]
@@ -721,7 +722,7 @@ impl Config {
                     cfg.command = "repl".into();
                     command_seen = true;
                 }
-                "sandbox" | "plugins" | "policy" | "audit" | "approvals" | "budget"
+                "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals" | "budget"
                 | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp"
                 | "native" => {
                     cfg.command = a.into();
