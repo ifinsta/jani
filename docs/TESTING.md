@@ -14,7 +14,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify_tui_phase1.ps1
 
 It runs formatting, clippy, workspace tests, architecture and claims checks, documentation validation, a locked release build and the real-console probe, then reports commit and binary SHA-256. It does not publish or install the build. Its existence is not proof that it has run.
 
-Additional gates: `cargo test -p jani-core recovery`, `cargo test -p jani-core evidence`, `cargo test -p jani cancelled_turn_never_invokes_a_model_or_tool`, CLI recovery integration against a built executable, journal corruption refusal, multiline paste and Shift+Enter, cancellation while work is already running, and independent confirmation that no follow-up tools execute after the cancellation boundary.
+Additional gates: `cargo test -p jani-core recovery`, `cargo test -p jani-core evidence`, `cargo test -p jani failed_turn_restores_exact_context_even_after_history_trimming`, `cargo test -p jani cancelled_turn_never_invokes_a_model_or_tool`, CLI recovery integration against a built executable, journal corruption refusal, multiline paste and Shift+Enter, cancellation while work is already running, and independent confirmation that no follow-up tools execute after the cancellation boundary.
 
 The baseline counts below predate this slice. Do not increase passing test counts until the new runs execute.
 
