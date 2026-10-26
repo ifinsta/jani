@@ -77,13 +77,25 @@ fn accept_by_deadline(listener: &TcpListener) -> Option<TcpStream> {
 fn start_provider(
     responses: Vec<String>,
 ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    start_faulty_provider(responses.into_iter().map(Fault::Reply).collect())
+}
+
+enum Fault {
+    Reply(String),
+    Status(u16),
+    Hangup,
+}
+
+fn start_faulty_provider(
+    steps: Vec<Fault>,
+) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let bodies = Arc::new(Mutex::new(Vec::new()));
     let captured = bodies.clone();
     let handle = thread::spawn(move || {
-        for response in responses {
+        for step in steps {
             let Some(mut stream) = accept_by_deadline(&listener) else {
                 break;
             };
@@ -92,7 +104,23 @@ fn start_provider(
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             captured.lock().unwrap().push(read_http_body(&mut stream));
-            write_http_response(&mut stream, &response);
+            match step {
+                Fault::Reply(body) => write_http_response(&mut stream, &body),
+                Fault::Status(status) => {
+                    let body = format!("provider unavailable ({status})");
+                    let response = format!(
+                        "HTTP/1.1 {status} Service Unavailable\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+                Fault::Hangup => {
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+            }
         }
     });
     (format!("http://{address}/v1"), bodies, handle)
@@ -349,5 +377,221 @@ fn repl_keeps_conversation_and_budget_across_turns() {
     assert_eq!(budget_json["inputTokens"], 30);
     assert_eq!(budget_json["outputTokens"], 7);
 
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn answer(content: &str) -> String {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+    })
+    .to_string()
+}
+
+fn tool_call(id: &str, name: &str, arguments: Value) -> String {
+    json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": arguments.to_string()
+                    }
+                }]
+            }
+        }],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 3}
+    })
+    .to_string()
+}
+
+#[test]
+fn autonomous_assignment_writes_reads_and_reports_a_deliverable_without_input() {
+    let root = temp_root();
+    let state = root.join("state");
+    let (base, bodies, provider) = start_provider(vec![
+        tool_call("call-1", "workspace_list", json!({"directory": "src"})),
+        tool_call(
+            "call-2",
+            "workspace_write",
+            json!({
+                "path": "src/answer.txt",
+                "content": "autonomy proof: 42\n"
+            }),
+        ),
+        tool_call(
+            "call-3",
+            "workspace_read",
+            json!({"path": "src/answer.txt"}),
+        ),
+        answer("Created src/answer.txt and verified its contents."),
+    ]);
+
+    let output = support::jani()
+        .args([
+            "--print",
+            "Create src/answer.txt with 'autonomy proof: 42' and verify it",
+            "--repo",
+            root.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--max-steps",
+            "8",
+            "--allow-write",
+            "--write-path",
+            "src",
+        ])
+        .env("JANI_API_KEY", "test-provider-secret")
+        .env("JANI_API_BASE", &base)
+        .env("JANI_MODEL", "test-model")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_POLICY")
+        .env_remove("JANI_IDENTITY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run jani");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "jani failed: {}", stderr.trim());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Created src/answer.txt and verified its contents."),
+        "{stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/answer.txt")).unwrap(),
+        "autonomy proof: 42\n"
+    );
+    provider.join().unwrap();
+
+    let requests = bodies.lock().unwrap().clone();
+    assert_eq!(requests.len(), 4, "expected three tools and one answer");
+    assert!(
+        requests[2].contains("autonomy proof: 42"),
+        "the write arguments never reached the model: {}",
+        requests[2]
+    );
+    assert!(
+        requests[3].contains("autonomy proof: 42") && requests[3].contains("one.txt"),
+        "the tool results were lost before the final turn: {}",
+        requests[3]
+    );
+    for request in &requests {
+        assert!(!request.contains("test-provider-secret"));
+    }
+
+    let events = journal_events(&state);
+    for action in ["repo.list", "repo.write", "repo.read"] {
+        assert!(
+            events
+                .iter()
+                .any(|event| event["action"] == action && event["decision"] == "executed"),
+            "missing executed {action}: {events:?}"
+        );
+    }
+    assert!(events
+        .iter()
+        .any(|event| event["action"] == "agent.run" && event["decision"] == "completed"));
+
+    let audit = support::jani()
+        .args(["audit", "verify", "--state-dir", state.to_str().unwrap()])
+        .output()
+        .expect("verify audit journal");
+    assert!(audit.status.success());
+    let audit_json: Value = serde_json::from_slice(&audit.stdout).unwrap();
+    assert_eq!(audit_json["ok"], true);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn transient_provider_failures_are_retried_until_the_answer_arrives() {
+    let root = temp_root();
+    let state = root.join("state");
+    let (base, bodies, provider) = start_faulty_provider(vec![
+        Fault::Hangup,
+        Fault::Status(503),
+        Fault::Reply(answer("recovered answer")),
+    ]);
+
+    let output = support::jani()
+        .args([
+            "--print",
+            "answer despite the flaky network",
+            "--repo",
+            root.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--max-steps",
+            "2",
+        ])
+        .env("JANI_API_KEY", "test-provider-secret")
+        .env("JANI_API_BASE", &base)
+        .env("JANI_MODEL", "test-model")
+        .env("JANI_MODEL_RETRY_BASE_MS", "1")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_POLICY")
+        .env_remove("JANI_IDENTITY")
+        .output()
+        .expect("run jani");
+    provider.join().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "jani failed: {}", stderr.trim());
+    assert!(stdout.contains("recovered answer"), "{stdout}");
+    assert_eq!(
+        bodies.lock().unwrap().len(),
+        3,
+        "expected two retries after the drop and the 503"
+    );
+    let events = journal_events(&state);
+    assert!(events
+        .iter()
+        .any(|event| event["action"] == "agent.run" && event["decision"] == "completed"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn exhausted_provider_failures_fail_the_run_with_a_clear_error() {
+    let root = temp_root();
+    let state = root.join("state");
+    let (base, bodies, provider) =
+        start_faulty_provider((0..6).map(|_| Fault::Status(503)).collect());
+
+    let output = support::jani()
+        .args([
+            "--print",
+            "this provider never recovers",
+            "--repo",
+            root.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--max-steps",
+            "2",
+        ])
+        .env("JANI_API_KEY", "test-provider-secret")
+        .env("JANI_API_BASE", &base)
+        .env("JANI_MODEL", "test-model")
+        .env("JANI_MODEL_RETRY_BASE_MS", "1")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_POLICY")
+        .env_remove("JANI_IDENTITY")
+        .output()
+        .expect("run jani");
+    provider.join().unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("model HTTP 503"), "{stderr}");
+    assert_eq!(bodies.lock().unwrap().len(), 6, "expected six attempts");
+    let events = journal_events(&state);
+    assert!(events
+        .iter()
+        .any(|event| event["action"] == "agent.run" && event["decision"] == "failed"));
     let _ = std::fs::remove_dir_all(root);
 }

@@ -3,13 +3,16 @@ id: JANI-OPS-003
 title: "Installation and initial verification"
 status: implemented-partial
 owner: backend/server
-version: 1.2.0
-last-reviewed: 2026-10-25
+version: 1.3.0
+last-reviewed: 2026-10-27
 source:
   - Cargo.toml
   - install.ps1
   - tools/release.ps1
-tests: []
+  - tools/serve_updates.py
+  - backend/server/src/update.rs
+tests:
+  - backend/server/tests/update_e2e.rs
 ---
 
 # Installation and initial verification
@@ -66,6 +69,21 @@ Commit the new typed version directory and its component/platform `latest.json`.
 
 On Linux/macOS, where a matching release binary exists, use `sh ./install.sh --type agent` or install from source. The local Unix installer uses Python 3 only for checksum-verified installation; no Python runtime is bundled into the Rust agent. Current repository publishes no Linux/macOS binaries.
 
+## Self-distributed updates
+
+Installed agents can pull the same typed channel themselves, either on demand or continuously:
+
+```powershell
+jani update check --source https://releases.example.com/
+jani update install --source https://releases.example.com/
+jani update install --source https://releases.example.com/ --to C:\path\to\coding-agent\jani.exe
+jani update watch --source https://releases.example.com/ --interval 300
+```
+
+`check` reports the channel version, each target's version and whether an update is available without downloading an artifact. `install` downloads the artifact once, verifies its exact size and SHA-256 against the typed manifest, runs the candidate's `--version` before replacing anything, replaces each target and writes a receipt under `<state-dir>/updates/`. The default target is the running executable; repeat `--to` to push the same verified artifact to additional local binaries such as a coding-agent copy. Windows cannot overwrite a running image, so the updater renames the old image aside, reports `restartRequired` when it replaced its own executable, and keeps a `.jani-old-<id>` backup if the old image stays locked. `watch` polls the channel at the interval and applies each newer release as it appears; `--cycles` bounds the loop, zero means forever.
+
+The origin must be HTTPS, or loopback HTTP for local development. Redirects are refused, metadata and artifacts are size-bounded, and a digest or size mismatch is rejected before any target is touched. Manifests are not cryptographically signed: delivery integrity rests on the HTTPS origin and the manifest digest, so control of the origin is control of updates.
+
 ## Configure and verify
 
 ```powershell
@@ -91,7 +109,7 @@ The Windows sandbox bounds a process tree through a Job Object; it is not an OS 
 
 - A committed artifact proves a binary was built, not that release acceptance evidence exists. See [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md) and [VALIDATION.md](../VALIDATION.md).
 - Only targets committed under `releases/` are installable without a Rust toolchain. Other platforms need a source build or a new release.
-- There is no managed identity, signing certificate, auto-updater or rollback service behind this installer. Installation is a verified local file copy.
+- There is no managed identity, signing certificate or rollback service behind this installer. `jani update` verifies HTTPS delivery, manifest digest and candidate execution, but manifests are not signed and a replaced binary is not rolled back automatically. Installation remains a verified local file copy.
 - Building from source does not supply trusted policy roots or enterprise isolation.
 
 ## Acceptance

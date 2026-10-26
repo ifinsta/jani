@@ -52,6 +52,7 @@ const MAX_DRAFT_BYTES: usize = 64 * 1024;
 const MAX_COMPOSER_LINES: usize = 6;
 
 const FAILED_TURN_NOTE: &str = "Conversation context was restored to the last successful turn. Prior file or external tool effects may remain; inspect the audit journal and worktree before retrying.";
+const MAX_COLLAPSED_TOOLS: usize = 3;
 
 const WHEEL_STEP: i32 = 3;
 const PAGE_STEP: i32 = 10;
@@ -868,7 +869,7 @@ impl State {
         }
         self.entries
             .iter()
-            .rposition(|entry| entry.kind == Kind::Reasoning)
+            .rposition(|entry| matches!(entry.kind, Kind::Reasoning | Kind::Tools))
             .map(Fold::Entry)
     }
 
@@ -918,19 +919,32 @@ impl State {
                 live.activity = format!("step {step}/{max_steps}");
             }
             TurnEvent::ToolStarted { activity, .. } => live.activity = activity,
-            TurnEvent::ToolFinished { name, activity, ok } => {
+            TurnEvent::ToolFinished {
+                name,
+                activity,
+                ok,
+                duration_ms,
+            } => {
                 live.activity = "thinking".into();
                 if ok {
                     live.tools_succeeded += 1;
                 } else {
                     live.tools_failed += 1;
                 }
-                let text = if ok {
-                    format!("{name} · {activity}")
-                } else {
-                    format!("{name} · {activity} (failed)")
+                let record = ToolRecord {
+                    name,
+                    activity,
+                    ok,
+                    duration_ms,
                 };
-                self.entries.push(Entry::new(Kind::Tool, text));
+                match self.entries.last_mut() {
+                    Some(entry) if entry.kind == Kind::Tools => entry.record(record),
+                    _ => {
+                        let mut entry = Entry::tools_section();
+                        entry.record(record);
+                        self.entries.push(entry);
+                    }
+                }
             }
             TurnEvent::Text(chunk) => {
                 live.activity = "writing answer".into();
@@ -969,11 +983,19 @@ impl State {
     }
 }
 
+struct ToolRecord {
+    name: String,
+    activity: String,
+    ok: bool,
+    duration_ms: u64,
+}
+
 struct Entry {
     kind: Kind,
     text: String,
     open: bool,
     skills: Vec<Skill>,
+    tools: Vec<ToolRecord>,
 }
 
 impl Entry {
@@ -983,6 +1005,7 @@ impl Entry {
             text: text.into(),
             open: false,
             skills: Vec::new(),
+            tools: Vec::new(),
         }
     }
 
@@ -992,7 +1015,16 @@ impl Entry {
             text: text.into(),
             open: false,
             skills,
+            tools: Vec::new(),
         }
+    }
+
+    fn tools_section() -> Self {
+        Self::new(Kind::Tools, "")
+    }
+
+    fn record(&mut self, tool: ToolRecord) {
+        self.tools.push(tool);
     }
 
     fn folded(mut self, open: bool) -> Self {
@@ -1008,7 +1040,7 @@ enum Kind {
     Note,
     Error,
     Command,
-    Tool,
+    Tools,
     Reasoning,
     Skills,
 }
@@ -1021,7 +1053,7 @@ impl Kind {
             Self::Note => "note",
             Self::Error => "error",
             Self::Command => "command",
-            Self::Tool => "tool",
+            Self::Tools => "tools",
             Self::Reasoning => "think",
             Self::Skills => "skills",
         }
@@ -1034,7 +1066,7 @@ impl Kind {
             Self::Note => DIM,
             Self::Error => ERROR,
             Self::Command => FAINT,
-            Self::Tool => CODE,
+            Self::Tools => CODE,
             Self::Reasoning => FAINT,
             Self::Skills => ACCENT,
         }
@@ -1043,7 +1075,7 @@ impl Kind {
     fn body_style(self) -> Style {
         match self {
             Self::User | Self::Assistant => Style::default().fg(TEXT),
-            Self::Note | Self::Tool | Self::Reasoning => Style::default().fg(DIM),
+            Self::Note | Self::Tools | Self::Reasoning => Style::default().fg(DIM),
             Self::Error => Style::default().fg(ERROR),
             Self::Command => Style::default().fg(DIM),
             Self::Skills => Style::default().fg(TEXT),
@@ -1637,32 +1669,10 @@ fn transcript(state: &State, width: usize) -> Transcript {
                 out.extend(markdown_block(&entry.text, body_width), None);
             }
             Kind::Skills => out.extend(listing_block(entry, body_width), None),
-            Kind::Tool => {
-                let failed = entry.text.ends_with("(failed)");
-                let color = if failed { ERROR } else { CODE };
-                let marker = if failed { "×" } else { "✓" };
-                out.push(
-                    Line::from(vec![
-                        Span::styled(format!("{marker} "), Style::default().fg(color)),
-                        Span::styled(
-                            "tool",
-                            Style::default().fg(color).add_modifier(Modifier::BOLD),
-                        ),
-                    ]),
-                    None,
-                );
-                for part in wrap(&entry.text, body_width) {
-                    out.push(
-                        Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(
-                                part,
-                                Style::default().fg(if failed { ERROR } else { DIM }),
-                            ),
-                        ]),
-                        None,
-                    );
-                }
+            Kind::Tools => {
+                let fold = Some(Fold::Entry(index));
+                out.push(tools_label(entry), fold);
+                out.extend(tools_block(entry, body_width), fold);
             }
             other => {
                 out.push(kind_label(other), None);
@@ -1792,6 +1802,76 @@ fn listing_block(entry: &Entry, width: usize) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+fn tools_label(entry: &Entry) -> Line<'static> {
+    let marker = if entry.open { "▾" } else { "▸" };
+    let total = entry.tools.len();
+    let failed = entry.tools.iter().filter(|tool| !tool.ok).count();
+    let mut detail = format!(" · {total} call{}", plural(total));
+    if failed > 0 {
+        detail.push_str(&format!(" · {failed} failed"));
+    }
+    if !entry.open {
+        if total > MAX_COLLAPSED_TOOLS {
+            detail.push_str(&format!(" · last {MAX_COLLAPSED_TOOLS} shown"));
+        }
+        detail.push_str(" · click or ctrl+t");
+    }
+    Line::from(vec![
+        Span::styled(format!("{marker} "), Style::default().fg(CODE)),
+        Span::styled(
+            Kind::Tools.label(),
+            Style::default()
+                .fg(Kind::Tools.label_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(detail, Style::default().fg(FAINT)),
+    ])
+}
+
+fn tools_block(entry: &Entry, width: usize) -> Vec<Line<'static>> {
+    let start = if entry.open {
+        0
+    } else {
+        entry.tools.len().saturating_sub(MAX_COLLAPSED_TOOLS)
+    };
+    let mut lines = Vec::new();
+    for tool in &entry.tools[start..] {
+        let color = if tool.ok { CODE } else { ERROR };
+        let marker = if tool.ok { "✓ " } else { "× " };
+        let text = format!(
+            "{} · {} · {}",
+            tool.name,
+            tool.activity,
+            format_duration(tool.duration_ms)
+        );
+        for (index, part) in wrap(&text, width).into_iter().enumerate() {
+            let mut spans = vec![Span::raw("  ")];
+            if index == 0 {
+                spans.push(Span::styled(marker, Style::default().fg(color)));
+            } else {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                part,
+                Style::default().fg(if tool.ok { DIM } else { ERROR }),
+            ));
+            lines.push(Line::from(spans));
+        }
+    }
+    lines
+}
+
+fn format_duration(ms: u64) -> String {
+    if ms < 1_000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1_000.0)
+    } else {
+        let seconds = ms / 1_000;
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    }
 }
 
 fn reasoning_block(text: &str, width: usize, open: bool) -> Vec<Line<'static>> {
@@ -3092,6 +3172,15 @@ mod tests {
         }
     }
 
+    fn tool(name: &str, activity: &str, ok: bool, duration_ms: u64) -> ToolRecord {
+        ToolRecord {
+            name: name.into(),
+            activity: activity.into(),
+            ok,
+            duration_ms,
+        }
+    }
+
     fn render(state: &mut State, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3489,6 +3578,7 @@ mod tests {
             name: "workspace_read".into(),
             activity: "reading notes.txt".into(),
             ok: true,
+            duration_ms: 120,
         });
         state.apply(TurnEvent::Reasoning(
             "compare both options\npick the safer one\n".into(),
@@ -3497,6 +3587,8 @@ mod tests {
 
         let text = render(&mut state, 80, 30);
         assert!(text.contains("reading notes.txt"), "{text}");
+        assert!(text.contains("tools · 1 call"), "{text}");
+        assert!(text.contains("120ms"), "{text}");
         assert_eq!(state.live.as_ref().unwrap().tools_succeeded, 1);
         assert!(text.contains("Answer"), "{text}");
         assert!(text.contains("reasoning line"), "{text}");
@@ -3519,19 +3611,21 @@ mod tests {
     #[test]
     fn tool_timeline_displays_success_and_failure_distinctly() {
         let mut state = State::new(meta(), 0, 0);
-        state.push(Entry::new(
-            Kind::Tool,
-            "workspace_read · reading src/main.rs",
-        ));
-        state.push(Entry::new(
-            Kind::Tool,
-            "workspace_write · writing denied.rs (failed)",
-        ));
+        let mut section = Entry::tools_section();
+        section.record(tool("workspace_read", "reading src/main.rs", true, 120));
+        section.record(tool("workspace_write", "writing denied.rs", false, 4_200));
+        state.push(section);
         let rendered = render(&mut state, 100, 30);
-        assert!(rendered.contains("✓ tool"), "{rendered}");
-        assert!(rendered.contains("× tool"), "{rendered}");
         assert!(
-            rendered.contains("writing denied.rs (failed)"),
+            rendered.contains("▸ tools · 2 calls · 1 failed"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("✓ workspace_read · reading src/main.rs · 120ms"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("× workspace_write · writing denied.rs · 4.2s"),
             "{rendered}"
         );
     }
@@ -3544,12 +3638,123 @@ mod tests {
             name: "workspace_read".into(),
             activity: "reading missing.txt".into(),
             ok: false,
+            duration_ms: 30,
         });
-        assert!(state
+        let section = state
             .entries
             .iter()
-            .any(|entry| entry.text == "workspace_read · reading missing.txt (failed)"));
+            .find(|entry| entry.kind == Kind::Tools)
+            .expect("tool section");
+        assert_eq!(section.tools.len(), 1);
+        assert!(!section.tools[0].ok);
+        assert_eq!(section.tools[0].activity, "reading missing.txt");
         assert_eq!(state.live.as_ref().unwrap().tools_failed, 1);
+        let rendered = render(&mut state, 100, 30);
+        assert!(rendered.contains("× workspace_read"), "{rendered}");
+        assert!(rendered.contains("1 failed"), "{rendered}");
+    }
+
+    #[test]
+    fn tool_calls_group_into_one_section_per_burst() {
+        let mut state = State::new(meta(), 0, 0);
+        state.live = Some(LiveTurn::default());
+        state.apply(TurnEvent::ToolFinished {
+            name: "first".into(),
+            activity: "reading a".into(),
+            ok: true,
+            duration_ms: 10,
+        });
+        state.apply(TurnEvent::ToolFinished {
+            name: "second".into(),
+            activity: "reading b".into(),
+            ok: true,
+            duration_ms: 20,
+        });
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(state.entries[0].tools.len(), 2);
+        state.push(Entry::new(Kind::Note, "checkpoint"));
+        state.apply(TurnEvent::ToolFinished {
+            name: "third".into(),
+            activity: "reading c".into(),
+            ok: true,
+            duration_ms: 30,
+        });
+        let sections: Vec<&Entry> = state
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == Kind::Tools)
+            .collect();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[1].tools.len(), 1);
+    }
+
+    #[test]
+    fn collapsed_tool_sections_keep_the_three_most_recent_calls() {
+        let mut state = State::new(meta(), 0, 0);
+        state.live = Some(LiveTurn::default());
+        for index in 0..5 {
+            state.apply(TurnEvent::ToolFinished {
+                name: format!("tool-{index}"),
+                activity: format!("step {index}"),
+                ok: index != 1,
+                duration_ms: index * 100,
+            });
+        }
+        assert_eq!(state.entries.len(), 1);
+        let text = render(&mut state, 100, 30);
+        assert!(
+            text.contains("▸ tools · 5 calls · 1 failed · last 3 shown · click or ctrl+t"),
+            "{text}"
+        );
+        assert!(!text.contains("tool-0"), "{text}");
+        assert!(!text.contains("tool-1"), "{text}");
+        assert!(text.contains("✓ tool-2 · step 2 · 200ms"), "{text}");
+        assert!(text.contains("✓ tool-3 · step 3 · 300ms"), "{text}");
+        assert!(text.contains("✓ tool-4 · step 4 · 400ms"), "{text}");
+
+        let rows: Vec<&str> = text.lines().collect();
+        let header = rows
+            .iter()
+            .position(|row| row.contains("▸ tools"))
+            .expect("tool header");
+        state.click(4, header as u16);
+        assert!(state.entries[0].open);
+        let text = render(&mut state, 100, 30);
+        assert!(text.contains("▾ tools · 5 calls · 1 failed"), "{text}");
+        for index in 0..5 {
+            assert!(text.contains(&format!("tool-{index}")), "{text}");
+        }
+        assert!(text.contains("0ms"), "{text}");
+        assert!(text.contains("100ms"), "{text}");
+    }
+
+    #[test]
+    fn ctrl_t_toggles_the_latest_tool_section() {
+        let mut state = State::new(meta(), 0, 0);
+        state.push(Entry::new(Kind::Reasoning, "earlier thought"));
+        state.live = Some(LiveTurn::default());
+        state.apply(TurnEvent::ToolFinished {
+            name: "workspace_read".into(),
+            activity: "reading notes.txt".into(),
+            ok: true,
+            duration_ms: 50,
+        });
+        assert_eq!(state.latest_fold(), Some(Fold::Entry(1)));
+        editor_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        assert!(state.entries[1].open);
+        assert!(!state.entries[0].open);
+    }
+
+    #[test]
+    fn tool_durations_are_human_readable() {
+        assert_eq!(format_duration(0), "0ms");
+        assert_eq!(format_duration(999), "999ms");
+        assert_eq!(format_duration(1_200), "1.2s");
+        assert_eq!(format_duration(61_000), "1m 01s");
+        assert_eq!(format_duration(3_725_000), "62m 05s");
     }
 
     #[test]

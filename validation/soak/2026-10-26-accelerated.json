@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "jani.soak/v1",
+  "verdict": "pass",
+  "error": null,
+  "startedAt": "2026-10-26T21:46:46.806045+00:00",
+  "finishedAt": "2026-10-26T22:13:01.134256+00:00",
+  "elapsedSeconds": 1574.328,
+  "mode": "accelerated",
+  "simulatedIntervalSeconds": 120.0,
+  "equivalentHours": 66.67,
+  "equivalentDays": 2.78,
+  "turnsRequested": 2000,
+  "turnsCompleted": 2000,
+  "lostTurn": null,
+  "provider": {
+    "failureRate": 0.35,
+    "maxConsecutiveFailures": 4,
+    "seed": 26,
+    "toolEvery": 25,
+    "latencyMs": 0,
+    "modelRequests": 3197,
+    "injectedFailures": {
+      "http503": 256,
+      "http429": 284,
+      "dropped": 287,
+      "truncated": 290
+    },
+    "recoveredFailures": 1117,
+    "maxConsecutiveFailuresObserved": 4,
+    "toolCallsServed": 80
+  },
+  "journal": {
+    "completedRuns": 2000,
+    "failedRuns": 0,
+    "toolReads": 80,
+    "auditOk": true
+  },
+  "binary": {
+    "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\debug\\jani.exe",
+    "version": "jani 0.1.0",
+    "sha256": "dc5f55cf2154bdfbca5e7fcdaf3d57704baa150ba06d948af26017bcd46c3632"
+  }
+}

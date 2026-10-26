@@ -95,6 +95,7 @@ pub enum TurnEvent {
         name: String,
         activity: String,
         ok: bool,
+        duration_ms: u64,
     },
     Text(String),
     Reasoning(String),
@@ -493,6 +494,7 @@ Discovered skill names: {skills}"#,
                         activity: activity.clone(),
                     });
                 }
+                let started_at = std::time::Instant::now();
                 let response = match parsed {
                     Ok(params) => {
                         let invocation_id = new_id("inv");
@@ -525,6 +527,8 @@ Discovered skill names: {skills}"#,
                         name: name.to_string(),
                         activity,
                         ok: response.get("status").and_then(Value::as_str) == Some("ok"),
+                        duration_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX))
+                            as u64,
                     });
                 }
                 self.messages.push(json!({

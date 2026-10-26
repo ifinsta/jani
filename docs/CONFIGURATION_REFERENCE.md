@@ -107,6 +107,7 @@ The full example is [settings.example.json](schemas/settings.example.json) and t
 - `--allow-write` requires explicit relative `--write-path` scopes. There is no implicit full-repository editing.
 - `--allow-exec` permits only approved commands; `--exec-program` adds a constrained list of extra test runners.
 - `JANI_WRITE_PATHS`, `JANI_EXEC_PROGRAMS` and `JANI_SKILL_DIRS` provide environment equivalents where supported.
+- `JANI_UPDATE_SOURCE` supplies the release origin for `jani update`; `--source` overrides it. It selects where artifacts are fetched from and grants no workspace, model or authority settings. `JANI_UPDATE_RETRY_BASE_MS` tunes the exponential backoff base for update fetches (default 400; the cap is 8 seconds).
 
 ## Enterprise inputs
 

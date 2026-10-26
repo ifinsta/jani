@@ -83,6 +83,13 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `git commit` with pre-staged files outside scope | Refused before commit |
 | Command timeout and output caps | Process is bounded; oversized output is truncated |
 | Transient provider error (408/429/5xx) | Limited retry, then a clear failure |
+| `jani update check` against a typed channel | Reports availability and target versions; no artifact download |
+| `jani update install --to A --to B` | Both targets replaced by the verified artifact; receipt written; second run reports up to date |
+| Tampered update artifact (same size, wrong digest) | Artifact rejected before replacement; targets and candidate files untouched |
+| `jani update watch` while a newer release is published | Applies the new version and keeps polling |
+| `jani update watch` while the origin is unreachable | Keeps running, reports error cycles, and installs once the origin returns |
+| `jani update install` targeting its own running executable | Replaced with the verified artifact; `restartRequired: true` |
+| Update origin over plain HTTP (non-loopback) or a redirect | Refused before any download |
 | Two `SKILL.md` files with the same name | Earlier discovery directory wins |
 | Provider credentials in child environment | Not inherited |
 | Enterprise mode without `--policy` or `--identity` | Refused before any work |
@@ -100,7 +107,7 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `EnterpriseRestricted` profile on Windows | Refused; Job Object never claims filesystem/network confinement |
 | `EnterpriseRestricted` profile on Linux with bwrap available | bubblewrap plan; receipt reports filesystem and network confinement |
 | Linux and Windows builds | Toolchain gates pass on both |
-| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a live step and the `reading notes.txt` tool entry appear, a fake-provider SSE answer renders as Markdown (bullets, no raw `**` or backticks) with its thinking block folded, `/help` overflows the viewport so the scrollbar and the `N lines below the bottom` tip appear, `PgUp`, the injected wheel and a click on the `▸ think` label each move or fold the view, wheel-down resumes following, `/` opens the command palette and `st` filters it to `/status`, `Esc` closes it, `Down` selects `/status` and Enter runs it, `/new` runs through reopen-the-palette and clears the transcript, `/model ` opens the settings-profile picker with the current profile marked, `al` filters to the `alt` profile, Enter switches the live session and `/status` reports the profile, a typed custom model ID is offered and switches without a profile, exactly two streaming requests carry no API key, exit 0 and `PROBE_RESULT=PASS` |
+| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a live step and the `reading notes.txt` tool entry appear, a fake-provider SSE answer renders as Markdown (bullets, no raw `**` or backticks) with its thinking block folded, `/help` overflows the viewport so the scrollbar and the `N lines below the bottom` tip appear, `PgUp`, the injected wheel and a click on the `▸ think` label each move or fold the view, wheel-down resumes following, `/` opens the command palette and `st` filters it to `/status`, `Esc` closes it, `Down` selects `/status` and Enter runs it, `/new` runs through reopen-the-palette and clears the transcript, `/model ` opens the settings-profile picker with the current profile marked, `al` filters to the `alt` profile, Enter switches the live session and `/status` reports the profile, a typed custom model ID is offered and switches without a profile, a five-call tool section shows `last 3 shown` with exactly three rows and expands/recollapses through its header, exactly two streaming requests carry no API key, exit 0 and `PROBE_RESULT=PASS` |
 
 The console probe is a manual Windows trial, not a CI gate. It proves the
 rendered buffer in a real console, and key, wheel and click handling for events

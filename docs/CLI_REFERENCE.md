@@ -3,15 +3,17 @@ id: JANI-OPS-004
 title: "Command-line reference"
 status: implemented-partial
 owner: backend/server
-version: 1.3.0
-last-reviewed: 2026-10-26
+version: 1.4.0
+last-reviewed: 2026-10-27
 source:
   - backend/core/src/config.rs
   - backend/server/src/repl.rs
   - backend/server/src/tui.rs
   - backend/server/src/agent.rs
+  - backend/server/src/update.rs
 tests:
   - backend/server/tests/cli.rs
+  - backend/server/tests/update_e2e.rs
   - backend/server/tests/e2e.rs
 ---
 
@@ -30,6 +32,7 @@ Use this page to find the command family or safety switch you need. It is an ent
 | `mirror` | Produce deterministic critique and evidence-linked proposals from recorded runs |
 | `mcp` | Access governed MCP sources under signed contracts and task delegation |
 | `native TOOL OPERATION` | Run bounded indexing, planning, context, evidence, workspace and simulation operations |
+| `update check\|install\|watch` | Deliver verified release-channel artifacts to this or other local agent binaries |
 | `--version`, `--help` | Print version or help without reading credentials or settings |
 
 ## Model and settings switches
@@ -115,6 +118,17 @@ Approvals stay external. A denied or approval-gated tool call reports the reques
 - `--mode enterprise`, `--policy`, `--policy-key`, `--identity` and `--contract` supply enterprise authorization. Missing or invalid authority is refused.
 - `--approve` in native planner verification is permitted only for a verified human identity.
 - `--sandbox-mode` and network restrictions must not be used to weaken required confinement. `jani sandbox doctor` reports support, not certification.
+
+## Self-update delivery
+
+`jani update check|install|watch` reads the typed channel (`releases/<type>/<platform>/latest.json`) from `--source` or `JANI_UPDATE_SOURCE` and delivers the referenced `jani.release/v2` artifact to local binaries.
+
+- `check` inspects the channel and each target without downloading the artifact. It refuses an origin that is not HTTPS or loopback HTTP, an unsupported platform/target, a dirty build, an unknown schema and an unsafe file name.
+- `install` verifies size and SHA-256 against the manifest, writes a candidate beside the target, confirms the candidate's `--version`, replaces the target and records a receipt in `<state-dir>/updates/`. `--to PATH` adds targets and may repeat; the default is the running executable. `--force` installs even when the channel is not newer.
+- `watch` polls at `--interval` seconds (default 300) and applies each newer release; `--cycles N` bounds the loop and zero means forever. The process does not exit on a failed poll; it reports the error as JSON and retries on the next cycle.
+- Redirects are refused, downloads are bounded, and a size or digest mismatch leaves every target untouched. Manifests are not signed; the HTTPS origin and manifest digest are the trust boundary.
+
+`jani update` runs before skill discovery and does not require model credentials. It is available on the agent binary; the probe binary deliberately exposes no self-update interface.
 
 ## Reproducible run evidence
 

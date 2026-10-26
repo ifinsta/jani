@@ -821,7 +821,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jani"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "jani-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "jani-gateway"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "jani-jsmt",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "jani-jsmt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "serde",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "jani-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "jani-mirror"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jani-core",
  "serde",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "jani-native"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "jani-core",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "jani-probe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jani-jsmt",
  "libc",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "jani-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusqlite",
  "serde",

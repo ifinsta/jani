@@ -5,9 +5,29 @@ use serde_json::{json, Map, Value};
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
-const MAX_ATTEMPTS: u64 = 3;
+const MAX_ATTEMPTS: u64 = 6;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_STREAM_BLOCKS: usize = 64;
+const RETRY_BASE: Duration = Duration::from_millis(250);
+const RETRY_CAP: Duration = Duration::from_secs(8);
+
+fn retry_base() -> Duration {
+    std::env::var("JANI_MODEL_RETRY_BASE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(RETRY_BASE)
+}
+
+fn retry_delay(attempt: u64) -> Duration {
+    let factor = 1u64 << attempt.saturating_sub(1).min(6);
+    retry_base().saturating_mul(factor as u32).min(RETRY_CAP)
+}
+
+fn pause_before_retry(attempt: u64) {
+    std::thread::sleep(retry_delay(attempt));
+}
 
 #[derive(Debug)]
 pub struct ModelReply {
@@ -41,6 +61,7 @@ impl ChatModel {
         })?;
         let client = Client::builder()
             .timeout(Duration::from_secs(180))
+            .connect_timeout(Duration::from_secs(20))
             .build()
             .map_err(|e| e.to_string())?;
         let base = choice.api_base.trim_end_matches('/');
@@ -64,6 +85,19 @@ impl ChatModel {
         })
     }
 
+    fn send(&self, request: &Value) -> JResult<reqwest::blocking::Response> {
+        let mut http = self.client.post(&self.endpoint);
+        http = match self.protocol {
+            ModelProtocol::OpenAi => http.bearer_auth(&self.key),
+            ModelProtocol::Anthropic => http
+                .header("x-api-key", &self.key)
+                .header("anthropic-version", ANTHROPIC_VERSION),
+        };
+        http.json(request)
+            .send()
+            .map_err(|e| format!("model request failed: {e}"))
+    }
+
     pub fn complete(&self, messages: &[Value], tools: &[Value]) -> JResult<ModelReply> {
         let request = match self.protocol {
             ModelProtocol::OpenAi => {
@@ -76,32 +110,52 @@ impl ChatModel {
         let mut attempt = 0u64;
         loop {
             attempt += 1;
-            let mut http = self.client.post(&self.endpoint);
-            http = match self.protocol {
-                ModelProtocol::OpenAi => http.bearer_auth(&self.key),
-                ModelProtocol::Anthropic => http
-                    .header("x-api-key", &self.key)
-                    .header("anthropic-version", ANTHROPIC_VERSION),
+            let resp = match self.send(&request) {
+                Ok(resp) => resp,
+                Err(_) if attempt < MAX_ATTEMPTS => {
+                    pause_before_retry(attempt);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!("{error} after {attempt} attempts"));
+                }
             };
-            let resp = http
-                .json(&request)
-                .send()
-                .map_err(|e| format!("model request failed: {e}"))?;
             let status = resp.status();
-            let body = resp.text().map_err(|e| e.to_string())?;
+            let body = match resp.text() {
+                Ok(body) => body,
+                Err(_) if attempt < MAX_ATTEMPTS => {
+                    pause_before_retry(attempt);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "model response read failed after {attempt} attempts: {error}"
+                    ));
+                }
+            };
             if status.is_success() {
-                let value: Value =
-                    serde_json::from_str(&body).map_err(|e| format!("invalid model JSON: {e}"))?;
-                return match self.protocol {
-                    ModelProtocol::OpenAi => openai_reply(&value),
-                    ModelProtocol::Anthropic => anthropic_reply(&value),
+                let parsed = match self.protocol {
+                    ModelProtocol::OpenAi => serde_json::from_str::<Value>(&body)
+                        .map_err(|e| format!("invalid model JSON: {e}"))
+                        .and_then(|value| openai_reply(&value)),
+                    ModelProtocol::Anthropic => serde_json::from_str::<Value>(&body)
+                        .map_err(|e| format!("invalid model JSON: {e}"))
+                        .and_then(|value| anthropic_reply(&value)),
                 };
+                match parsed {
+                    Ok(reply) => return Ok(reply),
+                    Err(_) if attempt < MAX_ATTEMPTS => {
+                        pause_before_retry(attempt);
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(format!("{error} after {attempt} attempts"));
+                    }
+                }
             }
-            // Transient provider failures are retried with a short linear backoff. The
-            // turn ceiling still bounds total run time; no monetary budget is implied.
             let retryable = matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504);
             if retryable && attempt < MAX_ATTEMPTS {
-                std::thread::sleep(Duration::from_secs(attempt));
+                pause_before_retry(attempt);
                 continue;
             }
             let excerpt = crate::process::truncate(&body, 900);
@@ -141,29 +195,61 @@ impl ChatModel {
         let mut attempt = 0u64;
         loop {
             attempt += 1;
-            let mut http = self.client.post(&self.endpoint);
-            http = match self.protocol {
-                ModelProtocol::OpenAi => http.bearer_auth(&self.key),
-                ModelProtocol::Anthropic => http
-                    .header("x-api-key", &self.key)
-                    .header("anthropic-version", ANTHROPIC_VERSION),
+            let resp = match self.send(&request) {
+                Ok(resp) => resp,
+                Err(_) if attempt < MAX_ATTEMPTS => {
+                    pause_before_retry(attempt);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!("{error} after {attempt} attempts"));
+                }
             };
-            let resp = http
-                .json(&request)
-                .send()
-                .map_err(|e| format!("model request failed: {e}"))?;
             let status = resp.status();
             if status.is_success() {
                 let reader = BufReader::new(resp);
-                return match self.protocol {
-                    ModelProtocol::OpenAi => openai_stream(reader, on_delta),
-                    ModelProtocol::Anthropic => anthropic_stream(reader, on_delta),
+                let mut emitted = false;
+                let outcome = {
+                    let mut delta = |delta: ModelDelta| {
+                        emitted = true;
+                        on_delta(delta)
+                    };
+                    match self.protocol {
+                        ModelProtocol::OpenAi => openai_stream(reader, &mut delta),
+                        ModelProtocol::Anthropic => anthropic_stream(reader, &mut delta),
+                    }
                 };
+                match outcome {
+                    Ok(reply) => return Ok(reply),
+                    Err(_) if !emitted && attempt < MAX_ATTEMPTS => {
+                        pause_before_retry(attempt);
+                        continue;
+                    }
+                    Err(error) if emitted => {
+                        return Err(format!(
+                            "{error} (stream interrupted after output began; not retried)"
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(format!("{error} after {attempt} attempts"));
+                    }
+                }
             }
-            let body = resp.text().map_err(|e| e.to_string())?;
+            let body = match resp.text() {
+                Ok(body) => body,
+                Err(_) if attempt < MAX_ATTEMPTS => {
+                    pause_before_retry(attempt);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "model response read failed after {attempt} attempts: {error}"
+                    ));
+                }
+            };
             let retryable = matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504);
             if retryable && attempt < MAX_ATTEMPTS {
-                std::thread::sleep(Duration::from_secs(attempt));
+                pause_before_retry(attempt);
                 continue;
             }
             let excerpt = crate::process::truncate(&body, 900);
@@ -301,8 +387,10 @@ fn openai_stream<R: BufRead>(
     let mut prompt_tokens = 0u64;
     let mut completion_tokens = 0u64;
     let mut saw_chunk = false;
+    let mut done = false;
     read_sse(reader, |data| {
         if data.trim() == "[DONE]" {
+            done = true;
             return Ok(());
         }
         let value: Value =
@@ -366,6 +454,9 @@ fn openai_stream<R: BufRead>(
     if !saw_chunk {
         return Err("model stream produced no chunks".into());
     }
+    if !done {
+        return Err("model stream ended before [DONE]; the reply is incomplete".into());
+    }
     let mut message = Map::new();
     message.insert("role".into(), json!("assistant"));
     message.insert("content".into(), json!(text));
@@ -412,6 +503,7 @@ fn anthropic_stream<R: BufRead>(
     let mut prompt_tokens = 0u64;
     let mut completion_tokens = 0u64;
     let mut saw_event = false;
+    let mut stopped = false;
     read_sse(reader, |data| {
         let value: Value =
             serde_json::from_str(data).map_err(|e| format!("invalid model stream JSON: {e}"))?;
@@ -507,6 +599,7 @@ fn anthropic_stream<R: BufRead>(
                     completion_tokens = output;
                 }
             }
+            "message_stop" => stopped = true,
             "error" => {
                 let message = value
                     .pointer("/error/message")
@@ -520,6 +613,9 @@ fn anthropic_stream<R: BufRead>(
     })?;
     if !saw_event {
         return Err("model stream produced no events".into());
+    }
+    if !stopped {
+        return Err("model stream ended before message_stop; the reply is incomplete".into());
     }
     let mut text = String::new();
     let mut calls = Vec::new();
@@ -940,5 +1036,23 @@ mod tests {
         let body = "data: {\"type\":\"error\",\"error\":{\"message\":\"bad request\"}}\n\n";
         let error = anthropic_stream(std::io::Cursor::new(body), &mut |_| Ok(())).unwrap_err();
         assert!(error.contains("bad request"), "{error}");
+    }
+
+    #[test]
+    fn truncated_streams_are_errors_not_partial_answers() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"half an ans\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"wer\"}}]}\n\n",
+        );
+        let error = openai_stream(std::io::Cursor::new(body), &mut |_| Ok(())).unwrap_err();
+        assert!(error.contains("[DONE]"), "{error}");
+
+        let body = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"half\"}}\n\n",
+        );
+        let error = anthropic_stream(std::io::Cursor::new(body), &mut |_| Ok(())).unwrap_err();
+        assert!(error.contains("message_stop"), "{error}");
     }
 }

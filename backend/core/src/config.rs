@@ -117,6 +117,11 @@ pub struct Config {
     pub approve: bool,
     pub reject: bool,
     pub role: Option<String>,
+    pub update_source: Option<String>,
+    pub update_targets: Vec<PathBuf>,
+    pub update_force: bool,
+    pub update_interval_seconds: u64,
+    pub update_cycles: u64,
 }
 
 fn default_command(interactive: bool) -> &'static str {
@@ -180,6 +185,7 @@ USAGE:
   jani mirror compare RUN_A RUN_B [OPTIONS]
   jani mcp verify|authorize|call|validate-response OP RESOURCE [OPTIONS]
   jani native TOOL OPERATION [ARGUMENTS] [--task TASK] [OPTIONS]
+  jani update check|install|watch [OPTIONS]   Verified release-channel delivery
 
 Jani has no embedded coordination engine. It works directly in a Git
 worktree. Skills are advisory. Every tool call passes through a Rust
@@ -230,6 +236,11 @@ COMMAND OPTIONS:
   --run RUN_ID            Journal run to verify or inspect
   --task TASK_ID          Task to show in `budget show`
   --approve / --reject    Decision for `approvals decide`
+  --source URL            Update origin serving the releases/ tree (JANI_UPDATE_SOURCE)
+  --to PATH               Binary to replace in addition to this executable; repeatable
+  --force                 Install even when the channel is not newer
+  --interval SECONDS      Watch poll interval (default 300)
+  --cycles N              Watch cycles before exit; 0 means forever (default)
 
 ENVIRONMENT:
   JANI_API_KEY or OPENAI_API_KEY    AI provider credential
@@ -246,6 +257,7 @@ ENVIRONMENT:
   JANI_PLUGIN_DIR, JANI_PLUGIN_KEYS, JANI_PROVIDER_REGION, JANI_PROVIDER_CLASS
   JANI_SETTINGS            Alternate settings file
   JANI_USER_SETTINGS       Override the user-wide settings path
+  JANI_UPDATE_SOURCE       HTTPS (or loopback HTTP) origin for `jani update`
 
 SETTINGS:
   Jani loads settings from --settings / JANI_SETTINGS when given, otherwise
@@ -397,6 +409,11 @@ impl Config {
             approve: false,
             reject: false,
             role: None,
+            update_source: env_nonempty("JANI_UPDATE_SOURCE"),
+            update_targets: Vec::new(),
+            update_force: false,
+            update_interval_seconds: 300,
+            update_cycles: 0,
         }
     }
 
@@ -725,7 +742,7 @@ impl Config {
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
                 | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
-                | "mcp" | "native" => {
+                | "mcp" | "native" | "update" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -841,6 +858,27 @@ impl Config {
                 "--approve" => cfg.approve = true,
                 "--reject" => cfg.reject = true,
                 "--role" => cfg.role = Some(take_value(args, &mut i, a)?),
+                "--source" => cfg.update_source = Some(take_value(args, &mut i, a)?),
+                "--to" => cfg
+                    .update_targets
+                    .push(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--force" => cfg.update_force = true,
+                "--interval" => {
+                    cfg.update_interval_seconds = take_value(args, &mut i, a)?
+                        .parse()
+                        .map_err(|_| "--interval must be a positive integer".to_string())?;
+                    if !(1..=86_400).contains(&cfg.update_interval_seconds) {
+                        return Err("--interval must be 1..86400".into());
+                    }
+                }
+                "--cycles" => {
+                    cfg.update_cycles = take_value(args, &mut i, a)?
+                        .parse()
+                        .map_err(|_| "--cycles must be a non-negative integer".to_string())?;
+                    if cfg.update_cycles > 1_000_000 {
+                        return Err("--cycles must be 0..1000000".into());
+                    }
+                }
                 other if other.starts_with('-') => {
                     return Err(format!("unknown option: {other}"));
                 }

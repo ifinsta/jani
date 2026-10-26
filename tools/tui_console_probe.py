@@ -386,14 +386,15 @@ class FakeProvider(BaseHTTPRequestHandler):
                                 "content": "",
                                 "tool_calls": [
                                     {
-                                        "index": 0,
-                                        "id": "call_probe",
+                                        "index": index,
+                                        "id": f"call_probe_{index}",
                                         "type": "function",
                                         "function": {
                                             "name": "workspace_read",
                                             "arguments": '{"path":"notes.txt"}',
                                         },
                                     }
+                                    for index in range(5)
                                 ],
                             }
                         }
@@ -628,8 +629,51 @@ def main():
             "reasoning line" in answer and "checking the fake provider" not in answer,
         )
         print("turn_counted:", "1 turn " in answer or "1 turn" in answer)
+        tool_rows = [line for line in answer.splitlines() if "reading notes.txt" in line]
+        tools_collapsed = (
+            "▸ tools · 5 calls" in answer
+            and "last 3 shown" in answer
+            and len(tool_rows) == 3
+            and any("ms" in line for line in tool_rows)
+        )
+        print("--- collapsed tools ---")
+        print(answer)
+        print("tool_calls_collapsed_to_three:", tools_collapsed)
+        print("tool_count_readable:", "tools: 5 ok" in answer)
+        tools_row = row_of(answer, "▸ tools · 5 calls")
+        tools_expanded = False
+        tools_expand_shows_all = False
+        tools_recollapsed = False
+        if tools_row >= 0:
+            click(stdin_handle, 5, tools_row)
+            expanded_tools = wait_for(width, height, "▾ tools · 5 calls", timeout=5.0)
+            expanded_rows = [
+                line for line in expanded_tools.splitlines() if "reading notes.txt" in line
+            ]
+            tools_expanded = "▾ tools · 5 calls" in expanded_tools
+            tools_expand_shows_all = len(expanded_rows) == 5
+            print("--- expanded tools ---")
+            print(expanded_tools)
+            print("tool_calls_expand_to_five:", tools_expanded and tools_expand_shows_all)
+            collapsed_row = row_of(expanded_tools, "▾ tools · 5 calls")
+            if collapsed_row >= 0:
+                click(stdin_handle, 5, collapsed_row)
+                recollapsed = wait_for(width, height, "▸ tools · 5 calls", timeout=5.0)
+                tools_recollapsed = (
+                    "▸ tools · 5 calls" in recollapsed
+                    and len(
+                        [
+                            line
+                            for line in recollapsed.splitlines()
+                            if "reading notes.txt" in line
+                        ]
+                    )
+                    == 3
+                )
+        print("tool_calls_recollapse:", tools_recollapsed)
         requests = [json.loads(body) for body in FakeProvider.captured]
         print("provider_requests:", len(FakeProvider.captured))
+        print("five_tool_results_round_trip:", len(requests) == 2 and FakeProvider.captured[1].count("call_probe_") >= 5)
         print(
             "streaming_requested:",
             bool(requests) and all(request.get("stream") is True for request in requests),
@@ -863,6 +907,13 @@ def main():
             and "reasoning line" in answer
             and "checking the fake provider" not in answer
             and "1 turn" in answer
+            and tools_collapsed
+            and "tools: 5 ok" in answer
+            and tools_expanded
+            and tools_expand_shows_all
+            and tools_recollapsed
+            and len(requests) == 2
+            and FakeProvider.captured[1].count("call_probe_") >= 5
             and ("║" in overflow or "█" in overflow)
             and "• beta item" in overflow
             and "Jani v0.1.0" not in overflow

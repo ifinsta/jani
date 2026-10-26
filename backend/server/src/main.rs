@@ -16,6 +16,7 @@ mod repl;
 mod sandbox;
 mod skills;
 mod tui;
+mod update;
 mod workspace;
 
 use config::{Config, JResult};
@@ -74,6 +75,11 @@ fn run() -> JResult<()> {
             .or_else(|| cfg.positional.first())
             .ok_or("evidence requires a run ID")?;
         return print_json(&evidence::receipt(&cfg.state_dir, run_id)?);
+    }
+    // Delivery operates on local binaries and a release origin, not on a worktree
+    // agent session, so it must not require model credentials or skill discovery.
+    if cfg.command == "update" {
+        return update::command(&cfg);
     }
     let catalog = Catalog::load(&cfg)?;
     match cfg.command.as_str() {
