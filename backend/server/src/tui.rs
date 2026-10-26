@@ -179,7 +179,7 @@ fn handle_event(
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if key.code == KeyCode::Enter {
                 if key.modifiers.contains(KeyModifiers::SHIFT) && state.palette.is_none() {
-                    state.editor.insert_char('\n');
+                    editor_key(state, key);
                 } else if state.palette.is_some() {
                     palette_run(state, agent, catalog);
                 } else {
@@ -471,6 +471,9 @@ fn editor_only_key(state: &mut State, key: KeyEvent) {
     let before = state.editor.text.clone();
     let editor = &mut state.editor;
     match key.code {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            editor.insert_char('\n');
+        }
         KeyCode::Left => editor.left(),
         KeyCode::Right => editor.right(),
         KeyCode::Home => editor.home(),
@@ -3007,9 +3010,7 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
         );
-        // Key insertion is normally performed by the terminal event loop.
-        assert!(state.editor.is_empty());
-        state.editor.insert_char('\n');
+        assert_eq!(state.editor.text, "\n");
         state.editor.insert_str("text");
         assert_eq!(state.editor.text, "\ntext");
     }
