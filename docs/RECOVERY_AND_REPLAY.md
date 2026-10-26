@@ -20,6 +20,10 @@ tests: []
 4. On restart, verify worktree hashes, renewed authorization, still-valid delegation, spent budget, sandbox availability and audit integrity.
 5. Fence stale workers with future lease generation tokens; only one authorized owner may commit a step.
 6. Compensate only when the external system supports a separately authorized compensating operation. Do not invent payment rollback.
+## Cooperative cancellation boundary (source implemented, unverified)
+
+The interactive terminal uses an atomic cancellation token. Ctrl+C requests cancellation while keeping the session open. The agent checks before model/tool work and subsequent tool calls, and records `cancelled_by_operator` in its journal. It cannot forcibly stop an already-running command or blocked model request. Earlier external effects remain subject to reconciliation.
+
 ## Source-level recovery inventory
 
 `jani recovery status` emits `jani.recovery-status/v1` with tenant/task/run IDs, last recorded run outcome, event counts and denials. Every run has `safeToAutoReplay: false`. A crash between the actual effect and its journal outcome can remain ambiguous even if the hash chain validates; only independent source reconciliation can resolve that. Three unit tests cover abandoned runs, recorded model completions and tampered journals.
