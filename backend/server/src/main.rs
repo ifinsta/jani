@@ -312,6 +312,10 @@ fn inspect_command(cfg: &Config) -> JResult<()> {
         .clone()
         .or_else(|| cfg.positional.first().cloned())
         .ok_or("inspect requires a run id (--run or positional)")?;
+    let integrity = journal::verify(&cfg.state_dir)?;
+    if integrity["ok"] != true {
+        return Err("audit journal integrity failed: refusing unverified inspection".into());
+    }
     let path = cfg.state_dir.join(journal::JOURNAL_FILE);
     let events = journal::read_run(&path, &run_id)?;
     if events.is_empty() {
