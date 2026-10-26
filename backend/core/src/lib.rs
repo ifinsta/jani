@@ -8,6 +8,7 @@ pub mod config;
 pub mod contract;
 pub mod crypto;
 pub mod data;
+pub mod evidence;
 pub mod identity;
 pub mod journal;
 pub mod permissions;
