@@ -5,18 +5,18 @@
     "package":  "jani",
     "version":  "0.1.0",
     "tag":  "v0.1.0",
-    "commit":  "feaed0e4e4f63c73ec7624b016a8ea1832359724",
+    "commit":  "9980b501a9ddff64a4b4d5935104f30f597421cd",
     "dirty":  false,
-    "builtAt":  "2026-10-26T16:57:48Z",
+    "builtAt":  "2026-10-26T17:59:29Z",
     "artifacts":  [
                       {
                           "target":  "x86_64-pc-windows-msvc",
                           "binary":  "jani-0.1.0-x86_64-pc-windows-msvc.exe",
-                          "sha256":  "bc8b4d6956900ac39caea77e79a8c5e987937afb701e4c4c4f6632f6adb21a27",
-                          "sizeBytes":  9532416,
-                          "commit":  "feaed0e4e4f63c73ec7624b016a8ea1832359724",
+                          "sha256":  "fd9fb1193c00a64719cc93c4a33e398b279d0d0723497bcbfc56170492f8847c",
+                          "sizeBytes":  9533952,
+                          "commit":  "9980b501a9ddff64a4b4d5935104f30f597421cd",
                           "dirty":  false,
-                          "builtAt":  "2026-10-26T16:57:48Z"
+                          "builtAt":  "2026-10-26T17:59:29Z"
                       }
                   ]
 }
