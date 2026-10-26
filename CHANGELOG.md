@@ -23,6 +23,9 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- Phase 1B source: multiline bounded terminal composer with Shift+Enter and newline-preserving paste, status-marked tool activities, and audit-only run evidence that explicitly does not independently certify completion.
+- Phase 2 foundation: read-only `jani recovery status` flags unfinished runs without unsafe replay; journal inspection checks integrity; Ctrl+C now requests cooperative cancellation at agent-safe boundaries. These source changes are not yet backed by a fresh Rust build or independent Windows runtime verification.
+
 - Failure notices in TUI and line-mode now explicitly distinguish model-context restoration from filesystem or external effects that may survive a failed turn. This is a disclosure improvement, **not** crash recovery or automatic rollback.
 
 - Product excellence programme established with phased UX, recovery, verification, security and extension gates. README now leads with the governed engineering-agent purpose and an explicit supervised-prototype warning.
