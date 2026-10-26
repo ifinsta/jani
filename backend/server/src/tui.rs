@@ -40,6 +40,13 @@ const SELECT: Color = Color::Rgb(30, 36, 44);
 const MIN_WIDTH: u16 = 40;
 const MIN_HEIGHT: u16 = 10;
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
+const STARTER_TASKS: [(&str, &str); 4] = [
+    ("Inspect repository", "Map modules and dependencies. Read only; do not edit files or execute commands."),
+    ("Plan architecture work", "Propose phased implementation and acceptance criteria. Do not edit files or execute commands."),
+    ("Review open risks", "Inspect security and quality risks with file evidence. Read only; do not make changes."),
+    ("Inspect test coverage", "Identify untested workflows and likely failures. Do not edit files or execute commands."),
+];
+
 const WHEEL_STEP: i32 = 3;
 const PAGE_STEP: i32 = 10;
 
@@ -362,7 +369,29 @@ fn run_turn(
     Ok(())
 }
 
+fn starter_prompt(key: &KeyCode) -> Option<&'static str> {
+    let index = match key {
+        KeyCode::F(1) => 0,
+        KeyCode::F(2) => 1,
+        KeyCode::F(3) => 2,
+        KeyCode::F(4) => 3,
+        _ => return None,
+    };
+    Some(STARTER_TASKS[index].1)
+}
+
 fn editor_key(state: &mut State, key: KeyEvent) {
+    // A shortcut only drafts a message. It never submits or widens authority.
+    if state.entries.is_empty()
+        && state.editor.is_empty()
+        && state.palette.is_none()
+        && !state.busy
+    {
+        if let Some(prompt) = starter_prompt(&key.code) {
+            state.editor.insert_str(prompt);
+            return;
+        }
+    }
     if is_ctrl(&key, 't') {
         if let Some(target) = state.latest_fold() {
             state.toggle_fold(target);
@@ -1272,7 +1301,7 @@ fn draw_hero(frame: &mut Frame, state: &State, area: Rect) {
             )));
         }
         lines.push(Line::from(Span::styled(
-            "GOVERNED CODING AGENT",
+            "GOVERNED ENGINEERING AGENT",
             Style::default().fg(DIM),
         )));
     } else {
@@ -1281,7 +1310,7 @@ fn draw_hero(frame: &mut Frame, state: &State, area: Rect) {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
-            "governed coding agent",
+            "governed engineering agent",
             Style::default().fg(DIM),
         )));
     }
@@ -1299,6 +1328,44 @@ fn draw_hero(frame: &mut Frame, state: &State, area: Rect) {
     );
 }
 
+fn draw_starters(frame: &mut Frame, area: Rect) {
+    if area.height < 9 {
+        return;
+    }
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "What would you like to accomplish?",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "Choose a starter task or type your own message.",
+            Style::default().fg(DIM),
+        )),
+        Line::default(),
+    ];
+    for (index, (label, _)) in STARTER_TASKS.iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" F{} ", index + 1),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(label.to_string(), Style::default().fg(TEXT)),
+        ]));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "Shortcuts draft only; Enter sends. A sandbox profile is not OS isolation.",
+        Style::default().fg(DIM),
+    )));
+    let top = area.y + area.height.saturating_sub(9) / 2;
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(Style::default().bg(BG)),
+        Rect::new(area.x, top, area.width, 9),
+    );
+}
+
 fn draw_compact_header(frame: &mut Frame, state: &State, area: Rect) {
     if area.height == 0 {
         return;
@@ -1308,7 +1375,7 @@ fn draw_compact_header(frame: &mut Frame, state: &State, area: Rect) {
             "JANI",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  governed coding agent", Style::default().fg(DIM)),
+        Span::styled("  governed engineering agent", Style::default().fg(DIM)),
     ]);
     frame.render_widget(
         Paragraph::new(title).style(Style::default().bg(BG)),
@@ -1341,6 +1408,16 @@ fn draw_compact_header(frame: &mut Frame, state: &State, area: Rect) {
 
 fn draw_transcript(frame: &mut Frame, state: &mut State, area: Rect) {
     if area.height == 0 {
+        return;
+    }
+    if state.entries.is_empty() && state.live.is_none() && !state.busy {
+        state.line_count = 0;
+        state.viewport = area.height as usize;
+        state.scroll_top = 0;
+        state.folds.clear();
+        state.transcript_area = area;
+        state.scrollbar_col = None;
+        draw_starters(frame, area);
         return;
     }
     let height = area.height as usize;
@@ -1860,7 +1937,7 @@ fn meta_line(state: &State, width: usize) -> Line<'static> {
         &mut spans,
         &mut used,
         vec![Span::styled(
-            format!("sandbox {}", state.meta.sandbox),
+            format!("profile {}", state.meta.sandbox),
             Style::default().fg(DIM),
         )],
         width,
@@ -2972,10 +3049,39 @@ mod tests {
         let text = render(&mut state, 100, 32);
         assert!(text.contains("Type a message"), "{text}");
         assert!(text.contains("/help"), "{text}");
-        assert!(text.contains("GOVERNED CODING AGENT"), "{text}");
+        assert!(text.contains("GOVERNED ENGINEERING AGENT"), "{text}");
         assert!(text.contains("ctrl+c"), "{text}");
         assert!(text.contains("~/CascadeProjects/jani"), "{text}");
         assert!(text.contains("v0.1.0"), "{text}");
+    }
+
+    #[test]
+    fn welcome_shortcuts_prefill_without_submitting_or_widening_authority() {
+        let mut state = State::new(meta(), 0, 0);
+        let writes = state.meta.writes.clone();
+        editor_key(&mut state, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(state.editor.text, STARTER_TASKS[0].1);
+        assert!(state.entries.is_empty());
+        assert_eq!(state.turns, 0);
+        assert_eq!(state.meta.writes, writes);
+        editor_key(&mut state, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert_eq!(state.editor.text, STARTER_TASKS[0].1);
+        state.editor.clear();
+        editor_key(&mut state, KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+        assert_eq!(state.editor.text, STARTER_TASKS[3].1);
+        state.editor.clear();
+        state.busy = true;
+        editor_key(&mut state, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert!(state.editor.is_empty());
+    }
+
+    #[test]
+    fn starter_options_render_on_eighty_column_terminal() {
+        let mut state = State::new(meta(), 0, 0);
+        let text = render(&mut state, 80, 24);
+        for label in ["F1", "F2", "F3", "F4", "Inspect repository"] {
+            assert!(text.contains(label), "missing {label}: {text}");
+        }
     }
 
     #[test]
