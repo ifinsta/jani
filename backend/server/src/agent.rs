@@ -757,23 +757,7 @@ impl<'a> Agent<'a> {
     /// acceptance criteria were satisfied. Never expose model/tool payloads.
     pub fn run_evidence(&self) -> JResult<Value> {
         let run_id = self.last_run_id().ok_or("no run has started")?;
-        let journal_path = self.cfg.state_dir.join(journal::JOURNAL_FILE);
-        let chain = journal::verify(&self.cfg.state_dir)?;
-        let events = journal::read_run(&journal_path, run_id)?;
-        if events.is_empty() {
-            return Err(format!("no audit events found for run '{run_id}'"));
-        }
-        Ok(json!({
-            "schemaVersion": "jani.run-evidence/v1",
-            "taskId": self.session.task_id,
-            "runId": run_id,
-            "journalChainVerified": chain["ok"] == true,
-            "auditEventCount": events.len(),
-            "decisionDenials": events.iter()
-                .filter(|event| event.decision == "deny").count(),
-            "outcomeVerified": false,
-            "caveat": "Audit integrity is not independent verification of task correctness, test results or side-effect reconciliation."
-        }))
+        crate::evidence::receipt(&self.cfg.state_dir, run_id)
     }
 
     pub fn inspect(&self, run_id: Option<&str>) -> JResult<Value> {
