@@ -1,6 +1,6 @@
 pub use jani_core::{
     approvals, budget, config, crypto, data, identity, journal, permissions, policy, process,
-    schema, types,
+    recovery, schema, types,
 };
 mod agent;
 mod attention;
@@ -82,6 +82,10 @@ fn run() -> JResult<()> {
         "plugins" => plugins_command(&cfg),
         "policy" => policy_command(&cfg),
         "audit" => audit_command(&cfg),
+        "recovery" => match cfg.sub.as_deref() {
+            None | Some("status") => print_json(&recovery::status(&cfg.state_dir)?),
+            Some(other) => Err(format!("unknown recovery subcommand '{other}'")),
+        },
         "inspect" => inspect_command(&cfg),
         "approvals" => approvals_command(&cfg),
         "budget" => budget_command(&cfg),
