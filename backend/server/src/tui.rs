@@ -31,6 +31,7 @@ const FAINT: Color = Color::Rgb(62, 68, 78);
 const ACCENT: Color = Color::Rgb(94, 208, 230);
 const USER: Color = Color::Rgb(240, 184, 96);
 const ERROR: Color = Color::Rgb(240, 110, 110);
+const CODE: Color = Color::Rgb(150, 214, 170);
 
 const MIN_WIDTH: u16 = 40;
 const MIN_HEIGHT: u16 = 10;
@@ -255,7 +256,13 @@ fn run_turn(
 
     match outcome.expect("turn outcome") {
         Ok(answer) => state.push(Entry::new(Kind::Assistant, answer.trim_end())),
-        Err(error) => state.push(Entry::new(Kind::Error, format!("jani: {error}"))),
+        Err(error) => {
+            state.push(Entry::new(Kind::Error, format!("jani: {error}")));
+            state.push(Entry::new(
+                Kind::Note,
+                "This turn was rolled back; the model does not retain it. The next message continues from the last successful turn.",
+            ));
+        }
     }
     if state.quit_after_turn {
         state.quit_after_turn = false;
@@ -886,6 +893,18 @@ fn transcript_lines(state: &State, width: usize) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )));
         let body_width = width.saturating_sub(2);
+        if matches!(entry.kind, Kind::Assistant) {
+            for line in markdown_lines(&entry.text, body_width) {
+                if line.spans.is_empty() {
+                    lines.push(Line::default());
+                } else {
+                    let mut spans = vec![Span::raw("  ")];
+                    spans.extend(line.spans);
+                    lines.push(Line::from(spans));
+                }
+            }
+            continue;
+        }
         for part in wrap(&entry.text, body_width) {
             let mut spans = vec![Span::raw("  ")];
             if !part.is_empty() {
@@ -1339,6 +1358,578 @@ fn io_error(error: io::Error) -> String {
     error.to_string()
 }
 
+fn markdown_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let base = Style::default().fg(TEXT);
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let source: Vec<&str> = normalized.split('\n').collect();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < source.len() {
+        let line = source[index];
+        if line.trim().is_empty() {
+            out.push(Line::default());
+            index += 1;
+            continue;
+        }
+        if let Some((fence, indent)) = fence_open(line) {
+            index += 1;
+            let mut code = Vec::new();
+            while index < source.len() && !fence_close(source[index], fence) {
+                code.push(source[index]);
+                index += 1;
+            }
+            if index < source.len() {
+                index += 1;
+            }
+            push_code(&mut out, &code, width, indent);
+            continue;
+        }
+        if is_rule(line) {
+            out.push(Line::from(Span::styled(
+                "─".repeat(width.min(32)),
+                Style::default().fg(FAINT),
+            )));
+            index += 1;
+            continue;
+        }
+        if let Some((level, content)) = heading(line) {
+            let style = if level <= 2 {
+                base.fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                base.add_modifier(Modifier::BOLD)
+            };
+            push_inline(&mut out, content, width, style);
+            index += 1;
+            continue;
+        }
+        if let Some(content) = blockquote(line) {
+            push_prefixed(
+                &mut out,
+                content,
+                width,
+                ("│ ", Style::default().fg(FAINT)),
+                ("│ ", Style::default().fg(FAINT)),
+                base.fg(DIM),
+            );
+            index += 1;
+            continue;
+        }
+        if let Some((prefix, content)) = list_item(line) {
+            let continuation = " ".repeat(prefix.width());
+            push_prefixed(
+                &mut out,
+                content,
+                width,
+                (&prefix, base.fg(ACCENT)),
+                (&continuation, Style::default()),
+                base,
+            );
+            index += 1;
+            continue;
+        }
+        if is_table_header(&source, index) {
+            index = push_table(&mut out, &source, index, width, base);
+            continue;
+        }
+        let mut parts = vec![line.trim()];
+        index += 1;
+        while index < source.len() && !starts_block(&source, index) {
+            parts.push(source[index].trim());
+            index += 1;
+        }
+        push_inline(&mut out, &parts.join(" "), width, base);
+    }
+    if out.is_empty() {
+        out.push(Line::default());
+    }
+    out
+}
+
+fn starts_block(lines: &[&str], index: usize) -> bool {
+    let line = lines[index];
+    line.trim().is_empty()
+        || fence_open(line).is_some()
+        || heading(line).is_some()
+        || blockquote(line).is_some()
+        || list_item(line).is_some()
+        || is_rule(line)
+        || is_table_header(lines, index)
+}
+
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start();
+    let fence = trimmed.chars().next()?;
+    if fence != '`' && fence != '~' {
+        return None;
+    }
+    if trimmed.chars().take_while(|ch| *ch == fence).count() < 3 {
+        return None;
+    }
+    let indent = line.len() - trimmed.len();
+    Some((fence, indent.min(8)))
+}
+
+fn fence_close(line: &str, fence: char) -> bool {
+    let trimmed = line.trim();
+    trimmed.chars().take_while(|ch| *ch == fence).count() >= 3
+        && trimmed.chars().all(|ch| ch == fence)
+}
+
+fn is_rule(line: &str) -> bool {
+    let markers: Vec<char> = line
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    markers.len() >= 3
+        && matches!(markers[0], '-' | '*' | '_')
+        && markers.iter().all(|ch| *ch == markers[0])
+}
+
+fn heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_start();
+    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if level == 0 || level > 6 {
+        return None;
+    }
+    let rest = &trimmed[level..];
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    Some((level, rest.trim().trim_end_matches('#').trim_end()))
+}
+
+fn blockquote(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix('>')?;
+    Some(rest.strip_prefix(' ').unwrap_or(rest))
+}
+
+fn list_item(line: &str) -> Option<(String, &str)> {
+    let trimmed = line.trim_start();
+    let indent = (line.len() - trimmed.len()).min(8);
+    let pad = " ".repeat(indent);
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(content) = trimmed.strip_prefix(marker) {
+            return Some((format!("{pad}• "), content.trim_start()));
+        }
+    }
+    let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digits == 0 || digits > 3 {
+        return None;
+    }
+    let rest = &trimmed[digits..];
+    if let Some(content) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+        return Some((
+            format!("{pad}{}. ", &trimmed[..digits]),
+            content.trim_start(),
+        ));
+    }
+    None
+}
+
+fn is_table_header(lines: &[&str], index: usize) -> bool {
+    index + 1 < lines.len() && lines[index].contains('|') && is_table_separator(lines[index + 1])
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return false;
+    }
+    let mut dash = false;
+    for ch in trimmed.chars() {
+        match ch {
+            '|' | ':' | ' ' | '\t' => {}
+            '-' => dash = true,
+            _ => return false,
+        }
+    }
+    dash
+}
+
+fn push_table(
+    out: &mut Vec<Line<'static>>,
+    lines: &[&str],
+    index: usize,
+    width: usize,
+    base: Style,
+) -> usize {
+    let header = table_cells(lines[index]);
+    let header_style = base.add_modifier(Modifier::BOLD);
+    push_inline(out, &header.join("  │  "), width, header_style);
+    let mut next = index + 2;
+    while next < lines.len() && !lines[next].trim().is_empty() && lines[next].contains('|') {
+        push_inline(out, &table_cells(lines[next]).join("  │  "), width, base);
+        next += 1;
+    }
+    next
+}
+
+fn table_cells(line: &str) -> Vec<&str> {
+    line.trim()
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .split('|')
+        .map(str::trim)
+        .collect()
+}
+
+fn push_inline(out: &mut Vec<Line<'static>>, text: &str, width: usize, base: Style) {
+    let spans = inline_spans(text, base);
+    for segment in wrap_spans(&spans, width) {
+        if segment.is_empty() {
+            out.push(Line::default());
+            continue;
+        }
+        out.push(Line::from(
+            segment
+                .into_iter()
+                .map(|(text, style)| Span::styled(text, style))
+                .collect::<Vec<_>>(),
+        ));
+    }
+}
+
+fn push_prefixed(
+    out: &mut Vec<Line<'static>>,
+    text: &str,
+    width: usize,
+    first: (&str, Style),
+    next: (&str, Style),
+    base: Style,
+) {
+    let available = width
+        .saturating_sub(first.0.width().max(next.0.width()))
+        .max(1);
+    let spans = inline_spans(text, base);
+    let mut wrapped = wrap_spans(&spans, available);
+    if wrapped.is_empty() {
+        wrapped.push(Vec::new());
+    }
+    for (index, segment) in wrapped.into_iter().enumerate() {
+        let (prefix, style) = if index == 0 { first } else { next };
+        let mut spans = vec![Span::styled(prefix.to_string(), style)];
+        spans.extend(
+            segment
+                .into_iter()
+                .map(|(text, style)| Span::styled(text, style)),
+        );
+        out.push(Line::from(spans));
+    }
+}
+
+fn push_code(out: &mut Vec<Line<'static>>, code: &[&str], width: usize, indent: usize) {
+    let indent = indent.min(width.saturating_sub(2) / 2);
+    let gutter = format!("{}│ ", " ".repeat(indent));
+    let available = width.saturating_sub(gutter.width()).max(1);
+    for raw in code {
+        let expanded = raw.replace('\t', "    ");
+        if expanded.trim().is_empty() {
+            out.push(Line::default());
+            continue;
+        }
+        for segment in split_width(&expanded, available) {
+            out.push(Line::from(vec![
+                Span::styled(gutter.clone(), Style::default().fg(FAINT)),
+                Span::styled(segment, Style::default().fg(CODE)),
+            ]));
+        }
+    }
+}
+
+fn split_width(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    let mut line_width = 0usize;
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if line_width + ch_width > width && !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+            line_width = 0;
+        }
+        line.push(ch);
+        line_width += ch_width;
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+fn inline_spans(text: &str, base: Style) -> Vec<(String, Style)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans = Vec::new();
+    let mut plain = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\\' && index + 1 < chars.len() {
+            plain.push(chars[index + 1]);
+            index += 2;
+            continue;
+        }
+        if ch == '`' {
+            let start = index;
+            while index < chars.len() && chars[index] == '`' {
+                index += 1;
+            }
+            let ticks = index - start;
+            if let Some(close) = find_run(&chars, index, '`', ticks) {
+                flush_plain(&mut spans, &mut plain, base);
+                spans.push((chars[index..close].iter().collect(), base.fg(CODE)));
+                index = close + ticks;
+            } else {
+                plain.push('`');
+                index = start + 1;
+            }
+            continue;
+        }
+        if ch == '*' && chars.get(index + 1) == Some(&'*') {
+            if let Some(close) = find_text(&chars, index + 2, "**") {
+                let inner: String = chars[index + 2..close].iter().collect();
+                if !inner.trim().is_empty() {
+                    flush_plain(&mut spans, &mut plain, base);
+                    spans.extend(inline_spans(&inner, base.add_modifier(Modifier::BOLD)));
+                    index = close + 2;
+                    continue;
+                }
+            }
+            plain.push('*');
+            index += 1;
+            continue;
+        }
+        if ch == '*' {
+            if let Some(close) = find_char(&chars, index + 1, '*') {
+                let inner: String = chars[index + 1..close].iter().collect();
+                if !inner.trim().is_empty() {
+                    flush_plain(&mut spans, &mut plain, base);
+                    spans.extend(inline_spans(&inner, base.add_modifier(Modifier::ITALIC)));
+                    index = close + 1;
+                    continue;
+                }
+            }
+            plain.push('*');
+            index += 1;
+            continue;
+        }
+        if ch == '~' && chars.get(index + 1) == Some(&'~') {
+            if let Some(close) = find_text(&chars, index + 2, "~~") {
+                let inner: String = chars[index + 2..close].iter().collect();
+                if !inner.trim().is_empty() {
+                    flush_plain(&mut spans, &mut plain, base);
+                    spans.extend(inline_spans(
+                        &inner,
+                        base.add_modifier(Modifier::CROSSED_OUT),
+                    ));
+                    index = close + 2;
+                    continue;
+                }
+            }
+            plain.push('~');
+            index += 1;
+            continue;
+        }
+        if ch == '_' && underscore_boundary(&chars, index) {
+            let double = chars.get(index + 1) == Some(&'_');
+            let width = if double { 2 } else { 1 };
+            if let Some(close) = find_underscore(&chars, index + width, double) {
+                let inner: String = chars[index + width..close].iter().collect();
+                if !inner.trim().is_empty() {
+                    flush_plain(&mut spans, &mut plain, base);
+                    let style = if double {
+                        base.add_modifier(Modifier::BOLD)
+                    } else {
+                        base.add_modifier(Modifier::ITALIC)
+                    };
+                    spans.extend(inline_spans(&inner, style));
+                    index = close + width;
+                    continue;
+                }
+            }
+            plain.push('_');
+            index += 1;
+            continue;
+        }
+        if ch == '[' {
+            if let Some((label, url, next)) = parse_link(&chars, index) {
+                flush_plain(&mut spans, &mut plain, base);
+                spans.extend(inline_spans(
+                    &label,
+                    base.fg(ACCENT).add_modifier(Modifier::UNDERLINED),
+                ));
+                if !url.is_empty() && url != label {
+                    spans.push((format!(" ({url})"), base.fg(DIM)));
+                }
+                index = next;
+                continue;
+            }
+        }
+        plain.push(ch);
+        index += 1;
+    }
+    flush_plain(&mut spans, &mut plain, base);
+    merge_spans(spans, base)
+}
+
+fn flush_plain(spans: &mut Vec<(String, Style)>, plain: &mut String, style: Style) {
+    if !plain.is_empty() {
+        spans.push((std::mem::take(plain), style));
+    }
+}
+
+fn merge_spans(spans: Vec<(String, Style)>, base: Style) -> Vec<(String, Style)> {
+    let mut out: Vec<(String, Style)> = Vec::new();
+    for (text, style) in spans {
+        if text.is_empty() {
+            continue;
+        }
+        if let Some((last, last_style)) = out.last_mut() {
+            if *last_style == style {
+                last.push_str(&text);
+                continue;
+            }
+        }
+        out.push((text, style));
+    }
+    if out.is_empty() {
+        out.push((String::new(), base));
+    }
+    out
+}
+
+fn underscore_boundary(chars: &[char], index: usize) -> bool {
+    index == 0 && chars.get(index + 1).is_some_and(|ch| !ch.is_whitespace())
+        || index > 0
+            && !chars[index - 1].is_alphanumeric()
+            && chars.get(index + 1).is_some_and(|ch| !ch.is_whitespace())
+}
+
+fn find_underscore(chars: &[char], from: usize, double: bool) -> Option<usize> {
+    let width = if double { 2 } else { 1 };
+    let mut index = from;
+    while index < chars.len() {
+        if chars[index] == '_' {
+            let mut end = index;
+            while end < chars.len() && chars[end] == '_' {
+                end += 1;
+            }
+            let run = end - index;
+            if run >= width
+                && index > from
+                && !chars[index - 1].is_whitespace()
+                && (index + width == chars.len() || !chars[index + width].is_alphanumeric())
+            {
+                return Some(index);
+            }
+            index = end;
+            continue;
+        }
+        index += 1;
+    }
+    None
+}
+
+fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
+    (from..chars.len()).find(|index| chars[*index] == target)
+}
+
+fn find_text(chars: &[char], from: usize, target: &str) -> Option<usize> {
+    let needle: Vec<char> = target.chars().collect();
+    if needle.is_empty() || chars.len() < needle.len() {
+        return None;
+    }
+    (from..=chars.len() - needle.len())
+        .find(|index| chars[*index..*index + needle.len()] == needle[..])
+}
+
+fn find_run(chars: &[char], from: usize, target: char, count: usize) -> Option<usize> {
+    let mut index = from;
+    while index + count <= chars.len() {
+        if (index..index + count).all(|offset| chars[offset] == target)
+            && (index == 0 || chars[index - 1] != target)
+            && (index + count == chars.len() || chars[index + count] != target)
+        {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
+    let close = find_char(chars, start + 1, ']')?;
+    if chars.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let end = find_char(chars, close + 2, ')')?;
+    let label: String = chars[start + 1..close].iter().collect();
+    let url: String = chars[close + 2..end].iter().collect();
+    Some((label, url.trim().to_string(), end + 1))
+}
+
+fn wrap_spans(spans: &[(String, Style)], width: usize) -> Vec<Vec<(String, Style)>> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut current: Vec<(char, Style)> = Vec::new();
+    let mut current_width = 0usize;
+    let mut break_at: Option<usize> = None;
+    for (text, style) in spans {
+        for ch in text.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if current_width + ch_width > width && !current.is_empty() {
+                if let Some(index) = break_at.take() {
+                    let tail = current.split_off(index + 1);
+                    trim_trailing_space(&mut current);
+                    lines.push(coalesce_line(std::mem::take(&mut current)));
+                    current = tail;
+                    let lead = current.iter().take_while(|(ch, _)| *ch == ' ').count();
+                    if lead > 0 {
+                        current.drain(0..lead);
+                    }
+                    current_width = current.iter().map(|(ch, _)| ch.width().unwrap_or(0)).sum();
+                    break_at = current.iter().rposition(|(ch, _)| *ch == ' ');
+                } else {
+                    trim_trailing_space(&mut current);
+                    lines.push(coalesce_line(std::mem::take(&mut current)));
+                    current_width = 0;
+                }
+            }
+            if ch == ' ' {
+                break_at = Some(current.len());
+            }
+            current.push((ch, *style));
+            current_width += ch_width;
+        }
+    }
+    trim_trailing_space(&mut current);
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(coalesce_line(current));
+    }
+    lines
+}
+
+fn trim_trailing_space(line: &mut Vec<(char, Style)>) {
+    while line.last().is_some_and(|(ch, _)| ch.is_whitespace()) {
+        line.pop();
+    }
+}
+
+fn coalesce_line(line: Vec<(char, Style)>) -> Vec<(String, Style)> {
+    let mut out: Vec<(String, Style)> = Vec::new();
+    for (ch, style) in line {
+        if let Some((text, last_style)) = out.last_mut() {
+            if *last_style == style {
+                text.push(ch);
+                continue;
+            }
+        }
+        out.push((ch.to_string(), style));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1423,6 +2014,91 @@ mod tests {
     fn wrapping_splits_long_words_and_keeps_blank_lines() {
         assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
         assert_eq!(wrap("one\n\ntwo", 10), vec!["one", "", "two"]);
+    }
+
+    fn plain(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn markdown_renders_emphasis_code_and_lists() {
+        let lines = markdown_lines("**Bold** and `code` and *soft*\n\n1. first\n2. second", 60);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Bold and code and soft")),
+            "{text:?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("**") || line.contains('`')),
+            "{text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("1. first")),
+            "{text:?}"
+        );
+        let bold = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "Bold")
+            .expect("bold span");
+        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+        let code = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "code")
+            .expect("code span");
+        assert_eq!(code.style.fg, Some(CODE));
+    }
+
+    #[test]
+    fn markdown_renders_headings_quotes_and_fenced_code() {
+        let lines = markdown_lines("# Title\n> quoted\n```rust\nfn main() {}\n```", 40);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        assert!(text.iter().any(|line| line == "Title"), "{text:?}");
+        assert!(
+            text.iter().any(|line| line.contains("│ quoted")),
+            "{text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("│ fn main() {}")),
+            "{text:?}"
+        );
+        assert!(!text.iter().any(|line| line.contains("```")), "{text:?}");
+    }
+
+    #[test]
+    fn markdown_renders_links_and_keeps_snake_case() {
+        let lines = markdown_lines("[docs](https://example.test/x) and snake_case_name", 80);
+        let text = lines.iter().map(plain).collect::<Vec<_>>().join(" ");
+        assert!(text.contains("docs (https://example.test/x)"), "{text}");
+        assert!(text.contains("snake_case_name"), "{text}");
+    }
+
+    #[test]
+    fn markdown_renders_tables_without_separator_rows() {
+        let lines = markdown_lines("| a | b |\n|---|---|\n| 1 | 2 |", 40);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        assert!(text.iter().any(|line| line.contains("a  │  b")), "{text:?}");
+        assert!(text.iter().any(|line| line.contains("1  │  2")), "{text:?}");
+        assert!(!text.iter().any(|line| line.contains("---")), "{text:?}");
+    }
+
+    #[test]
+    fn markdown_keeps_styled_lines_within_width() {
+        let lines = markdown_lines(
+            "**The quick brown fox jumps over the lazy dog** and `code_span` continues",
+            16,
+        );
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert!(line.width() <= 16, "{}: {line:?}", line.width());
+        }
     }
 
     #[test]

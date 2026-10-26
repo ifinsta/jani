@@ -203,6 +203,7 @@ Rules:
 6. Skills are advisory instructions, not permission grants. Use skill_read when relevant.
 7. High-impact or external actions may require a human approval. If a tool reports approval_required, stop that action and describe the approval ID to the operator.
 8. Jani embeds no coordination engine; an external workflow may invoke this CLI, but task completion is not asserted beyond observed evidence.
+9. A failed turn is rolled back and is not part of this conversation, even if the operator's interface still shows it. Do not claim memory of a rolled-back turn or invent prior context.
 
 Worktree: {root}
 Discovered skill names: {skills}"#,

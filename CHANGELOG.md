@@ -3,7 +3,7 @@ id: JANI-GOV-002
 title: "Changelog"
 status: implemented-partial
 owner: project
-version: 1.2.1
+version: 1.2.2
 last-reviewed: 2026-10-26
 source:
   - README.md
@@ -32,6 +32,8 @@ This page records what changed and what it means for compatibility. It is a deve
 - `doctor` now reports the protocol and API base, the credential source, settings warnings and the compiled permission mode and rule counts.
 - Bare `jani` in a terminal now opens a full-screen interactive interface: alternate-screen transcript, multi-line input with history and slash-command completion, a frozen-authority meta line, key hints, a tip line and a status bar. It runs over the same governed session as `jani repl`; line mode remains when stdin or stdout is redirected. With redirected stdin, bare `jani` still prints help, so existing scripts are unchanged.
 - The full-screen interface suppresses the per-turn stderr run banner, which would otherwise corrupt the frame. Run identifiers remain available through `/status` and `/inspect`.
+- The full-screen interface renders assistant answers as Markdown without new dependencies: headings, emphasis, inline code, bullet and numbered lists, block quotes, rules, tables and fenced code blocks are formatted, with style-aware wrapping and a literal fallback for malformed constructs. A real-console probe serves a Markdown answer and asserts that the screen shows formatted text and no raw `**` or backticks.
+- A rolled-back turn is now explicitly marked in both interfaces: after a failed turn the transcript adds a note that the model does not retain it and that the next message continues from the last successful turn, and line mode writes the same note to stderr. The system prompt also tells the model not to claim memory of a rolled-back turn.
 - The full-screen editor is Unicode-safe, restores an in-progress draft when walking history, requires a 40x10 terminal and restores the console on exit, error or panic.
 - Added `jani repl`, an interactive session over the existing agent loop. One task ID spans the session, each prompt gets its own run ID, and authority (policy, identity, contract, write scopes, executable programs, sandbox and network) is loaded once and frozen. History is trimmed at user-turn boundaries above 256 KiB and tool output is clipped at 64,000 bytes; a failed turn rolls back to its pre-prompt checkpoint.
 - REPL slash commands are read-only: `/help`, `/status`, `/skills`, `/inspect [RUN_ID]`, `/budget`, `/approvals`, `/approval ID`, `/new`, `/exit`. None widens authority. `/approval` only attaches a request that a separate verified approver already decided, after reloading the store and rechecking tenant, task, status, expiry and separation of duties.

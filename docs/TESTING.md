@@ -75,7 +75,7 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `EnterpriseRestricted` profile on Windows | Refused; Job Object never claims filesystem/network confinement |
 | `EnterpriseRestricted` profile on Linux with bwrap available | bubblewrap plan; receipt reports filesystem and network confinement |
 | Linux and Windows builds | Toolchain gates pass on both |
-| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a fake-provider turn completes, exactly one request carries no API key, exit 0 and `PROBE_RESULT=PASS` |
+| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a fake-provider Markdown answer renders formatted (bullets, no raw `**` or backticks), exactly one request carries no API key, exit 0 and `PROBE_RESULT=PASS` |
 
 The console probe is a manual Windows trial, not a CI gate. It proves the
 rendered buffer in a real console, but not a terminal emulator: resize, paste,

@@ -102,6 +102,11 @@ fn run_loop<R: BufRead, O: Write, E: Write>(
             }
             Err(error) => {
                 writeln!(err, "jani: {error}").map_err(io_error)?;
+                writeln!(
+                    err,
+                    "note: this turn was rolled back and is not in model context"
+                )
+                .map_err(io_error)?;
             }
         }
         report_pending_approvals(agent, err)?;

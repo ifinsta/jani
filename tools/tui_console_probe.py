@@ -224,7 +224,11 @@ class FakeProvider(BaseHTTPRequestHandler):
                     {
                         "message": {
                             "role": "assistant",
-                            "content": "Hello from the fake provider.",
+                            "content": (
+                                "**Hello** from the `fake` provider.\n\n"
+                                "- alpha item\n"
+                                "- beta item"
+                            ),
                         }
                     }
                 ],
@@ -351,6 +355,8 @@ def main():
         print("--- answer screen ---")
         print(answer)
         print("answer_rendered:", "Hello from the fake provider." in answer)
+        print("markdown_list_rendered:", "• alpha item" in answer and "• beta item" in answer)
+        print("no_raw_markdown:", "**" not in answer and "`" not in answer)
         print("turn_counted:", "1 turn " in answer or "1 turn" in answer)
         print("provider_requests:", len(FakeProvider.captured))
         print(
@@ -376,6 +382,10 @@ def main():
             and permissions_loaded
             and "working" in busy
             and "Hello from the fake provider." in answer
+            and "• alpha item" in answer
+            and "• beta item" in answer
+            and "**" not in answer
+            and "`" not in answer
             and "1 turn" in answer
             and len(FakeProvider.captured) == 1
             and all("probe-secret-key" not in body for body in FakeProvider.captured)

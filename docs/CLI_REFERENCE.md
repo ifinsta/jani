@@ -3,8 +3,8 @@ id: JANI-OPS-004
 title: "Command-line reference"
 status: implemented-partial
 owner: backend/server
-version: 1.2.0
-last-reviewed: 2026-10-25
+version: 1.2.1
+last-reviewed: 2026-10-26
 source:
   - backend/core/src/config.rs
   - backend/server/src/repl.rs
@@ -50,7 +50,7 @@ See [Configuration reference](CONFIGURATION_REFERENCE.md) for the schema and [th
 - One task ID spans the session; every prompt typed in the session gets its own run ID and journal entry. A prompt argument or `--run` on the command line is rejected because those belong to `run`.
 - Policy, identity, contract, worktree, write scopes, executable programs, sandbox profile and network policy are loaded once. Slash commands cannot widen them; restart Jani to change authority.
 - History is retained and trimmed at user-turn boundaries when it exceeds 256 KiB, always keeping the system prompt and the newest turn. Tool output is clipped at 64,000 bytes.
-- A failed turn rolls the conversation back to the checkpoint taken before that prompt, so a partial tool call cannot poison later turns.
+- A failed turn rolls the conversation back to the checkpoint taken before that prompt, so a partial tool call cannot poison later turns. The rolled-back prompt and any partial tool results are not model context: the next prompt continues from the last successful turn, and the interface says so. History itself is process-local and is not persisted across restarts.
 - With redirected or piped stdin, `jani repl` warns that stdin is not a terminal and reads commands until EOF. Answers go to stdout; the banner and `jani> ` prompt go to stderr.
 
 When **both** stdin and stdout are terminals, the session runs as a full-screen terminal interface: an alternate-screen workspace with the conversation transcript, a multi-line input box, a frozen-authority meta line, key hints, a rotating tip and a status bar. Rendering requires a terminal of at least 40x10; smaller windows show a resize message instead of a clipped layout. A terminal emulator is not required for correctness: if either stream is redirected, Jani falls back to line mode with a warning, so pipes and existing automation keep working.
@@ -70,7 +70,7 @@ Keys in the full-screen interface:
 | `Ctrl+C` | Clear a non-empty input, or exit on an empty input; during a turn it exits after that turn |
 | `Ctrl+D` | Exit when the input is empty |
 
-The interface never decides an approval and never prints provider credentials. The per-turn run banner that line mode writes to stderr is suppressed in full-screen mode so it cannot corrupt the frame; the same run identity is available through `/status` and `/inspect`. Text that the model streams is not rendered incrementally; each turn appears when it completes, with a spinner and hint while the turn is running.
+The interface never decides an approval and never prints provider credentials. The per-turn run banner that line mode writes to stderr is suppressed in full-screen mode so it cannot corrupt the frame; the same run identity is available through `/status` and `/inspect`. Assistant answers are rendered as Markdown: headings, bold and italic, inline code, bullet and numbered lists, block quotes, rules, tables and fenced code blocks are formatted, and the raw markers are not shown. Rendering is style-aware for wrapping and falls back to literal text for malformed constructs. Text that the model streams is not rendered incrementally; each turn appears when it completes, with a spinner and hint while the turn is running.
 
 Slash commands are read-only with respect to authority:
 
