@@ -353,11 +353,14 @@ Discovered skill names: {skills}"#,
     ) -> JResult<String> {
         // A failed turn must not leave a dangling assistant tool call in the
         // conversation, or the next provider request would be invalid.
-        let checkpoint = self.messages.len();
+        // An index is unsafe here: trim_messages() can remove earlier turns.
+        // Preserve the exact prior context so even a failure after trimming
+        // cannot retain a dangling tool call or an aborted user prompt.
+        let checkpoint = self.messages.clone();
         let mut events = events;
         let result = self.run_turn_inner(cfg, catalog, prompt, announce, &mut events, cancelled);
         if result.is_err() {
-            self.messages.truncate(checkpoint);
+            self.messages = checkpoint;
         }
         result
     }
@@ -874,6 +877,32 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn failed_turn_restores_exact_context_even_after_history_trimming() {
+        let root = workspace();
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        cfg.api_key = None;
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        for index in 0..9 {
+            agent.session.messages.push(json!({
+                "role": "user", "content": format!("old-{index}-{}", "x".repeat(18_000))
+            }));
+            agent.session.messages.push(json!({
+                "role": "assistant", "content": "ok"
+            }));
+        }
+        let before = agent.session.messages.clone();
+        let cancellation = AtomicBool::new(true);
+        let mut sink = |_event: TurnEvent| {};
+        let result = agent.run_turn_events_with_cancel("new-failed-turn", &mut sink, &cancellation);
+        assert!(result.is_err());
+        assert_eq!(agent.session.messages, before);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
