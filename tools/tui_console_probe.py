@@ -528,6 +528,9 @@ def main():
         for _ in range(8):
             wheel(stdin_handle, 40, 10, 120)
             time.sleep(0.05)
+        # The app drains one record per animation tick, so wait for the effect of
+        # the whole burst instead of settling on the first frame that matches.
+        wait_for(width, height, "▸ think", timeout=10.0)
         scrolled = stable_screen(width, height, "Jani v0.1.0", timeout=10.0)
         print("--- wheel up ---")
         print(scrolled)
