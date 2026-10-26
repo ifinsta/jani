@@ -1,5 +1,13 @@
 # Testing and acceptance plan
 
+## Pending first-run terminal gate (new source, unverified)
+
+The new F1–F4 shortcut suite in `backend/server/src/tui.rs` must prove shortcuts draft but do not send model requests, overwrite an existing draft, enable writes or act while busy. Its 80x24 rendering test checks every shortcut is visible. The updated Windows console probe sends a real F1 keyboard record and checks that text appears without a provider request, then clears it before starting the existing fake-provider flow.
+
+A release candidate must pass: `cargo fmt --all -- --check`, full workspace clippy/tests, `python tools/doccheck.py`, `cargo run -p jani-claims -- check`, `cargo build --locked --release -p jani`, and the Windows `tools/tui_console_probe.py` against **the new binary**. Independently inspect 40x10 and 120x40 terminal layouts and verify that `profile trusted-dev` is not mistaken for actual OS isolation.
+
+The baseline counts below predate this slice. Do not increase passing test counts until the new runs execute.
+
 ## Verification gates
 
 ```bash
