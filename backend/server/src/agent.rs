@@ -6,7 +6,7 @@ use crate::data::Governance;
 use crate::gateway::ModelGateway;
 use crate::identity::{self, VerifiedIdentity};
 use crate::journal::{self, EventInput, Journal};
-use crate::model::specs;
+use crate::model::{specs, ModelDelta};
 use crate::plugins::PluginRegistry;
 use crate::policy::{contract_matches_identity, effective_limits, PolicyEngine};
 use crate::process::truncate;
@@ -74,6 +74,63 @@ fn trim_messages(messages: &mut Vec<Value>, limit: usize) {
             break;
         }
         messages.drain(1..boundaries[1]);
+    }
+}
+
+/// Live progress emitted while a turn runs. Rendered chunks have already passed
+/// output inspection, so a UI can display them without re-checking secrets.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TurnEvent {
+    Step {
+        step: usize,
+        max_steps: usize,
+    },
+    ToolStarted {
+        name: String,
+        activity: String,
+    },
+    ToolFinished {
+        name: String,
+        activity: String,
+        ok: bool,
+    },
+    Text(String),
+    Reasoning(String),
+}
+
+fn tool_activity(name: &str, params: &Value) -> String {
+    let field = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
+    match name {
+        "workspace_read" => format!("reading {}", field("path")),
+        "workspace_write" => format!("writing {}", field("path")),
+        "workspace_list" => format!("listing {}", field("directory")),
+        "skill_read" => format!("reading skill {}", field("name")),
+        "workspace_command" => {
+            let argv = params
+                .get("argv")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            if argv.is_empty() {
+                "running a command".into()
+            } else {
+                format!("running {argv}")
+            }
+        }
+        "native_tool" => {
+            let tool = field("tool");
+            match field("operation") {
+                "" => format!("calling native {tool}"),
+                operation => format!("calling native {tool}.{operation}"),
+            }
+        }
+        other => format!("calling {other}"),
     }
 }
 
@@ -248,11 +305,13 @@ Discovered skill names: {skills}"#,
         catalog: &Catalog,
         prompt: &str,
         announce: bool,
+        events: Option<&mut dyn FnMut(TurnEvent)>,
     ) -> JResult<String> {
         // A failed turn must not leave a dangling assistant tool call in the
         // conversation, or the next provider request would be invalid.
         let checkpoint = self.messages.len();
-        let result = self.run_turn_inner(cfg, catalog, prompt, announce);
+        let mut events = events;
+        let result = self.run_turn_inner(cfg, catalog, prompt, announce, &mut events);
         if result.is_err() {
             self.messages.truncate(checkpoint);
         }
@@ -265,6 +324,7 @@ Discovered skill names: {skills}"#,
         catalog: &Catalog,
         prompt: &str,
         announce: bool,
+        events: &mut Option<&mut dyn FnMut(TurnEvent)>,
     ) -> JResult<String> {
         let run_id = if self.run_seq == 0 {
             cfg.run_id.clone().unwrap_or_else(|| new_id("run"))
@@ -300,9 +360,33 @@ Discovered skill names: {skills}"#,
         let gateway = ModelGateway::new(cfg, &self.governance)?;
         let tool_defs = specs();
 
-        for _step in 0..cfg.max_steps {
+        for step in 0..cfg.max_steps {
             trim_messages(&mut self.messages, MAX_HISTORY_BYTES);
-            let assistant = match gateway.complete(&self.messages, &tool_defs, &mut self.budget) {
+            if let Some(sink) = events.as_mut() {
+                sink(TurnEvent::Step {
+                    step: step + 1,
+                    max_steps: cfg.max_steps,
+                });
+            }
+            let assistant = match events.as_mut() {
+                Some(sink) => {
+                    let mut forward = |delta: ModelDelta| {
+                        sink(match delta {
+                            ModelDelta::Text(chunk) => TurnEvent::Text(chunk),
+                            ModelDelta::Reasoning(chunk) => TurnEvent::Reasoning(chunk),
+                        });
+                        Ok(())
+                    };
+                    gateway.complete_streaming(
+                        &self.messages,
+                        &tool_defs,
+                        &mut self.budget,
+                        &mut forward,
+                    )
+                }
+                None => gateway.complete(&self.messages, &tool_defs, &mut self.budget),
+            };
+            let assistant = match assistant {
                 Ok(message) => message,
                 Err(error) => {
                     let _ =
@@ -343,7 +427,21 @@ Discovered skill names: {skills}"#,
                     .pointer("/function/arguments")
                     .and_then(Value::as_str)
                     .unwrap_or("{}");
-                let response = match serde_json::from_str::<Value>(raw) {
+                let parsed = serde_json::from_str::<Value>(raw);
+                let activity = match parsed.as_ref() {
+                    Ok(params) => self
+                        .governance
+                        .inspect_model_output(&tool_activity(name, params), "tool-activity")
+                        .unwrap_or_else(|_| format!("calling {name}")),
+                    Err(_) => format!("calling {name}"),
+                };
+                if let Some(sink) = events.as_mut() {
+                    sink(TurnEvent::ToolStarted {
+                        name: name.to_string(),
+                        activity: activity.clone(),
+                    });
+                }
+                let response = match parsed {
                     Ok(params) => {
                         let invocation_id = new_id("inv");
                         let mut broker = Broker {
@@ -369,6 +467,13 @@ Discovered skill names: {skills}"#,
                         json!({"status":"denied","error":format!("invalid tool arguments: {error}")})
                     }
                 };
+                if let Some(sink) = events.as_mut() {
+                    sink(TurnEvent::ToolFinished {
+                        name: name.to_string(),
+                        activity,
+                        ok: response.get("status").and_then(Value::as_str) == Some("ok"),
+                    });
+                }
                 self.messages.push(json!({
                     "role": "tool",
                     "tool_call_id": id,
@@ -402,16 +507,22 @@ impl<'a> Agent<'a> {
         self.run_turn_with(prompt, true)
     }
 
-    /// Full-screen UIs own the console, so a raw stderr banner would corrupt the
-    /// frame. The same run identity is available through `/status` and `/inspect`.
-    pub fn run_turn_quiet(&mut self, prompt: &str) -> JResult<String> {
-        self.run_turn_with(prompt, false)
+    /// Runs a turn while forwarding inspected answer previews and tool activity.
+    pub fn run_turn_events(
+        &mut self,
+        prompt: &str,
+        events: &mut dyn FnMut(TurnEvent),
+    ) -> JResult<String> {
+        let cfg = self.cfg;
+        let catalog = self.catalog;
+        self.session
+            .run_turn(cfg, catalog, prompt, false, Some(events))
     }
 
     fn run_turn_with(&mut self, prompt: &str, announce: bool) -> JResult<String> {
         let cfg = self.cfg;
         let catalog = self.catalog;
-        self.session.run_turn(cfg, catalog, prompt, announce)
+        self.session.run_turn(cfg, catalog, prompt, announce, None)
     }
 
     pub fn task_id(&self) -> &str {
@@ -600,6 +711,32 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn tool_activity_describes_the_action_in_progress() {
+        assert_eq!(
+            tool_activity("workspace_read", &json!({"path": "src/main.rs"})),
+            "reading src/main.rs"
+        );
+        assert_eq!(
+            tool_activity("workspace_list", &json!({"directory": "."})),
+            "listing ."
+        );
+        assert_eq!(
+            tool_activity(
+                "workspace_command",
+                &json!({"argv": ["cargo", "test"], "timeout_secs": 30})
+            ),
+            "running cargo test"
+        );
+        assert_eq!(
+            tool_activity(
+                "native_tool",
+                &json!({"tool": "context", "operation": "pack", "args": []})
+            ),
+            "calling native context.pack"
+        );
     }
 
     #[test]

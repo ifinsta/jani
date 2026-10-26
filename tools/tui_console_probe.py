@@ -213,33 +213,69 @@ def type_text(handle, text):
 class FakeProvider(BaseHTTPRequestHandler):
     captured = []
 
+    def send_sse(self, payload):
+        self.wfile.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n")
+        self.wfile.flush()
+
     def do_POST(self):
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length)
         FakeProvider.captured.append(body.decode("utf-8", "replace"))
-        time.sleep(1.2)
-        payload = json.dumps(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": (
-                                "**Hello** from the `fake` provider.\n\n"
-                                "- alpha item\n"
-                                "- beta item"
-                            ),
-                        }
-                    }
-                ],
-                "usage": {"prompt_tokens": 11, "completion_tokens": 4},
-            }
-        ).encode()
+        first = len(FakeProvider.captured) == 1
         self.send_response(200)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(payload)))
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
         self.end_headers()
-        self.wfile.write(payload)
+        if first:
+            time.sleep(0.9)
+            self.send_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_probe",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "workspace_read",
+                                            "arguments": '{"path":"notes.txt"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            )
+            self.send_sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+            self.send_sse(
+                {"choices": [], "usage": {"prompt_tokens": 18, "completion_tokens": 6}}
+            )
+        else:
+            time.sleep(0.3)
+            self.send_sse(
+                {
+                    "choices": [
+                        {"delta": {"reasoning_content": "checking the fake provider\n"}}
+                    ]
+                }
+            )
+            for chunk in (
+                "**Hello** from the `fake` provider.\n\n",
+                "- alpha item\n",
+                "- beta item",
+            ):
+                time.sleep(0.12)
+                self.send_sse({"choices": [{"delta": {"content": chunk}}]})
+            self.send_sse(
+                {"choices": [], "usage": {"prompt_tokens": 24, "completion_tokens": 12}}
+            )
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
 
     def log_message(self, *_args):
         pass
@@ -253,6 +289,8 @@ def main():
     scratch = os.path.abspath(sys.argv[2])
     shutil.rmtree(scratch, ignore_errors=True)
     os.makedirs(os.path.join(scratch, ".jani"))
+    with open(os.path.join(scratch, "notes.txt"), "w", encoding="utf-8") as handle:
+        handle.write("probe notes\n")
     with open(os.path.join(scratch, ".jani", "settings.json"), "w", encoding="utf-8") as handle:
         json.dump(
             {
@@ -347,18 +385,31 @@ def main():
         print("permissions_loaded:", permissions_loaded)
 
         type_text(stdin_handle, "hello\r")
-        busy = wait_for(width, height, "working", timeout=3.0)
+        busy = wait_for(width, height, "step 1/", timeout=5.0)
         print("--- busy screen ---")
         print(busy)
-        print("busy_marker:", "working" in busy)
+        print("busy_live_activity:", "step 1/" in busy)
+        tool = wait_for(width, height, "reading notes.txt", timeout=15.0)
+        print("--- tool screen ---")
+        print(tool)
+        print("tool_activity_rendered:", "reading notes.txt" in tool)
         answer = stable_screen(width, height, "Hello from the fake provider.", timeout=25.0)
         print("--- answer screen ---")
         print(answer)
         print("answer_rendered:", "Hello from the fake provider." in answer)
         print("markdown_list_rendered:", "• alpha item" in answer and "• beta item" in answer)
         print("no_raw_markdown:", "**" not in answer and "`" not in answer)
+        print(
+            "reasoning_folded:",
+            "reasoning line" in answer and "checking the fake provider" not in answer,
+        )
         print("turn_counted:", "1 turn " in answer or "1 turn" in answer)
+        requests = [json.loads(body) for body in FakeProvider.captured]
         print("provider_requests:", len(FakeProvider.captured))
+        print(
+            "streaming_requested:",
+            bool(requests) and all(request.get("stream") is True for request in requests),
+        )
         print(
             "key_not_in_body:",
             all("probe-secret-key" not in body for body in FakeProvider.captured),
@@ -380,14 +431,19 @@ def main():
             and "Task:" in status
             and "USAGE:" not in status
             and permissions_loaded
-            and "working" in busy
+            and "step 1/" in busy
+            and "reading notes.txt" in tool
             and "Hello from the fake provider." in answer
             and "• alpha item" in answer
             and "• beta item" in answer
             and "**" not in answer
             and "`" not in answer
+            and "reasoning line" in answer
+            and "checking the fake provider" not in answer
             and "1 turn" in answer
-            and len(FakeProvider.captured) == 1
+            and len(FakeProvider.captured) == 2
+            and bool(requests)
+            and all(request.get("stream") is True for request in requests)
             and all("probe-secret-key" not in body for body in FakeProvider.captured)
             and code == 0
         )

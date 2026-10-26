@@ -3,7 +3,7 @@ id: JANI-GOV-002
 title: "Changelog"
 status: implemented-partial
 owner: project
-version: 1.2.2
+version: 1.3.0
 last-reviewed: 2026-10-26
 source:
   - README.md
@@ -23,6 +23,9 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- The full-screen interface now streams live turn progress instead of waiting for a complete reply. The meta line shows the current step and action, each finished tool adds a `tool` entry with a short summary such as `reading notes.txt`, the answer preview updates as inspected lines become available, and model reasoning is folded behind `Ctrl+T`. OpenAI-compatible providers use `stream: true` with `stream_options.include_usage`; the Anthropic adapter streams `text_delta`, `thinking_delta` and `input_json_delta` blocks and folds thinking. Line mode keeps the non-streaming request path.
+- Streaming preserves output governance: previews are inspected before release, only complete lines are emitted, and an unterminated private-key block is withheld from its header. The final assistant message is inspected whole. An answer without newlines therefore appears when the turn completes rather than character by character, and a streaming request cannot be retried after the response headers arrive.
+- The real-console probe now serves SSE. Its fake provider returns a `workspace_read` tool call on the first request and a streamed Markdown answer with reasoning on the second; the probe asserts the live step, the rendered tool activity, formatted bullets, folded reasoning, exactly two key-free streaming requests and exit 0.
 - Staged Sentinel native hardening for read-only Linux journald/file collection, per-source coverage, bounded persistent spooling, operator mTLS enrollment and revocation, normalized central metrics/logs/incidents, data retention and supervised systemd pilot templates. Source and tests are not a production-certified release.
 - Settings now fall back to a user-wide file: Jani reads `--settings` / `JANI_SETTINGS` when given, then `<worktree>/.jani/settings.json`, then `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows). Only the first file found is used; files are not merged. `JANI_USER_SETTINGS` overrides the user-wide path. A malformed or explicitly named missing file still fails closed, and integration tests point `JANI_USER_SETTINGS` at a nonexistent path so a developer's personal settings cannot change test behavior.
 - `.jani/settings.json` now follows Claude Code conventions: optional `$schema`, a top-level `model` selector that is a profile name or a raw model ID, per-profile `protocol` and `maxOutputTokens`, and a `permissions` block with `defaultMode`, `allow`, `ask` and `deny`. The legacy `defaultModel` remains accepted.

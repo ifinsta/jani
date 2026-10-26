@@ -3,7 +3,7 @@ id: JANI-OPS-004
 title: "Command-line reference"
 status: implemented-partial
 owner: backend/server
-version: 1.2.1
+version: 1.3.0
 last-reviewed: 2026-10-26
 source:
   - backend/core/src/config.rs
@@ -64,13 +64,18 @@ Keys in the full-screen interface:
 | `Up` / `Down` | Walk input history; the in-progress draft is restored when you return |
 | `Left` / `Right`, `Home` / `End` | Move the cursor; `Ctrl+A` / `Ctrl+E` jump to the ends |
 | `Backspace` / `Delete` | Edit by Unicode scalar, not byte |
-| `PgUp` / `PgDn` | Scroll the transcript |
+| `PgUp` / `PgDn` | Scroll the transcript; scrolling up pauses follow mode until you return to the bottom |
+| `Ctrl+T` | Show or hide model reasoning; reasoning is folded by default |
 | `Esc` | Clear the input |
 | `Ctrl+U` | Clear the input before the cursor |
 | `Ctrl+C` | Clear a non-empty input, or exit on an empty input; during a turn it exits after that turn |
 | `Ctrl+D` | Exit when the input is empty |
 
-The interface never decides an approval and never prints provider credentials. The per-turn run banner that line mode writes to stderr is suppressed in full-screen mode so it cannot corrupt the frame; the same run identity is available through `/status` and `/inspect`. Assistant answers are rendered as Markdown: headings, bold and italic, inline code, bullet and numbered lists, block quotes, rules, tables and fenced code blocks are formatted, and the raw markers are not shown. Rendering is style-aware for wrapping and falls back to literal text for malformed constructs. Text that the model streams is not rendered incrementally; each turn appears when it completes, with a spinner and hint while the turn is running.
+The interface never decides an approval and never prints provider credentials. The per-turn run banner that line mode writes to stderr is suppressed in full-screen mode so it cannot corrupt the frame; the same run identity is available through `/status` and `/inspect`. Assistant answers are rendered as Markdown: headings, bold and italic, inline code, bullet and numbered lists, block quotes, rules, tables and fenced code blocks are formatted, and the raw markers are not shown. Rendering is style-aware for wrapping and falls back to literal text for malformed constructs.
+
+While a turn runs, the interface streams progress. The meta line shows the current step and action, each finished tool adds a `tool` entry with a short summary (for example `reading notes.txt`), and the answer preview is rendered as Markdown as it arrives. Model reasoning, when the provider emits it, is folded into a one-line summary; `Ctrl+T` expands or hides it. Transcript follow mode stays pinned to the newest content unless you scroll up with `PgUp`; `PgDn` returns to the bottom.
+
+Streaming keeps the same output inspection as non-streaming turns: preview text is inspected before it is shown, only complete lines are released, and an unterminated private-key block is withheld from its header. As a consequence, an answer with no newlines appears only when the turn completes, and a streaming request cannot be retried after the provider has sent response headers. Providers must support SSE streaming; line mode uses the non-streaming request path.
 
 Slash commands are read-only with respect to authority:
 

@@ -14,19 +14,23 @@ The workspace root lists `backend/server` under `default-members`, so the
 
 Expected automated coverage in this build:
 
-- 147 unit tests across config, policy, identity, data, broker, journal, approvals,
+- 178 unit tests across config, policy, identity, data, broker, journal, approvals,
   budget, sandbox, process, workspace, skills, schema, plugins, project settings,
-  Claude-style permission matching, model transport, native tools, mirror reports,
-  the interactive terminal editor and renderer, and the check/claims tooling.
-- 23 CLI and integration tests: 14 CLI tests including the shipped work-contract
+  Claude-style permission matching, model transport and SSE assembly, streaming
+  output inspection, native tools, mirror reports, the interactive terminal
+  editor, live turn state and renderer, and the check/claims tooling.
+- 24 CLI and integration tests: 17 CLI tests including the shipped work-contract
   example, settings precedence, inline-credential redaction, profile credential
   binding, top-level `model` selection, `permissions` diagnostics, the guarantee
   that `--version`/`--help` need no provider credentials and the interactive
-  default, plus MCP gateway, mirror CLI, native tool and end-to-end suites.
+  default, plus MCP gateway, mirror CLI and native tool suites.
 - Broker tests prove settings `deny`, `ask` and allowlists narrow contract and
   policy decisions; plan mode blocks writes and commands while allowing reads.
-- Anthropic transport is verified by request and response translation fixtures.
-  It has not been exercised against a live Anthropic endpoint.
+- Streaming tests cover OpenAI text/reasoning/tool-call fragments and usage,
+  Anthropic text/thinking/tool-input blocks, stream errors, line-buffered
+  preview release, private-key withholding and preview-prefix refusal. The
+  Anthropic transport is verified by request and response translation fixtures.
+  Neither provider has been exercised against a live endpoint.
 - 2 end-to-end tests that start a fake OpenAI-compatible provider and run the real
   CLI through policy, gateway, broker, audit and budget accounting. One covers
   conversation continuity across two turns in one task.
@@ -75,12 +79,13 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `EnterpriseRestricted` profile on Windows | Refused; Job Object never claims filesystem/network confinement |
 | `EnterpriseRestricted` profile on Linux with bwrap available | bubblewrap plan; receipt reports filesystem and network confinement |
 | Linux and Windows builds | Toolchain gates pass on both |
-| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a fake-provider Markdown answer renders formatted (bullets, no raw `**` or backticks), exactly one request carries no API key, exit 0 and `PROBE_RESULT=PASS` |
+| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a live step and the `reading notes.txt` tool entry appear, a fake-provider SSE answer renders as Markdown (bullets, no raw `**` or backticks) with reasoning folded, exactly two streaming requests carry no API key, exit 0 and `PROBE_RESULT=PASS` |
 
 The console probe is a manual Windows trial, not a CI gate. It proves the
 rendered buffer in a real console, but not a terminal emulator: resize, paste,
-scrollback, color fidelity and Ctrl+C during a turn remain manual, and no
-full-screen run has been performed on Linux or macOS.
+scrollback, color fidelity, Ctrl+C during a turn and streaming behavior in a
+terminal emulator remain manual, and no full-screen run has been performed on
+Linux or macOS.
 
 ## Signed-file trials
 

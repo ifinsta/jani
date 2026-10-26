@@ -3,8 +3,8 @@ id: JANI-AGENT-001
 title: "Agent lifecycle contract"
 status: implemented-partial
 owner: backend/server
-version: 1.1.0
-last-reviewed: 2026-10-25
+version: 1.2.0
+last-reviewed: 2026-10-26
 source:
   - backend/server/src/attention.rs
   - backend/server/src/agent.rs
@@ -27,7 +27,7 @@ Agent attention state, execution state and task acceptance are distinct. Receivi
 - Alert acceptance is triage evidence only, not proof a model resumed or a task was fulfilled.
 ## Session continuation
 - `jani repl`, or bare `jani` when stdin is a terminal, keeps conversation history in process across turns under one task ID, with one run ID per turn. Authority is loaded once at session start and cannot be widened by a slash command.
-- With both streams attached to a terminal, the session presents a full-screen interface; the model turn runs on a scoped thread while the interface keeps accepting edits and scroll commands. Presentation is the only difference: the same agent session, policy, approvals and journal calls run underneath, and redirected streams fall back to the line prompt.
+- With both streams attached to a terminal, the session presents a full-screen interface; the model turn runs on a scoped thread while the interface keeps accepting edits and scroll commands. Turn progress is forwarded as events: step changes, tool start and finish with a human summary, and inspected answer and reasoning previews. The session only previews complete inspected lines, so preview and final message keep the same output governance. Presentation is the only difference: the same agent session, policy, approvals and journal calls run underneath, and redirected streams fall back to the line prompt.
 - History is bounded and trimmed at user-turn boundaries; a failed turn rolls back to its pre-prompt checkpoint. No conversation state is persisted, so a restart begins fresh.
 
 ## Not implemented

@@ -1,4 +1,4 @@
-use crate::agent::Agent;
+use crate::agent::{Agent, TurnEvent};
 use crate::config::{Config, JResult};
 use crate::repl::{execute_command, Flow, COMMAND_NAMES};
 use crate::skills::Catalog;
@@ -20,6 +20,7 @@ use ratatui::{Frame, Terminal};
 use serde_json::Value;
 use std::io::{self, IsTerminal, Stdout};
 use std::panic;
+use std::sync::mpsc;
 use std::time::Duration;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -223,13 +224,26 @@ fn run_turn(
     prompt: String,
 ) -> JResult<()> {
     let mut outcome: Option<JResult<String>> = None;
+    let (tx, rx) = mpsc::channel::<TurnEvent>();
+    state.live = Some(LiveTurn::default());
     std::thread::scope(|scope| -> JResult<()> {
-        let handle = scope.spawn(|| agent.run_turn_quiet(&prompt));
+        let handle = scope.spawn(|| {
+            let mut send = |event: TurnEvent| {
+                let _ = tx.send(event);
+            };
+            agent.run_turn_events(&prompt, &mut send)
+        });
         loop {
+            while let Ok(event) = rx.try_recv() {
+                state.apply(event);
+            }
             draw_screen(terminal, state)?;
             set_cursor_visible(false);
             state.spinner = state.spinner.wrapping_add(1);
             if handle.is_finished() {
+                while let Ok(event) = rx.try_recv() {
+                    state.apply(event);
+                }
                 break;
             }
             if event::poll(Duration::from_millis(120)).map_err(io_error)? {
@@ -254,8 +268,14 @@ fn run_turn(
         Ok(())
     })?;
 
+    let live = state.live.take().unwrap_or_default();
     match outcome.expect("turn outcome") {
-        Ok(answer) => state.push(Entry::new(Kind::Assistant, answer.trim_end())),
+        Ok(answer) => {
+            if !live.reasoning.trim().is_empty() {
+                state.push(Entry::new(Kind::Reasoning, live.reasoning));
+            }
+            state.push(Entry::new(Kind::Assistant, answer.trim_end()));
+        }
         Err(error) => {
             state.push(Entry::new(Kind::Error, format!("jani: {error}")));
             state.push(Entry::new(
@@ -272,6 +292,10 @@ fn run_turn(
 }
 
 fn editor_key(state: &mut State, key: KeyEvent) {
+    if is_ctrl(&key, 't') {
+        state.reasoning_open = !state.reasoning_open;
+        return;
+    }
     let editor = &mut state.editor;
     match key.code {
         KeyCode::Left => editor.left(),
@@ -364,6 +388,8 @@ struct State {
     meta: Meta,
     entries: Vec<Entry>,
     editor: Editor,
+    live: Option<LiveTurn>,
+    reasoning_open: bool,
     scroll_top: usize,
     follow: bool,
     busy: bool,
@@ -375,12 +401,21 @@ struct State {
     quit: bool,
 }
 
+#[derive(Default)]
+struct LiveTurn {
+    activity: String,
+    answer: String,
+    reasoning: String,
+}
+
 impl State {
     fn new(meta: Meta, turns: u64, pending: usize) -> Self {
         Self {
             meta,
             entries: Vec::new(),
             editor: Editor::default(),
+            live: None,
+            reasoning_open: false,
             scroll_top: 0,
             follow: true,
             busy: false,
@@ -395,6 +430,37 @@ impl State {
 
     fn push(&mut self, entry: Entry) {
         self.entries.push(entry);
+    }
+
+    fn apply(&mut self, event: TurnEvent) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        match event {
+            TurnEvent::Step { step, max_steps } => {
+                live.activity = format!("step {step}/{max_steps}");
+            }
+            TurnEvent::ToolStarted { activity, .. } => live.activity = activity,
+            TurnEvent::ToolFinished { activity, ok, .. } => {
+                live.activity = "thinking".into();
+                let text = if ok {
+                    activity
+                } else {
+                    format!("{activity} (failed)")
+                };
+                self.entries.push(Entry::new(Kind::Tool, text));
+            }
+            TurnEvent::Text(chunk) => {
+                live.activity = "writing answer".into();
+                live.answer.push_str(&chunk);
+            }
+            TurnEvent::Reasoning(chunk) => {
+                if live.activity != "writing answer" {
+                    live.activity = "thinking".into();
+                }
+                live.reasoning.push_str(&chunk);
+            }
+        }
     }
 
     fn sync(&mut self, agent: &mut Agent<'_>) {
@@ -440,6 +506,8 @@ enum Kind {
     Note,
     Error,
     Command,
+    Tool,
+    Reasoning,
 }
 
 impl Kind {
@@ -450,6 +518,8 @@ impl Kind {
             Self::Note => "note",
             Self::Error => "error",
             Self::Command => "command",
+            Self::Tool => "tool",
+            Self::Reasoning => "think",
         }
     }
 
@@ -460,13 +530,15 @@ impl Kind {
             Self::Note => DIM,
             Self::Error => ERROR,
             Self::Command => FAINT,
+            Self::Tool => CODE,
+            Self::Reasoning => FAINT,
         }
     }
 
     fn body_style(self) -> Style {
         match self {
             Self::User | Self::Assistant => Style::default().fg(TEXT),
-            Self::Note => Style::default().fg(DIM),
+            Self::Note | Self::Tool | Self::Reasoning => Style::default().fg(DIM),
             Self::Error => Style::default().fg(ERROR),
             Self::Command => Style::default().fg(DIM),
         }
@@ -882,38 +954,107 @@ fn draw_transcript(frame: &mut Frame, state: &mut State, area: Rect) {
 
 fn transcript_lines(state: &State, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    let body_width = width.saturating_sub(2);
     for (index, entry) in state.entries.iter().enumerate() {
         if index > 0 {
             lines.push(Line::default());
         }
-        lines.push(Line::from(Span::styled(
-            entry.kind.label(),
-            Style::default()
-                .fg(entry.kind.label_color())
-                .add_modifier(Modifier::BOLD),
-        )));
-        let body_width = width.saturating_sub(2);
-        if matches!(entry.kind, Kind::Assistant) {
-            for line in markdown_lines(&entry.text, body_width) {
-                if line.spans.is_empty() {
-                    lines.push(Line::default());
-                } else {
+        lines.push(kind_label(entry.kind));
+        match entry.kind {
+            Kind::Assistant => lines.extend(markdown_block(&entry.text, body_width)),
+            Kind::Reasoning => {
+                lines.extend(reasoning_block(
+                    &entry.text,
+                    body_width,
+                    state.reasoning_open,
+                ));
+            }
+            _ => {
+                for part in wrap(&entry.text, body_width) {
                     let mut spans = vec![Span::raw("  ")];
-                    spans.extend(line.spans);
+                    if !part.is_empty() {
+                        spans.push(Span::styled(part, entry.kind.body_style()));
+                    }
                     lines.push(Line::from(spans));
                 }
             }
-            continue;
         }
-        for part in wrap(&entry.text, body_width) {
-            let mut spans = vec![Span::raw("  ")];
-            if !part.is_empty() {
-                spans.push(Span::styled(part, entry.kind.body_style()));
+    }
+    if let Some(live) = state.live.as_ref() {
+        let has_reasoning = !live.reasoning.trim().is_empty();
+        let has_answer = !live.answer.trim().is_empty();
+        if has_reasoning || has_answer {
+            if !lines.is_empty() {
+                lines.push(Line::default());
             }
+            if has_reasoning {
+                lines.push(kind_label(Kind::Reasoning));
+                lines.extend(reasoning_block(
+                    &live.reasoning,
+                    body_width,
+                    state.reasoning_open,
+                ));
+            }
+            if has_answer {
+                if has_reasoning {
+                    lines.push(Line::default());
+                }
+                lines.push(kind_label(Kind::Assistant));
+                lines.extend(markdown_block(&live.answer, body_width));
+            }
+        }
+    }
+    lines
+}
+
+fn kind_label(kind: Kind) -> Line<'static> {
+    Line::from(Span::styled(
+        kind.label(),
+        Style::default()
+            .fg(kind.label_color())
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn markdown_block(text: &str, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for line in markdown_lines(text, width) {
+        if line.spans.is_empty() {
+            lines.push(Line::default());
+        } else {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(line.spans);
             lines.push(Line::from(spans));
         }
     }
     lines
+}
+
+fn reasoning_block(text: &str, width: usize, open: bool) -> Vec<Line<'static>> {
+    let text = text.trim_end();
+    if open {
+        let mut lines = Vec::new();
+        for part in wrap(text, width) {
+            let mut spans = vec![Span::raw("  ")];
+            if !part.is_empty() {
+                spans.push(Span::styled(
+                    part,
+                    Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        return lines;
+    }
+    let count = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+        .max(1);
+    vec![Line::from(Span::styled(
+        format!("  {count} reasoning line{} · ctrl+t to show", plural(count)),
+        Style::default().fg(FAINT),
+    ))]
 }
 
 fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
@@ -989,16 +1130,34 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
 fn meta_line(state: &State, width: usize) -> Line<'static> {
     if state.busy {
         let spinner = SPINNER[state.spinner % SPINNER.len()];
+        let activity = state
+            .live
+            .as_ref()
+            .map(|live| live.activity.as_str())
+            .filter(|activity| !activity.is_empty())
+            .unwrap_or("working");
+        let reasoning_hint = if state
+            .live
+            .as_ref()
+            .is_some_and(|live| !live.reasoning.trim().is_empty())
+        {
+            "  ctrl+t reasoning"
+        } else {
+            ""
+        };
         return Line::from(vec![
             Span::styled(
                 format!("{spinner} "),
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "working",
+                activity.to_string(),
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  ctrl+c exits after this turn", Style::default().fg(DIM)),
+            Span::styled(
+                format!("  ctrl+c exits after this turn{reasoning_hint}"),
+                Style::default().fg(DIM),
+            ),
         ]);
     }
 
@@ -1109,13 +1268,17 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
         return;
     }
     let line = if state.busy {
-        Line::from(vec![
-            Span::styled("working", Style::default().fg(ACCENT)),
-            Span::styled(
-                "  ctrl+c exits after the current turn",
-                Style::default().fg(DIM),
-            ),
-        ])
+        let mut spans = Vec::new();
+        spans.extend(key("pgup/pgdn"));
+        spans.push(Span::styled(" scroll   ", Style::default().fg(DIM)));
+        spans.extend(key("ctrl+t"));
+        spans.push(Span::styled(" reasoning   ", Style::default().fg(DIM)));
+        spans.extend(key("ctrl+c"));
+        spans.push(Span::styled(
+            " exits after the current turn",
+            Style::default().fg(DIM),
+        ));
+        Line::from(spans)
     } else if area.width < 64 {
         let mut spans = Vec::new();
         spans.extend(key("enter"));
@@ -2172,5 +2335,72 @@ mod tests {
         )
         .contains('/'));
         assert_eq!(short_task("task-1234567890abcdef"), "task-12345678");
+    }
+
+    #[test]
+    fn live_turn_shows_tools_answer_and_folded_reasoning() {
+        let mut state = State::new(meta(), 0, 0);
+        state.busy = true;
+        state.live = Some(LiveTurn::default());
+        state.apply(TurnEvent::Step {
+            step: 1,
+            max_steps: 4,
+        });
+        state.apply(TurnEvent::ToolStarted {
+            name: "workspace_read".into(),
+            activity: "reading notes.txt".into(),
+        });
+        state.apply(TurnEvent::ToolFinished {
+            name: "workspace_read".into(),
+            activity: "reading notes.txt".into(),
+            ok: true,
+        });
+        state.apply(TurnEvent::Reasoning(
+            "compare both options\npick the safer one\n".into(),
+        ));
+        state.apply(TurnEvent::Text("**Answer**\n".into()));
+
+        let text = render(&mut state, 80, 30);
+        assert!(text.contains("reading notes.txt"), "{text}");
+        assert!(text.contains("Answer"), "{text}");
+        assert!(text.contains("reasoning line"), "{text}");
+        assert!(!text.contains("compare both options"), "{text}");
+        assert!(!text.contains("**"), "{text}");
+
+        state.reasoning_open = true;
+        let text = render(&mut state, 80, 30);
+        assert!(text.contains("compare both options"), "{text}");
+        assert!(text.contains("pick the safer one"), "{text}");
+    }
+
+    #[test]
+    fn failed_tools_are_marked_in_the_transcript() {
+        let mut state = State::new(meta(), 0, 0);
+        state.live = Some(LiveTurn::default());
+        state.apply(TurnEvent::ToolFinished {
+            name: "workspace_read".into(),
+            activity: "reading missing.txt".into(),
+            ok: false,
+        });
+        assert!(state
+            .entries
+            .iter()
+            .any(|entry| entry.text == "reading missing.txt (failed)"));
+    }
+
+    #[test]
+    fn ctrl_t_toggles_reasoning_folding() {
+        let mut state = State::new(meta(), 0, 0);
+        assert!(!state.reasoning_open);
+        editor_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        assert!(state.reasoning_open);
+        editor_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        assert!(!state.reasoning_open);
     }
 }
