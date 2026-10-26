@@ -23,6 +23,8 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- Failure notices in TUI and line-mode now explicitly distinguish model-context restoration from filesystem or external effects that may survive a failed turn. This is a disclosure improvement, **not** crash recovery or automatic rollback.
+
 - Product excellence programme established with phased UX, recovery, verification, security and extension gates. README now leads with the governed engineering-agent purpose and an explicit supervised-prototype warning.
 - First-run terminal now displays four starter options (F1–F4) that only prefill read-only drafts, never execute tools. The configured sandbox is labelled a **profile**, not proof of isolation. New Rust TUI tests and an updated Windows console probe cover those behaviours; **this change has not yet passed a fresh Rust build or console probe**.
 
