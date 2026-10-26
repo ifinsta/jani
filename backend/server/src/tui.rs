@@ -47,6 +47,8 @@ const STARTER_TASKS: [(&str, &str); 4] = [
     ("Inspect test coverage", "Identify untested workflows and likely failures. Do not edit files or execute commands."),
 ];
 
+const FAILED_TURN_NOTE: &str = "Conversation context was restored to the last successful turn. Prior file or external tool effects may remain; inspect the audit journal and worktree before retrying.";
+
 const WHEEL_STEP: i32 = 3;
 const PAGE_STEP: i32 = 10;
 
@@ -358,7 +360,7 @@ fn run_turn(
             state.push(Entry::new(Kind::Error, format!("jani: {error}")));
             state.push(Entry::new(
                 Kind::Note,
-                "This turn was rolled back; the model does not retain it. The next message continues from the last successful turn.",
+                FAILED_TURN_NOTE,
             ));
         }
     }
@@ -3158,6 +3160,13 @@ mod tests {
         let text = render(&mut state, 80, 30);
         assert!(text.contains("compare both options"), "{text}");
         assert!(text.contains("pick the safer one"), "{text}");
+    }
+
+    #[test]
+    fn failure_notice_does_not_claim_filesystem_or_external_rollback() {
+        assert!(FAILED_TURN_NOTE.contains("Conversation context"));
+        assert!(FAILED_TURN_NOTE.contains("effects may remain"));
+        assert!(FAILED_TURN_NOTE.contains("audit journal"));
     }
 
     #[test]
