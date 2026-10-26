@@ -163,6 +163,7 @@ USAGE:
   jani policy check|explain [OPTIONS]
   jani audit verify [--run RUN_ID] [OPTIONS]
   jani recovery status [OPTIONS]     Read-only unreconciled-run inventory
+  jani evidence RUN_ID [OPTIONS]     Verified audit-only run receipt
   jani inspect RUN_ID [OPTIONS]
   jani approvals list|decide APPROVAL_ID --approve|--reject [OPTIONS]
   jani budget show [--task TASK_ID] [OPTIONS]
@@ -733,12 +734,12 @@ impl Config {
                         }
                     }
                 }
-                "inspect" => {
-                    cfg.command = "inspect".into();
+                "inspect" | "evidence" => {
+                    cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {
-                            cfg.positional.push(take_value(args, &mut i, "inspect")?);
+                            cfg.positional.push(take_value(args, &mut i, a)?);
                         }
                     }
                 }
