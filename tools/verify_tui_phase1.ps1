@@ -29,21 +29,21 @@ try {
     if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
         throw "Python is required for doccheck and the Windows console probe."
     }
-    if (-not $IsWindows -and $PSVersionTable.PSEdition -eq "Core") {
+    if ($PSVersionTable.PSEdition -eq "Core" -and -not $IsWindows) {
         throw "This verification script requires Windows for its terminal console probe."
     }
     # PowerShell 5.1 has no IsWindows variable; in that host, OS is Windows.
-    Invoke-Checked "cargo" @("fmt", "--all", "--", "--check")
-    Invoke-Checked "cargo" @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
-    Invoke-Checked "cargo" @("test", "--workspace", "--all-targets")
-    Invoke-Checked "cargo" @("run", "-p", "jani-check")
-    Invoke-Checked "cargo" @("run", "-p", "jani-claims", "--", "check")
-    Invoke-Checked "python" @("tools/doccheck.py")
-    Invoke-Checked "cargo" @("build", "--locked", "--release", "-p", "jani")
+    Invoke-Checked -Program "cargo" -Arguments @("fmt", "--all", "--", "--check")
+    Invoke-Checked -Program "cargo" -Arguments @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
+    Invoke-Checked -Program "cargo" -Arguments @("test", "--workspace", "--all-targets")
+    Invoke-Checked -Program "cargo" -Arguments @("run", "-p", "jani-check")
+    Invoke-Checked -Program "cargo" -Arguments @("run", "-p", "jani-claims", "--", "check")
+    Invoke-Checked -Program "python" -Arguments @("tools/doccheck.py")
+    Invoke-Checked -Program "cargo" -Arguments @("build", "--locked", "--release", "-p", "jani")
     if (-not (Test-Path $Binary -PathType Leaf)) {
         throw "Built Jani binary not found: $Binary"
     }
-    Invoke-Checked "python" @("tools/tui_console_probe.py", $Binary, $Scratch)
+    Invoke-Checked -Program "python" -Arguments @("tools/tui_console_probe.py", $Binary, $Scratch)
 
     $hash = (Get-FileHash -Path $Binary -Algorithm SHA256).Hash
     $commit = (& git rev-parse HEAD).Trim()
