@@ -75,7 +75,6 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     assert!(output.contains("\"safeToAutoReplay\": false"), "{output}");
 
     record("completed");
-    drop(record);
     drop(journal);
     let completed = invoke(&["recovery", "status"]);
     assert!(completed.status.success(), "{}", String::from_utf8_lossy(&completed.stderr));

@@ -3075,7 +3075,7 @@ mod tests {
         let message = editor.take();
         assert!(message.starts_with('/'));
         assert!(message.contains('\n'));
-        assert!(!(message.starts_with('/') && !message.contains('\n')));
+        assert!(!message.starts_with('/') || message.contains('\n'));
     }
 
     #[test]
