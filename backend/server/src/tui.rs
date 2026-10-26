@@ -1623,6 +1623,27 @@ fn transcript(state: &State, width: usize) -> Transcript {
                 out.push(kind_label(entry.kind), None);
                 out.extend(markdown_block(&entry.text, body_width), None);
             }
+            Kind::Tool => {
+                let failed = entry.text.ends_with("(failed)");
+                let color = if failed { ERROR } else { CODE };
+                let marker = if failed { "×" } else { "✓" };
+                out.push(
+                    Line::from(vec![
+                        Span::styled(format!("{marker} "), Style::default().fg(color)),
+                        Span::styled("tool", Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                    ]),
+                    None,
+                );
+                for part in wrap(&entry.text, body_width) {
+                    out.push(
+                        Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(part, Style::default().fg(if failed { ERROR } else { DIM })),
+                        ]),
+                        None,
+                    );
+                }
+            }
             other => {
                 out.push(kind_label(other), None);
                 for part in wrap(&entry.text, body_width) {
@@ -3335,6 +3356,17 @@ mod tests {
         assert!(FAILED_TURN_NOTE.contains("Conversation context"));
         assert!(FAILED_TURN_NOTE.contains("effects may remain"));
         assert!(FAILED_TURN_NOTE.contains("audit journal"));
+    }
+
+    #[test]
+    fn tool_timeline_displays_success_and_failure_distinctly() {
+        let mut state = State::new(meta(), 0, 0);
+        state.push(Entry::new(Kind::Tool, "workspace_read · reading src/main.rs"));
+        state.push(Entry::new(Kind::Tool, "workspace_write · writing denied.rs (failed)"));
+        let rendered = render(&mut state, 100, 30);
+        assert!(rendered.contains("✓ tool"), "{rendered}");
+        assert!(rendered.contains("× tool"), "{rendered}");
+        assert!(rendered.contains("writing denied.rs (failed)"), "{rendered}");
     }
 
     #[test]
