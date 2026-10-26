@@ -16,12 +16,14 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Release status
 
-- **No Git tags exist.** The workspace version in `Cargo.toml` is `0.1.0`.
-- `releases/` is a commit-based channel, not a tagged release feed. `releases/v0.1.0/` contains a Windows binary built from commit `c9e3f3b` with clean build inputs; it has not passed release acceptance.
-- This page describes commit `c9e3f3b` (2026-10-25). Later changes are listed under Unreleased.
-- Two commits have `v0.1.1` and `v0.1.2` in their subject lines. They are development markers from earlier work, not tagged or published releases. Do not cite them as versions.
+- **No Git tags exist.** The workspace version in `Cargo.toml` is `0.1.1`.
+- `releases/` is a commit-based channel, not a tagged release feed. `releases/agent/windows/v0.1.1/` contains the Windows binary built from commit `01d8e87` with clean build inputs (SHA-256 `6b1315cd…`, 9,821,696 bytes); the installed copy at `%LOCALAPPDATA%\Jani\bin\jani.exe` has the same digest. It has not passed independent release acceptance.
+- This page describes commit `01d8e87` (2026-10-27). Later documentation, probe and evidence changes are listed under Unreleased.
+- One commit has `v0.1.2` in its subject line. It is a development marker from earlier work, not a tagged or published release. Do not cite it as a version.
 
 ## Unreleased
+
+- `v0.1.1` release proof recorded in `validation/updates/2026-10-27/`: the typed artifact passed all 51 boolean console-probe checks (folded tool section with `last 3 shown`, expansion to five calls, scrollbar, palette, model picker). Real-channel evidence shows two 0.1.0 device copies upgraded to 0.1.1 with digest verification and a receipt, a repeated install that was up-to-date with no download, a watch process that started on v0.1.0 and installed v0.1.1 published while it ran over eight cycles, and update delivery over a loopback origin that replaced the installed `%LOCALAPPDATA%` client from 0.1.0 to 0.1.1 with the channel SHA-256. The live 0.1.0 session was not killed; it keeps its mapped image until restarted, and the installed bytes are already 0.1.1. The probe now derives its status-line marker from the binary's `--version` and waits for the full model-picker query, removing two hardcoded-version and settle-race failures.
 
 - Self-distributed update delivery: `jani update check|install|watch` reads the typed release channel over HTTPS (loopback HTTP is allowed for local trials), verifies the artifact's exact size and SHA-256 against the channel manifest, executes the candidate's `--version`, replaces one or more local binaries (default: the running executable) with rename-aside on Windows, and records a receipt under `<state-dir>/updates/`. Redirects, foreign platforms/targets, dirty builds, unsafe names and digest or size mismatches are refused before replacement. `watch` polls the channel and applies releases published while it runs; an unreachable origin produces an error cycle instead of an exit, and the next reachable poll installs the release. New `tools/serve_updates.py` serves `releases/` for loopback trials, and an end-to-end suite covers multi-target push, a release published mid-watch, an origin outage and recovery, replacement of the running executable with `restartRequired`, and tamper rejection. Manifests are not cryptographically signed; the HTTPS origin and manifest digest are the trust boundary.
 

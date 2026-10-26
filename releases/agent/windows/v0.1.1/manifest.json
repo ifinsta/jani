@@ -1,0 +1,22 @@
+{
+    "schemaVersion":  "jani.release/v2",
+    "type":  "agent",
+    "platform":  "windows",
+    "package":  "jani",
+    "version":  "0.1.1",
+    "tag":  "v0.1.1",
+    "commit":  "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "dirty":  false,
+    "builtAt":  "2026-10-26T23:00:18Z",
+    "artifacts":  [
+                      {
+                          "target":  "x86_64-pc-windows-msvc",
+                          "binary":  "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+                          "sha256":  "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+                          "sizeBytes":  9821696,
+                          "commit":  "01d8e873b660677abbaf88d7e2f69d783ed43299",
+                          "dirty":  false,
+                          "builtAt":  "2026-10-26T23:00:18Z"
+                      }
+                  ]
+}

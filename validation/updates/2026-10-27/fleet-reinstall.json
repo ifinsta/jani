@@ -1,0 +1,18 @@
+{
+  "command": [
+    "C:\\Users\\user\\CascadeProjects\\jani\\releases\\agent\\windows\\v0.1.1\\jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "--state-dir",
+    "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state",
+    "update",
+    "install",
+    "--source",
+    "http://127.0.0.1:55436",
+    "--to",
+    "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\device-a.exe",
+    "--to",
+    "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\device-b.exe"
+  ],
+  "exitCode": 0,
+  "stdout": "{\n  \"action\": \"install\",\n  \"artifact\": {\n    \"binary\": \"jani-0.1.1-x86_64-pc-windows-msvc.exe\",\n    \"builtAt\": \"2026-10-26T23:00:18Z\",\n    \"commit\": \"01d8e873b660677abbaf88d7e2f69d783ed43299\",\n    \"sha256\": \"6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122\",\n    \"sizeBytes\": 9821696,\n    \"target\": \"x86_64-pc-windows-msvc\"\n  },\n  \"artifactVerified\": false,\n  \"builtAt\": \"2026-10-26T23:00:18Z\",\n  \"commit\": \"01d8e873b660677abbaf88d7e2f69d783ed43299\",\n  \"latestVersion\": \"0.1.1\",\n  \"platform\": \"windows\",\n  \"receipt\": \"C:\\\\Users\\\\user\\\\CascadeProjects\\\\jani\\\\target\\\\update-proof\\\\run\\\\state\\\\updates\\\\31584-1793055784584369900-2.json\",\n  \"schemaVersion\": \"jani.update/v1\",\n  \"source\": \"http://127.0.0.1:55436\",\n  \"status\": \"up-to-date\",\n  \"tag\": \"v0.1.1\",\n  \"target\": \"x86_64-pc-windows-msvc\",\n  \"targets\": [\n    {\n      \"currentVersion\": \"0.1.1\",\n      \"error\": null,\n      \"path\": \"C:\\\\Users\\\\user\\\\CascadeProjects\\\\jani\\\\target\\\\update-proof\\\\run\\\\device-a.exe\",\n      \"restartRequired\": false,\n      \"status\": \"up-to-date\",\n      \"updateAvailable\": false\n    },\n    {\n      \"currentVersion\": \"0.1.1\",\n      \"error\": null,\n      \"path\": \"C:\\\\Users\\\\user\\\\CascadeProjects\\\\jani\\\\target\\\\update-proof\\\\run\\\\device-b.exe\",\n      \"restartRequired\": false,\n      \"status\": \"up-to-date\",\n      \"updateAvailable\": false\n    }\n  ]\n}\n",
+  "stderr": ""
+}

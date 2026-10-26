@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "jani.install-proof/v1",
+  "date": "2026-10-27",
+  "path": "C:\\Users\\user\\AppData\\Local\\Jani\\bin\\jani.exe",
+  "before": {
+    "version": "0.1.0",
+    "sha256": "5d61c924f5e5cbfca527a1217d8b3e4397d2249d34da1b26de8f22b9d44a0c3"
+  },
+  "after": {
+    "version": "0.1.1",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122"
+  },
+  "releaseSha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+  "delivery": "jani update install --source <loopback origin> --to C:/Users/user/AppData/Local/Jani/bin/jani.exe",
+  "artifactVerified": true,
+  "restartRequired": false,
+  "runningSessionPid": 9836,
+  "runningSessionNote": "The live 0.1.0 process was not killed; it executes the previous image until the operator restarts it. The installed bytes are 0.1.1.",
+  "backup": ".jani.exe.jani-old-36668-1793056583811328600-4"
+}

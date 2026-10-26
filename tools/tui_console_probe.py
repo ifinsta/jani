@@ -436,6 +436,14 @@ def main():
         print(__doc__)
         return 2
     binary = os.path.abspath(sys.argv[1])
+    version = subprocess.run(
+        [binary, "--version"], capture_output=True, text=True, timeout=30
+    )
+    version_lines = version.stdout.strip().splitlines()
+    if version.returncode != 0 or not version_lines or not version_lines[0].startswith("jani "):
+        print("cannot read the binary version:", version.stdout, version.stderr)
+        return 2
+    jani_version = "Jani v" + version_lines[0].removeprefix("jani ").strip()
     scratch = os.path.abspath(sys.argv[2])
     shutil.rmtree(scratch, ignore_errors=True)
     os.makedirs(os.path.join(scratch, ".jani"))
@@ -691,7 +699,7 @@ def main():
         print(overflow)
         print("scrollbar_rendered:", "║" in overflow or "█" in overflow)
         print("following_at_bottom:", "• beta item" in overflow)
-        print("earlier_block_hidden:", "Jani v0.1.0" not in overflow)
+        print("earlier_block_hidden:", jani_version not in overflow)
 
         key(stdin_handle, VK_PAGE_UP)
         keyed = stable_screen(width, height, "below the bottom", timeout=10.0)
@@ -706,11 +714,11 @@ def main():
         # The app drains one record per animation tick, so wait for the effect of
         # the whole burst instead of settling on the first frame that matches.
         wait_for(width, height, "▸ think", timeout=10.0)
-        scrolled = stable_screen(width, height, "Jani v0.1.0", timeout=10.0)
+        scrolled = stable_screen(width, height, jani_version, timeout=10.0)
         print("--- wheel up ---")
         print(scrolled)
         print("wheel_scroll_up:", "below the bottom" in scrolled and scrolled != keyed)
-        earlier = "Jani v0.1.0" in scrolled and "Any other input" not in scrolled
+        earlier = jani_version in scrolled and "Any other input" not in scrolled
         print("earlier_content_visible:", earlier)
         fold_row = row_of(scrolled, "▸ think")
         if fold_row < 0:
@@ -737,7 +745,7 @@ def main():
         print("--- wheel down ---")
         print(resumed)
         print("wheel_resume_follow:", "below the bottom" not in resumed)
-        print("back_at_bottom:", "Any other input" in resumed and "Jani v0.1.0" not in resumed)
+        print("back_at_bottom:", "Any other input" in resumed and jani_version not in resumed)
 
         # Slash palette: "/" opens a modal, the query filters it, the arrow keys
         # select, and Enter runs the highlighted command end to end.
@@ -844,7 +852,9 @@ def main():
         type_text(stdin_handle, "/model ")
         stable_screen(width, height, "enter switch", timeout=10.0)
         type_text(stdin_handle, "custom-probe-model")
-        custom_picker = stable_screen(width, height, "use as a model ID", timeout=10.0)
+        custom_picker = stable_screen(
+            width, height, "model · custom-probe-model", timeout=10.0
+        )
         print("--- custom model row ---")
         print(custom_picker)
         custom_body = palette_body(
@@ -916,16 +926,16 @@ def main():
             and FakeProvider.captured[1].count("call_probe_") >= 5
             and ("║" in overflow or "█" in overflow)
             and "• beta item" in overflow
-            and "Jani v0.1.0" not in overflow
+            and jani_version not in overflow
             and "below the bottom" in keyed
             and "below the bottom" in scrolled
             and scrolled != keyed
-            and "Jani v0.1.0" in scrolled
+            and jani_version in scrolled
             and "Any other input" not in scrolled
             and click_expanded
             and "below the bottom" not in resumed
             and "Any other input" in resumed
-            and "Jani v0.1.0" not in resumed
+            and jani_version not in resumed
             and palette_open
             and palette_filter
             and palette_escape

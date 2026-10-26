@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "jani.update-proof/v1",
+  "date": "2026-10-27",
+  "origin": "loopback HTTP served by tools/serve_updates.py semantics",
+  "artifacts": {
+    "from": {
+      "version": "0.1.0",
+      "sha256": "35d61c924f5e5cbfca527a1217d8b3e4397d2249d34da1b26de8f22b9d44a0c3"
+    },
+    "to": {
+      "version": "0.1.1",
+      "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+      "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299"
+    }
+  },
+  "fleet": {
+    "targets": 2,
+    "previousVersion": "0.1.0",
+    "newVersion": "0.1.1",
+    "downloadedBytesMatch": true,
+    "receiptWritten": true,
+    "secondInstall": "up-to-date without re-download"
+  },
+  "watch": {
+    "channelStartedAt": "v0.1.0",
+    "publishedDuringWatch": "v0.1.1",
+    "installedVersion": "0.1.1",
+    "cyclesObserved": 8
+  },
+  "reports": [
+    "fleet-check.json",
+    "fleet-install.json",
+    "fleet-reinstall.json",
+    "watch.jsonl"
+  ]
+}

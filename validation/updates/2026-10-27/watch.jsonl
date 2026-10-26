@@ -1,0 +1,267 @@
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.0-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T21:28:25Z",
+    "commit": "e57b395ec22afae36485b6630950d7ff56ac8e81",
+    "sha256": "35d61c924f5e5cbfca527a1217d8b3e4397d2249d34da1b26de8f22b9d44a0c3",
+    "sizeBytes": 9647104,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": false,
+  "builtAt": "2026-10-26T21:28:25Z",
+  "commit": "e57b395ec22afae36485b6630950d7ff56ac8e81",
+  "cycle": 1,
+  "latestVersion": "0.1.0",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055785954177800-1.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "up-to-date",
+  "tag": "v0.1.0",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "currentVersion": "0.1.0",
+      "error": null,
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "restartRequired": false,
+      "status": "up-to-date",
+      "updateAvailable": false
+    }
+  ]
+}
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T23:00:18Z",
+    "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+    "sizeBytes": 9821696,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": true,
+  "builtAt": "2026-10-26T23:00:18Z",
+  "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+  "cycle": 2,
+  "latestVersion": "0.1.1",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055789844538600-7.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "installed",
+  "tag": "v0.1.1",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "backup": null,
+      "bytes": 9821696,
+      "newVersion": "0.1.1",
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "previousVersion": "0.1.0",
+      "restartRequired": false,
+      "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+      "status": "installed",
+      "updateAvailable": false
+    }
+  ]
+}
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T23:00:18Z",
+    "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+    "sizeBytes": 9821696,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": false,
+  "builtAt": "2026-10-26T23:00:18Z",
+  "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+  "cycle": 3,
+  "latestVersion": "0.1.1",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055790916948300-9.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "up-to-date",
+  "tag": "v0.1.1",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "currentVersion": "0.1.1",
+      "error": null,
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "restartRequired": false,
+      "status": "up-to-date",
+      "updateAvailable": false
+    }
+  ]
+}
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T23:00:18Z",
+    "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+    "sizeBytes": 9821696,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": false,
+  "builtAt": "2026-10-26T23:00:18Z",
+  "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+  "cycle": 4,
+  "latestVersion": "0.1.1",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055791986061000-11.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "up-to-date",
+  "tag": "v0.1.1",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "currentVersion": "0.1.1",
+      "error": null,
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "restartRequired": false,
+      "status": "up-to-date",
+      "updateAvailable": false
+    }
+  ]
+}
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T23:00:18Z",
+    "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+    "sizeBytes": 9821696,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": false,
+  "builtAt": "2026-10-26T23:00:18Z",
+  "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+  "cycle": 5,
+  "latestVersion": "0.1.1",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055793056542100-13.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "up-to-date",
+  "tag": "v0.1.1",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "currentVersion": "0.1.1",
+      "error": null,
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "restartRequired": false,
+      "status": "up-to-date",
+      "updateAvailable": false
+    }
+  ]
+}
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T23:00:18Z",
+    "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+    "sizeBytes": 9821696,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": false,
+  "builtAt": "2026-10-26T23:00:18Z",
+  "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+  "cycle": 6,
+  "latestVersion": "0.1.1",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055794121009400-15.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "up-to-date",
+  "tag": "v0.1.1",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "currentVersion": "0.1.1",
+      "error": null,
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "restartRequired": false,
+      "status": "up-to-date",
+      "updateAvailable": false
+    }
+  ]
+}
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T23:00:18Z",
+    "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+    "sizeBytes": 9821696,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": false,
+  "builtAt": "2026-10-26T23:00:18Z",
+  "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+  "cycle": 7,
+  "latestVersion": "0.1.1",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055795190853300-17.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "up-to-date",
+  "tag": "v0.1.1",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "currentVersion": "0.1.1",
+      "error": null,
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "restartRequired": false,
+      "status": "up-to-date",
+      "updateAvailable": false
+    }
+  ]
+}
+{
+  "action": "watch",
+  "artifact": {
+    "binary": "jani-0.1.1-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-26T23:00:18Z",
+    "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122",
+    "sizeBytes": 9821696,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": false,
+  "builtAt": "2026-10-26T23:00:18Z",
+  "commit": "01d8e873b660677abbaf88d7e2f69d783ed43299",
+  "cycle": 8,
+  "latestVersion": "0.1.1",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\state\\updates\\24840-1793055796254167800-19.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:55452",
+  "status": "up-to-date",
+  "tag": "v0.1.1",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "currentVersion": "0.1.1",
+      "error": null,
+      "path": "C:\\Users\\user\\CascadeProjects\\jani\\target\\update-proof\\run\\watched-device.exe",
+      "restartRequired": false,
+      "status": "up-to-date",
+      "updateAvailable": false
+    }
+  ]
+}
