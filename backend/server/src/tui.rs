@@ -47,6 +47,9 @@ const STARTER_TASKS: [(&str, &str); 4] = [
     ("Inspect test coverage", "Identify untested workflows and likely failures. Do not edit files or execute commands."),
 ];
 
+const MAX_DRAFT_BYTES: usize = 64 * 1024;
+const MAX_COMPOSER_LINES: usize = 6;
+
 const FAILED_TURN_NOTE: &str = "Conversation context was restored to the last successful turn. Prior file or external tool effects may remain; inspect the audit journal and worktree before retrying.";
 
 const WHEEL_STEP: i32 = 3;
@@ -175,7 +178,9 @@ fn handle_event(
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if key.code == KeyCode::Enter {
-                if state.palette.is_some() {
+                if key.modifiers.contains(KeyModifiers::SHIFT) && state.palette.is_none() {
+                    state.editor.insert_char('\n');
+                } else if state.palette.is_some() {
                     palette_run(state, agent, catalog);
                 } else {
                     submit(terminal, state, agent, catalog)?;
@@ -472,8 +477,20 @@ fn editor_only_key(state: &mut State, key: KeyEvent) {
         KeyCode::End => editor.end(),
         KeyCode::Backspace => editor.backspace(),
         KeyCode::Delete => editor.delete(),
-        KeyCode::Up => editor.history_previous(),
-        KeyCode::Down => editor.history_next(),
+        KeyCode::Up => {
+            if editor.text.contains('\n') {
+                editor.move_vertical(-1);
+            } else {
+                editor.history_previous();
+            }
+        }
+        KeyCode::Down => {
+            if editor.text.contains('\n') {
+                editor.move_vertical(1);
+            } else {
+                editor.history_next();
+            }
+        },
         KeyCode::Tab => {
             editor.complete(&COMMAND_NAMES);
         }
@@ -1008,7 +1025,9 @@ impl Editor {
     }
 
     fn insert_char(&mut self, ch: char) {
-        if ch.is_control() {
+        if (ch.is_control() && ch != '\n')
+            || self.text.len().saturating_add(ch.len_utf8()) > MAX_DRAFT_BYTES
+        {
             return;
         }
         self.text.insert(self.cursor, ch);
@@ -1016,16 +1035,96 @@ impl Editor {
     }
 
     fn insert_str(&mut self, text: &str) {
-        let clean: String = text
-            .chars()
-            .map(|ch| match ch {
-                '\r' | '\n' | '\t' => ' ',
-                other => other,
-            })
-            .filter(|ch| !ch.is_control())
-            .collect();
-        self.text.insert_str(self.cursor, &clean);
-        self.cursor += clean.len();
+        // Bracketed paste is data: keep newlines, normalize CRLF and bound memory.
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        for ch in normalized.chars() {
+            match ch {
+                '\t' => {
+                    for _ in 0..4 {
+                        self.insert_char(' ');
+                    }
+                }
+                _ => self.insert_char(ch),
+            }
+        }
+    }
+
+    fn move_vertical(&mut self, delta: isize) {
+        let beginning = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let column = self.text[beginning..self.cursor].chars().count();
+        let target = if delta < 0 {
+            if beginning == 0 {
+                return;
+            }
+            let previous_end = beginning - 1;
+            let start = self.text[..previous_end]
+                .rfind('\n')
+                .map_or(0, |index| index + 1);
+            (start, previous_end)
+        } else {
+            let Some(relative) = self.text[self.cursor..].find('\n') else {
+                return;
+            };
+            let start = self.cursor + relative + 1;
+            let end = self.text[start..]
+                .find('\n')
+                .map_or(self.text.len(), |relative| start + relative);
+            (start, end)
+        };
+        let (start, end) = target;
+        let position = self.text[start..end]
+            .char_indices()
+            .nth(column)
+            .map_or(end, |(offset, _)| start + offset);
+        self.cursor = position;
+    }
+
+    /// Returns wrapped visible rows and a cursor location in the visible window.
+    /// A reserved final column ensures there is always a legal cursor cell.
+    fn layout(&self, width: usize, max_rows: usize) -> (Vec<String>, usize, usize) {
+        let width = width.max(1);
+        let max_rows = max_rows.max(1);
+        let mut rows = vec![String::new()];
+        let mut column = 0usize;
+        let mut cursor_row = 0usize;
+        let mut cursor_column = 0usize;
+        for (offset, ch) in self.text.char_indices() {
+            if ch == '\n' {
+                if offset == self.cursor {
+                    cursor_row = rows.len() - 1;
+                    cursor_column = column;
+                }
+                rows.push(String::new());
+                column = 0;
+                continue;
+            }
+            let char_width = ch.width().unwrap_or(0);
+            if column + char_width > width && column > 0 {
+                rows.push(String::new());
+                column = 0;
+            }
+            if offset == self.cursor {
+                cursor_row = rows.len() - 1;
+                cursor_column = column;
+            }
+            rows.last_mut().expect("editor row").push(ch);
+            column += char_width;
+        }
+        if self.cursor == self.text.len() {
+            cursor_row = rows.len() - 1;
+            cursor_column = column;
+        }
+        let first = cursor_row
+            .saturating_sub(max_rows - 1)
+            .min(rows.len().saturating_sub(max_rows));
+        let window = rows.into_iter().skip(first).take(max_rows).collect();
+        (window, cursor_row - first, cursor_column.min(width))
+    }
+
+    fn physical_lines(&self, width: usize) -> usize {
+        self.layout(width, usize::MAX).0.len()
     }
 
     fn left(&mut self) {
@@ -1148,39 +1247,6 @@ impl Editor {
         self.cursor = self.text.len();
     }
 
-    fn visible(&self, width: usize) -> (String, usize) {
-        if width == 0 {
-            return (String::new(), 0);
-        }
-        let before = &self.text[..self.cursor];
-        let mut cursor_width = before.width();
-        let mut start = 0;
-        if cursor_width >= width {
-            let mut used = 0;
-            let mut start_at = self.cursor;
-            for (index, ch) in before.char_indices().rev() {
-                let ch_width = ch.width().unwrap_or(0);
-                if used + ch_width >= width {
-                    start_at = index + ch.len_utf8();
-                    break;
-                }
-                used += ch_width;
-            }
-            start = start_at;
-            cursor_width = self.text[start..self.cursor].width();
-        }
-        let mut visible = String::new();
-        let mut used = 0;
-        for ch in self.text[start..].chars() {
-            let ch_width = ch.width().unwrap_or(0);
-            if used + ch_width > width {
-                break;
-            }
-            visible.push(ch);
-            used += ch_width;
-        }
-        (visible, cursor_width)
-    }
 }
 
 fn approval_summary(requests: &[Value]) -> String {
@@ -1214,10 +1280,17 @@ fn draw(frame: &mut Frame, state: &mut State) {
     let welcome = state.entries.is_empty();
     let show_tips = area.height >= 20;
     let hero = if welcome { hero_height(area.height) } else { 2 };
+    let composer_height = if area.height >= 22 {
+        let width = content.width.saturating_sub(9) as usize;
+        let lines = state.editor.physical_lines(width).min(MAX_COMPOSER_LINES);
+        (lines as u16 + 3).max(4)
+    } else {
+        4
+    };
     let chunks = Layout::vertical([
         Constraint::Length(hero),
         Constraint::Min(2),
-        Constraint::Length(4),
+        Constraint::Length(composer_height),
         Constraint::Length(1),
         Constraint::Length(if show_tips { 1 } else { 0 }),
         Constraint::Length(1),
@@ -1647,7 +1720,9 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
 
     let text_x = inner.x + 3;
     let text_width = inner.width.saturating_sub(4) as usize;
-    if text_width > 0 {
+    // The last interior line is reserved for the authority/activity status.
+    let text_height = inner.height.saturating_sub(1) as usize;
+    if text_width > 0 && text_height > 0 {
         if state.editor.is_empty() {
             let placeholder = if text_width >= 31 {
                 "Type a message… (/ for commands)"
@@ -1666,24 +1741,34 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
                 frame.set_cursor_position(Position::new(text_x, inner.y));
             }
         } else {
-            let (visible, cursor_column) = state.editor.visible(text_width.saturating_sub(1));
+            let (rows, cursor_row, cursor_column) =
+                state.editor.layout(text_width.saturating_sub(1), text_height);
+            let visible: Vec<Line<'_>> = rows
+                .into_iter()
+                .map(|line| Line::from(Span::styled(line, Style::default().fg(TEXT))))
+                .collect();
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(visible, Style::default().fg(TEXT))))
-                    .style(Style::default().bg(PANEL)),
-                Rect::new(text_x, inner.y, text_width as u16, 1),
+                Paragraph::new(visible).style(Style::default().bg(PANEL)),
+                Rect::new(text_x, inner.y, text_width as u16, text_height as u16),
             );
             if !state.busy {
-                let column = (cursor_column as u16).min(text_width.saturating_sub(1) as u16);
-                frame.set_cursor_position(Position::new(text_x + column, inner.y));
+                frame.set_cursor_position(Position::new(
+                    text_x + cursor_column.min(text_width - 1) as u16,
+                    inner.y + cursor_row as u16,
+                ));
             }
         }
     }
-
     if inner.height > 1 {
         let meta = meta_line(state, inner.width.saturating_sub(2) as usize);
         frame.render_widget(
             Paragraph::new(meta).style(Style::default().bg(PANEL)),
-            Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
+            Rect::new(
+                inner.x + 1,
+                inner.y + inner.height - 1,
+                inner.width.saturating_sub(2),
+                1,
+            ),
         );
     }
 }
@@ -2033,7 +2118,7 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
         };
         hints_line(&[
             ("enter", " send  "),
-            ("/", " commands  "),
+            ("shift+enter", " newline  "),
             ("pgup/wheel", " scroll  "),
             jump,
             ("ctrl+t", " thinking  "),
@@ -2887,6 +2972,46 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    #[test]
+    fn composer_preserves_pasted_newlines_and_unicode() {
+        let mut editor = Editor::default();
+        editor.insert_str("alpha\r\nβeta\nline\tthree");
+        assert_eq!(editor.text, "alpha\nβeta\nline    three");
+        let (rows, row, column) = editor.layout(20, 5);
+        assert_eq!(rows, vec!["alpha", "βeta", "line    three"]);
+        assert_eq!((row, column), (2, 13));
+        assert_eq!(editor.take(), "alpha\nβeta\nline    three");
+    }
+
+    #[test]
+    fn composer_wraps_and_tracks_cursor_on_long_multiline_input() {
+        let mut editor = Editor::default();
+        editor.insert_str("123456789\nabcdefghij");
+        let (rows, row, column) = editor.layout(4, 3);
+        assert_eq!(rows, vec!["abcd", "efgh", "ij"]);
+        assert_eq!((row, column), (2, 2));
+        editor.home();
+        editor.move_vertical(1);
+        assert_eq!(editor.cursor, 10);
+    }
+
+    #[test]
+    fn composer_enforces_draft_limit_and_shift_enter_is_a_newline() {
+        let mut editor = Editor::default();
+        editor.insert_str(&"a".repeat(MAX_DRAFT_BYTES + 100));
+        assert_eq!(editor.text.len(), MAX_DRAFT_BYTES);
+        let mut state = State::new(meta(), 0, 0);
+        editor_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+        );
+        // Key insertion is normally performed by the terminal event loop.
+        assert!(state.editor.is_empty());
+        state.editor.insert_char('\n');
+        state.editor.insert_str("text");
+        assert_eq!(state.editor.text, "\ntext");
     }
 
     #[test]
