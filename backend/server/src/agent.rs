@@ -16,6 +16,7 @@ use crate::types::{
     WorkContract,
 };
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_HISTORY_BYTES: usize = 256 * 1024;
 const MAX_TOOL_OUTPUT_BYTES: usize = 64_000;
@@ -133,6 +134,21 @@ fn tool_activity(name: &str, params: &Value) -> String {
         }
         other => format!("calling {other}"),
     }
+}
+
+fn ensure_active(
+    cancelled: Option<&AtomicBool>,
+    meta: &RunMeta<'_>,
+    journal: &mut Journal,
+) -> JResult<()> {
+    if cancelled.is_some_and(|token| token.load(Ordering::SeqCst)) {
+        meta.record(journal, "failed", "cancelled_by_operator")?;
+        return Err(
+            "turn cancelled at an execution boundary; earlier file or external effects may remain"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 struct RunMeta<'a> {
@@ -333,12 +349,13 @@ Discovered skill names: {skills}"#,
         prompt: &str,
         announce: bool,
         events: Option<&mut dyn FnMut(TurnEvent)>,
+        cancelled: Option<&AtomicBool>,
     ) -> JResult<String> {
         // A failed turn must not leave a dangling assistant tool call in the
         // conversation, or the next provider request would be invalid.
         let checkpoint = self.messages.len();
         let mut events = events;
-        let result = self.run_turn_inner(cfg, catalog, prompt, announce, &mut events);
+        let result = self.run_turn_inner(cfg, catalog, prompt, announce, &mut events, cancelled);
         if result.is_err() {
             self.messages.truncate(checkpoint);
         }
@@ -352,6 +369,7 @@ Discovered skill names: {skills}"#,
         prompt: &str,
         announce: bool,
         events: &mut Option<&mut dyn FnMut(TurnEvent)>,
+        cancelled: Option<&AtomicBool>,
     ) -> JResult<String> {
         let run_id = if self.run_seq == 0 {
             cfg.run_id.clone().unwrap_or_else(|| new_id("run"))
@@ -373,6 +391,7 @@ Discovered skill names: {skills}"#,
         trim_messages(&mut self.messages, MAX_HISTORY_BYTES);
 
         run_meta.record(&mut self.journal, "started", "run_started")?;
+        ensure_active(cancelled, &run_meta, &mut self.journal)?;
         if announce {
             eprintln!(
                 "jani: run={run_id} task={task_id} mode={} tenant={} policy={} sandbox={} network={}",
@@ -388,6 +407,7 @@ Discovered skill names: {skills}"#,
         let tool_defs = specs();
 
         for step in 0..cfg.max_steps {
+            ensure_active(cancelled, &run_meta, &mut self.journal)?;
             trim_messages(&mut self.messages, MAX_HISTORY_BYTES);
             if let Some(sink) = events.as_mut() {
                 sink(TurnEvent::Step {
@@ -421,6 +441,7 @@ Discovered skill names: {skills}"#,
                     return Err(error);
                 }
             };
+            ensure_active(cancelled, &run_meta, &mut self.journal)?;
             let calls = assistant
                 .get("tool_calls")
                 .and_then(Value::as_array)
@@ -442,6 +463,7 @@ Discovered skill names: {skills}"#,
                 return Ok(inspected);
             }
             for call in calls {
+                ensure_active(cancelled, &run_meta, &mut self.journal)?;
                 let id = call
                     .get("id")
                     .and_then(Value::as_str)
@@ -543,13 +565,31 @@ impl<'a> Agent<'a> {
         let cfg = self.cfg;
         let catalog = self.catalog;
         self.session
-            .run_turn(cfg, catalog, prompt, false, Some(events))
+            .run_turn(cfg, catalog, prompt, false, Some(events), None)
+    }
+
+    /// Cooperative cancellation between model calls and tool invocations.
+    /// A blocked provider request or already-running command is not preempted.
+    pub fn run_turn_events_with_cancel(
+        &mut self,
+        prompt: &str,
+        events: &mut dyn FnMut(TurnEvent),
+        cancelled: &AtomicBool,
+    ) -> JResult<String> {
+        self.session.run_turn(
+            self.cfg,
+            self.catalog,
+            prompt,
+            false,
+            Some(events),
+            Some(cancelled),
+        )
     }
 
     fn run_turn_with(&mut self, prompt: &str, announce: bool) -> JResult<String> {
         let cfg = self.cfg;
         let catalog = self.catalog;
-        self.session.run_turn(cfg, catalog, prompt, announce, None)
+        self.session.run_turn(cfg, catalog, prompt, announce, None, None)
     }
 
     pub fn task_id(&self) -> &str {
@@ -849,6 +889,31 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn cancelled_turn_never_invokes_a_model_or_tool() {
+        let root = workspace();
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        let cancellation = AtomicBool::new(true);
+        let mut events = |_event: TurnEvent| {};
+        let result = agent.run_turn_events_with_cancel(
+            "do not run this",
+            &mut events,
+            &cancellation,
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+        let receipt = agent.run_evidence().unwrap();
+        assert_eq!(receipt["journalChainVerified"], true);
+        assert_eq!(receipt["outcomeVerified"], false);
+        let records = agent.inspect(None).unwrap();
+        assert_eq!(records[0]["decision"], "started");
+        assert_eq!(records[1]["reason_code"], "cancelled_by_operator");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
