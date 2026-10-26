@@ -1,5 +1,5 @@
 use crate::budget::BudgetLedger;
-use crate::config::{Config, JResult};
+use crate::config::{Config, JResult, ModelChoice};
 use crate::data::{Governance, ModelSink};
 use crate::model::{ChatModel, ModelDelta};
 use serde_json::Value;
@@ -95,11 +95,11 @@ fn provider_from_base(base: &str) -> String {
 }
 
 impl<'a> ModelGateway<'a> {
-    pub fn new(cfg: &Config, governance: &'a Governance) -> JResult<Self> {
-        let model = ChatModel::new(cfg)?;
+    pub fn new(cfg: &Config, choice: &ModelChoice, governance: &'a Governance) -> JResult<Self> {
+        let model = ChatModel::new(choice)?;
         let sink = ModelSink {
-            provider: provider_from_base(&cfg.api_base),
-            model: cfg.model.clone(),
+            provider: provider_from_base(&choice.api_base),
+            model: choice.model.clone(),
             provider_class: cfg.provider_class.clone(),
             region: cfg.provider_region.clone(),
         };

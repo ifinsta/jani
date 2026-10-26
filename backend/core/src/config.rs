@@ -2,10 +2,62 @@ use crate::permissions::Policy as PermissionPolicy;
 use crate::settings::Settings;
 use crate::types::{ModelProtocol, NetworkPolicy, RuntimeMode, SandboxMode};
 use std::env;
+use std::fmt;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 pub type JResult<T> = Result<T, String>;
+
+/// A model the running session may switch to. Profiles resolved from settings
+/// carry their own transport and credential binding; the key is never rendered.
+#[derive(Clone)]
+pub struct ModelChoice {
+    pub label: String,
+    pub model: String,
+    pub api_base: String,
+    pub protocol: ModelProtocol,
+    pub max_output_tokens: usize,
+    pub profile: Option<String>,
+    pub api_key_source: String,
+    key: Option<String>,
+}
+
+impl fmt::Debug for ModelChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelChoice")
+            .field("label", &self.label)
+            .field("model", &self.model)
+            .field("api_base", &self.api_base)
+            .field("protocol", &self.protocol)
+            .field("max_output_tokens", &self.max_output_tokens)
+            .field("profile", &self.profile)
+            .field("api_key_source", &self.api_key_source)
+            .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl ModelChoice {
+    pub fn from_config(cfg: &Config) -> Self {
+        Self {
+            label: cfg
+                .settings_profile
+                .clone()
+                .unwrap_or_else(|| cfg.model.clone()),
+            model: cfg.model.clone(),
+            api_base: cfg.api_base.clone(),
+            protocol: cfg.protocol,
+            max_output_tokens: cfg.max_output_tokens,
+            profile: cfg.settings_profile.clone(),
+            api_key_source: cfg.api_key_source.clone(),
+            key: cfg.api_key.clone(),
+        }
+    }
+
+    pub fn api_key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+}
 
 #[derive(Clone)]
 pub struct Config {
@@ -21,6 +73,7 @@ pub struct Config {
     pub protocol_explicit: bool,
     pub max_output_tokens: usize,
     pub model_profile: Option<String>,
+    pub model_choices: Vec<ModelChoice>,
     pub settings_path: Option<PathBuf>,
     pub settings_profile: Option<String>,
     pub settings_warnings: Vec<String>,
@@ -221,6 +274,50 @@ struct CredentialBinding {
     inline_key: Option<String>,
 }
 
+fn resolve_credential(
+    profile_selected: bool,
+    env_name: Option<&str>,
+    inline_key: Option<&str>,
+) -> (Option<String>, String) {
+    if let Some(name) = env_name {
+        return match env_nonempty(name) {
+            Some(value) => (Some(value), format!("env {name}")),
+            None => match inline_key {
+                Some(value) => (Some(value.to_string()), "settings (inline)".into()),
+                None => (None, format!("env {name} is empty")),
+            },
+        };
+    }
+    if profile_selected && inline_key.is_some() {
+        return (inline_key.map(str::to_string), "settings (inline)".into());
+    }
+    if let Some((name, value)) = env_nonempty("JANI_API_KEY")
+        .map(|value| ("JANI_API_KEY", value))
+        .or_else(|| env_nonempty("OPENAI_API_KEY").map(|value| ("OPENAI_API_KEY", value)))
+    {
+        return (Some(value), format!("env {name}"));
+    }
+    if inline_key.is_some() {
+        return (inline_key.map(str::to_string), "settings (inline)".into());
+    }
+    (None, "no credential configured".into())
+}
+
+/// The same rule startup applies to `apiBase`, reused when a session switches to
+/// a settings profile at runtime.
+pub fn validate_api_base(api_base: &str) -> JResult<()> {
+    if !api_base.starts_with("https://")
+        && !api_base.starts_with("http://localhost:")
+        && !api_base.starts_with("http://127.0.0.1:")
+    {
+        return Err("API base must be HTTPS or an explicit localhost URL".into());
+    }
+    if api_base.contains('?') || api_base.contains('#') {
+        return Err("API base must not contain query or fragment".into());
+    }
+    Ok(())
+}
+
 impl Config {
     pub fn parse() -> JResult<Self> {
         Self::parse_from(
@@ -254,6 +351,7 @@ impl Config {
             protocol_explicit: false,
             max_output_tokens: 4096,
             model_profile: None,
+            model_choices: Vec::new(),
             settings_path: None,
             settings_profile: None,
             settings_warnings: Vec::new(),
@@ -388,7 +486,60 @@ impl Config {
         Self::parse_args(&mut cfg, args)?;
         cfg.settings_path = loaded.as_ref().map(|(path, _)| path.clone());
         Self::finalize(&mut cfg)?;
+        if let Some((_, settings)) = &loaded {
+            cfg.model_choices = Self::model_choices(&cfg, settings);
+        }
         Ok(cfg)
+    }
+
+    /// Every settings profile becomes a runtime-selectable model. A profile owns
+    /// the fields it sets; unspecified fields inherit the startup value, and a
+    /// profile's credential binding is resolved with the same rules as startup so
+    /// a generic environment key never silently replaces another provider's key.
+    fn model_choices(cfg: &Config, settings: &Settings) -> Vec<ModelChoice> {
+        settings
+            .models
+            .iter()
+            .map(|(name, profile)| {
+                let api_base = profile
+                    .api_base
+                    .clone()
+                    .or_else(|| settings.api_base.clone())
+                    .unwrap_or_else(|| cfg.api_base.clone());
+                let protocol = profile
+                    .protocol
+                    .as_deref()
+                    .or(settings.protocol.as_deref())
+                    .and_then(ModelProtocol::parse)
+                    .unwrap_or_else(|| ModelProtocol::detect(&api_base));
+                let max_output_tokens = profile
+                    .max_output_tokens
+                    .or(settings.max_output_tokens)
+                    .unwrap_or(cfg.max_output_tokens);
+                let (key, api_key_source) = resolve_credential(
+                    true,
+                    profile
+                        .api_key_env
+                        .as_deref()
+                        .or(settings.api_key_env.as_deref()),
+                    profile
+                        .api_key
+                        .as_ref()
+                        .map(|key| key.expose())
+                        .or_else(|| settings.api_key.as_ref().map(|key| key.expose())),
+                );
+                ModelChoice {
+                    label: name.clone(),
+                    model: profile.model.clone(),
+                    api_base,
+                    protocol,
+                    max_output_tokens,
+                    profile: Some(name.clone()),
+                    api_key_source,
+                    key,
+                }
+            })
+            .collect()
     }
 
     fn load_project_settings(cfg: &Config) -> JResult<Option<(PathBuf, Settings)>> {
@@ -465,39 +616,12 @@ impl Config {
             }
         }
 
-        let mut source = "no credential configured".to_string();
-        cfg.api_key = if let Some(name) = &credential.env_name {
-            match env_nonempty(name) {
-                Some(value) => {
-                    source = format!("env {name}");
-                    Some(value)
-                }
-                None => match &credential.inline_key {
-                    Some(value) => {
-                        source = "settings (inline)".into();
-                        Some(value.clone())
-                    }
-                    None => {
-                        source = format!("env {name} is empty");
-                        None
-                    }
-                },
-            }
-        } else if credential.profile_selected && credential.inline_key.is_some() {
-            source = "settings (inline)".into();
-            credential.inline_key.clone()
-        } else if let Some((name, value)) = env_nonempty("JANI_API_KEY")
-            .map(|value| ("JANI_API_KEY", value))
-            .or_else(|| env_nonempty("OPENAI_API_KEY").map(|value| ("OPENAI_API_KEY", value)))
-        {
-            source = format!("env {name}");
-            Some(value)
-        } else if credential.inline_key.is_some() {
-            source = "settings (inline)".into();
-            credential.inline_key.clone()
-        } else {
-            None
-        };
+        let (key, source) = resolve_credential(
+            credential.profile_selected,
+            credential.env_name.as_deref(),
+            credential.inline_key.as_deref(),
+        );
+        cfg.api_key = key;
         cfg.api_key_source = source;
 
         cfg.mode = match env_nonempty("JANI_MODE") {
@@ -764,15 +888,7 @@ impl Config {
         if cfg.allow_write && cfg.write_paths.is_empty() {
             return Err("--allow-write requires --write-path or JANI_WRITE_PATHS; no implicit full-repository editing".into());
         }
-        if !cfg.api_base.starts_with("https://")
-            && !cfg.api_base.starts_with("http://localhost:")
-            && !cfg.api_base.starts_with("http://127.0.0.1:")
-        {
-            return Err("API base must be HTTPS or an explicit localhost URL".into());
-        }
-        if cfg.api_base.contains('?') || cfg.api_base.contains('#') {
-            return Err("API base must not contain query or fragment".into());
-        }
+        validate_api_base(&cfg.api_base)?;
         cfg.api_base = cfg.api_base.trim_end_matches('/').to_string();
         if !cfg.protocol_explicit {
             cfg.protocol = ModelProtocol::detect(&cfg.api_base);
@@ -1046,6 +1162,53 @@ mod tests {
             cfg.settings_path.as_ref().unwrap().file_name().unwrap(),
             "settings.json"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_profiles_become_runtime_model_choices() {
+        let root = temp_workspace(Some(
+            r#"{
+                "version": 1,
+                "model": "fast",
+                "apiBase": "https://shared.test/v1",
+                "maxOutputTokens": 4096,
+                "models": {
+                    "fast": {"model": "fast-model"},
+                    "deep": {
+                        "model": "deep-model",
+                        "apiBase": "https://api.anthropic.com",
+                        "protocol": "anthropic",
+                        "maxOutputTokens": 16000,
+                        "apiKey": "unit-test-deep-key"
+                    }
+                }
+            }"#,
+        ));
+        let cfg = Config::from_args(&args_for(&root, &[])).unwrap();
+        assert_eq!(cfg.model_choices.len(), 2);
+        let fast = cfg
+            .model_choices
+            .iter()
+            .find(|choice| choice.label == "fast")
+            .unwrap();
+        assert_eq!(fast.model, "fast-model");
+        assert_eq!(fast.api_base, "https://shared.test/v1");
+        assert_eq!(fast.protocol, ModelProtocol::OpenAi);
+        assert_eq!(fast.max_output_tokens, 4096);
+        assert_eq!(fast.profile.as_deref(), Some("fast"));
+
+        let deep = cfg
+            .model_choices
+            .iter()
+            .find(|choice| choice.label == "deep")
+            .unwrap();
+        assert_eq!(deep.model, "deep-model");
+        assert_eq!(deep.api_base, "https://api.anthropic.com");
+        assert_eq!(deep.protocol, ModelProtocol::Anthropic);
+        assert_eq!(deep.max_output_tokens, 16000);
+        assert_eq!(deep.api_key(), Some("unit-test-deep-key"));
+        assert!(!format!("{deep:?}").contains("unit-test-deep-key"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

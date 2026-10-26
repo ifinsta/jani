@@ -61,7 +61,7 @@ Keys in the full-screen interface:
 | --- | --- |
 | `Enter` | Submit the current input; with the command palette open, run the highlighted command |
 | `/` | On an empty input, open the command palette |
-| `Tab` | Complete a slash command; with the palette open, fill the highlighted name into the input |
+| `Tab` | Complete a slash command; with the palette open, fill the highlighted command name or model profile into the input |
 | `Up` / `Down` | Walk input history; with the palette open, move the selection and wrap at the ends |
 | `Left` / `Right`, `Home` / `End` | Move the cursor; `Ctrl+A` / `Ctrl+E` jump to the ends. With an empty input, or with `Ctrl` held, `Home` jumps the transcript to its top and `End` resumes following |
 | `Backspace` / `Delete` | Edit by Unicode scalar, not byte |
@@ -75,6 +75,8 @@ Keys in the full-screen interface:
 | `Ctrl+D` | Exit when the input is empty |
 
 Typing `/` into an empty input opens a command palette above the input box. It lists every slash command with its usage and a one-line summary; typing filters by command name, `Up`/`Down` move through the matches, `Enter` runs the highlighted command through the same checked path as typed input, `Tab` fills the name into the input for review, and `Esc` closes the palette and clears the input. `/approval` requires an ID, so selecting it fills `/approval ` and leaves the cursor in the input for the ID; every other command runs immediately (`/inspect` uses the latest turn). The palette reads the same command catalog as `/help` and is only a launcher: it never widens scopes, never decides an approval and never bypasses the frozen authority checks.
+
+`/model` opens a second-level picker instead of running immediately. It lists the model profiles from the active settings file (the current one is marked `current`) and, when a query matches no profile, offers the typed text as a raw model ID that keeps the current transport and credential. Typing filters by profile name or model ID, `Up`/`Down` move, `Enter` switches the running session, `Tab` completes the profile name, and `Esc` closes the picker. A profile switch applies that profile's model, API base, protocol, output ceiling and credential binding; a raw model ID keeps the current API base, protocol and credential and clears the profile. Switches are runtime state, not authority: policy, identity, contract, write scopes, executable programs, sandbox and network remain frozen, and every switch is journaled as an `agent.model` event before it takes effect. A model with no resolvable credential, or a non-HTTPS non-localhost API base, is refused and the current selection stays active. The transcript continues across the switch.
 
 Once the transcript is taller than the viewport, Jani reserves its rightmost column for a vertical scrollbar and the tip line reports how many lines sit below the bottom; windows at the 40-column minimum keep the full width for text and scroll without a bar. Follow mode pins the view to the newest line; any scroll-up gesture unpins it and the view stays where you put it while the next turn streams. Mouse capture is on, so the pointer scrolls and clicks instead of selecting text in the window — use the terminal's own selection override (Shift in Windows Terminal and most emulators) to copy.
 
@@ -90,6 +92,7 @@ Slash commands are read-only with respect to authority:
 | --- | --- |
 | `/help` | List commands |
 | `/status` | Show frozen authority, task, model, run count and history size |
+| `/model [NAME]` | List model profiles, or switch the session to a profile or raw model ID |
 | `/skills` | List discovered skills |
 | `/inspect [RUN_ID]` | Show journal events for a run, defaulting to the latest turn |
 | `/budget` | Show the persisted task budget |

@@ -1,7 +1,7 @@
 use crate::approvals::ApprovalStore;
 use crate::broker::Broker;
 use crate::budget::{self, BudgetLedger};
-use crate::config::{Config, JResult};
+use crate::config::{self, Config, JResult, ModelChoice};
 use crate::data::Governance;
 use crate::gateway::ModelGateway;
 use crate::identity::{self, VerifiedIdentity};
@@ -36,6 +36,7 @@ struct Session {
     budget: BudgetLedger,
     messages: Vec<Value>,
     task_id: String,
+    model: ModelChoice,
     approval_ids: Vec<String>,
     sandbox_profile: SandboxProfile,
     network: NetworkPolicy,
@@ -291,12 +292,38 @@ Discovered skill names: {skills}"#,
             budget,
             messages: vec![system],
             task_id,
+            model: ModelChoice::from_config(cfg),
             approval_ids: cfg.approval_ids.clone(),
             sandbox_profile,
             network,
             run_seq: 0,
             last_run_id: None,
         })
+    }
+
+    /// A model switch changes which provider sees the conversation, so it is
+    /// journaled before the new selection takes effect. A failed write refuses
+    /// the switch instead of leaving an unrecorded provider change.
+    fn record_model_switch(&mut self, from: &str, to: &ModelChoice) -> JResult<()> {
+        let digest = sha256_hex(format!("{from}\u{0}{}\u{0}{}", to.model, to.api_base).as_bytes());
+        self.journal
+            .record(EventInput {
+                tenant_id: &self.identity.tenant,
+                task_id: &self.task_id,
+                run_id: self.last_run_id.as_deref().unwrap_or("session"),
+                invocation_id: "model",
+                actor_id: &self.identity.principal,
+                worker_id: &self.identity.principal,
+                action: "agent.model",
+                resource_digest: &digest,
+                decision: "allowed",
+                reason_code: "model_switched",
+                policy_revision: "runtime",
+                approval_id: None,
+                sandbox_receipt_id: None,
+                data_classification: Classification::Internal,
+            })
+            .map(|_| ())
     }
 
     fn run_turn(
@@ -357,7 +384,7 @@ Discovered skill names: {skills}"#,
             );
         }
 
-        let gateway = ModelGateway::new(cfg, &self.governance)?;
+        let gateway = ModelGateway::new(cfg, &self.model, &self.governance)?;
         let tool_defs = specs();
 
         for step in 0..cfg.max_steps {
@@ -549,10 +576,94 @@ impl<'a> Agent<'a> {
         self.session.messages.truncate(1);
     }
 
+    pub fn model(&self) -> &str {
+        &self.session.model.model
+    }
+
+    pub fn model_profile(&self) -> Option<&str> {
+        self.session.model.profile.as_deref()
+    }
+
+    pub fn model_choices(&self) -> &[ModelChoice] {
+        &self.cfg.model_choices
+    }
+
+    /// Switch the model used by later turns. A profile name selects that
+    /// profile's model, transport and credential; any other value is a model ID
+    /// on the current transport. The conversation is retained and the switch is
+    /// journaled. Frozen authority (policy, contract, writes, commands, sandbox,
+    /// network) is unaffected.
+    pub fn select_model(&mut self, wanted: &str) -> JResult<String> {
+        let wanted = wanted.trim();
+        if wanted.is_empty() {
+            return Err("usage: /model PROFILE|MODEL".into());
+        }
+        let by_profile = self
+            .cfg
+            .model_choices
+            .iter()
+            .find(|choice| choice.label.eq_ignore_ascii_case(wanted))
+            .or_else(|| {
+                self.cfg
+                    .model_choices
+                    .iter()
+                    .find(|choice| choice.model == wanted)
+            });
+        let choice = match by_profile {
+            Some(choice) => choice.clone(),
+            None => {
+                if wanted.len() > 256
+                    || wanted.chars().any(char::is_whitespace)
+                    || wanted.chars().any(char::is_control)
+                {
+                    return Err("model IDs must be 1..=256 bytes without whitespace".into());
+                }
+                let mut choice = self.session.model.clone();
+                choice.label = wanted.to_string();
+                choice.model = wanted.to_string();
+                choice.profile = None;
+                choice
+            }
+        };
+        config::validate_api_base(&choice.api_base)?;
+        if choice.api_key().is_none() {
+            return Err(format!(
+                "model '{}' has no credential ({}); configure it and restart",
+                choice.model, choice.api_key_source
+            ));
+        }
+        if choice.model == self.session.model.model
+            && choice.api_base == self.session.model.api_base
+            && choice.protocol == self.session.model.protocol
+            && choice.max_output_tokens == self.session.model.max_output_tokens
+            && choice.profile == self.session.model.profile
+            && choice.api_key_source == self.session.model.api_key_source
+        {
+            return Ok(format!("Model is already {}.", choice.model));
+        }
+        let from = self.session.model.model.clone();
+        self.session.record_model_switch(&from, &choice)?;
+        self.session.model = choice.clone();
+        let profile = choice
+            .profile
+            .as_deref()
+            .map(|name| format!("profile {name}"))
+            .unwrap_or_else(|| "no profile".into());
+        Ok(format!(
+            "Model switched to {} ({profile}; {} {}; output ceiling {}; key {}). The conversation continues with the new model.",
+            choice.model,
+            choice.protocol.as_str(),
+            choice.api_base,
+            choice.max_output_tokens,
+            choice.api_key_source
+        ))
+    }
+
     pub fn status(&self) -> String {
         let profile = self
-            .cfg
-            .settings_profile
+            .session
+            .model
+            .profile
             .as_ref()
             .map(|name| format!(" (profile {name})"))
             .unwrap_or_default();
@@ -574,10 +685,10 @@ impl<'a> Agent<'a> {
             self.cfg.mode.as_str(),
             self.session.identity.tenant,
             self.session.identity.principal,
-            self.cfg.model,
+            self.session.model.model,
             profile,
-            self.cfg.protocol.as_str(),
-            self.cfg.api_base,
+            self.session.model.protocol.as_str(),
+            self.session.model.api_base,
             self.cfg
                 .permissions
                 .as_ref()
@@ -874,6 +985,99 @@ mod tests {
         let error = agent.attach_approval(&expiring).unwrap_err();
         assert!(error.contains("expired"), "{error}");
         assert!(agent.attached_approval_ids().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_switching_uses_profiles_and_journals_each_change() {
+        let root = workspace();
+        std::fs::create_dir_all(root.join(".jani")).unwrap();
+        let path = root.join(".jani").join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "model": "fast",
+                "models": {
+                    "fast": {
+                        "model": "fast-model",
+                        "apiBase": "https://fast.test/v1",
+                        "protocol": "openai",
+                        "maxOutputTokens": 4096,
+                        "apiKey": "unit-test-fast-key"
+                    },
+                    "deep": {
+                        "model": "deep-model",
+                        "apiBase": "https://api.anthropic.com",
+                        "protocol": "anthropic",
+                        "maxOutputTokens": 16000,
+                        "apiKey": "unit-test-deep-key"
+                    },
+                    "insecure": {
+                        "model": "insecure-model",
+                        "apiBase": "http://insecure.test/v1",
+                        "apiKey": "unit-test-insecure-key"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let args = vec![
+            "doctor".to_string(),
+            "--repo".to_string(),
+            root.to_string_lossy().into_owned(),
+            "--settings".to_string(),
+            path.to_string_lossy().into_owned(),
+        ];
+        let mut cfg = Config::from_args(&args).unwrap();
+        assert_eq!(cfg.model_choices.len(), 3);
+        cfg.state_dir = root.join("state");
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+
+        let note = agent.select_model("deep").unwrap();
+        assert!(note.contains("deep-model"), "{note}");
+        assert!(note.contains("profile deep"), "{note}");
+        assert_eq!(agent.model(), "deep-model");
+        assert_eq!(agent.model_profile(), Some("deep"));
+        assert!(
+            agent.status().contains("Model: deep-model (profile deep)"),
+            "{}",
+            agent.status()
+        );
+        assert!(
+            agent.status().contains("Model API: anthropic"),
+            "{}",
+            agent.status()
+        );
+
+        agent.select_model("custom-model").unwrap();
+        assert_eq!(agent.model(), "custom-model");
+        assert_eq!(agent.model_profile(), None);
+        assert!(
+            agent
+                .status()
+                .contains("Model API: anthropic https://api.anthropic.com"),
+            "{}",
+            agent.status()
+        );
+
+        let error = agent.select_model("insecure").unwrap_err();
+        assert!(error.contains("API base must be HTTPS"), "{error}");
+        assert_eq!(agent.model(), "custom-model");
+        let error = agent.select_model("two words").unwrap_err();
+        assert!(error.contains("without whitespace"), "{error}");
+        assert!(agent
+            .select_model("")
+            .unwrap_err()
+            .contains("usage: /model"));
+
+        let journal = std::fs::read_to_string(cfg.state_dir.join(journal::JOURNAL_FILE)).unwrap();
+        assert_eq!(journal.matches("\"agent.model\"").count(), 2, "{journal}");
+        assert!(
+            journal.contains("\"reason_code\":\"model_switched\""),
+            "{journal}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

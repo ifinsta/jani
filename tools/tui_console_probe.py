@@ -305,10 +305,13 @@ def row_of(screen, needle):
     return -1
 
 
-def palette_body(screen):
+def palette_body(screen, title="commands", footer="enter run"):
     rows = screen.split("\n")
-    start = next((index for index, row in enumerate(rows) if "commands" in row), None)
-    end = next((index for index, row in enumerate(rows) if "enter run" in row), None)
+    start = next(
+        (index for index, row in enumerate(rows) if "┌" in row and title in row),
+        None,
+    )
+    end = next((index for index, row in enumerate(rows) if footer in row), None)
     if start is None or end is None or end < start:
         return ""
     return "\n".join(rows[start : end + 1])
@@ -395,10 +398,26 @@ def main():
     os.makedirs(os.path.join(scratch, ".jani"))
     with open(os.path.join(scratch, "notes.txt"), "w", encoding="utf-8") as handle:
         handle.write("probe notes\n")
+    provider = ThreadingHTTPServer(("127.0.0.1", 0), FakeProvider)
+    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
+    provider_thread.start()
     with open(os.path.join(scratch, ".jani", "settings.json"), "w", encoding="utf-8") as handle:
         json.dump(
             {
                 "version": 1,
+                "model": "probe",
+                "models": {
+                    "probe": {
+                        "model": "probe-model",
+                        "apiBase": f"http://127.0.0.1:{provider.server_port}/v1",
+                        "apiKeyEnv": "JANI_API_KEY",
+                    },
+                    "alt": {
+                        "model": "alt-model",
+                        "apiBase": f"http://127.0.0.1:{provider.server_port}/v1",
+                        "apiKeyEnv": "JANI_API_KEY",
+                    },
+                },
                 "permissions": {
                     "defaultMode": "default",
                     "allow": ["Read(./**)"],
@@ -408,9 +427,6 @@ def main():
             },
             handle,
         )
-    provider = ThreadingHTTPServer(("127.0.0.1", 0), FakeProvider)
-    provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
-    provider_thread.start()
     environment = os.environ.copy()
     environment.update(
         {
@@ -626,6 +642,81 @@ def main():
         )
         print("palette_runs_new:", palette_new)
 
+        # Model picker: "/model " opens the settings profiles, the query filters
+        # them, Enter switches the live session, and a raw model ID is accepted
+        # when no profile matches.
+        type_text(stdin_handle, "/model ")
+        picker = stable_screen(width, height, "enter switch", timeout=10.0)
+        print("--- model picker ---")
+        print(picker)
+        picker_body = palette_body(picker, "model", "enter switch")
+        model_picker_open = (
+            "probe-model" in picker_body
+            and "alt-model" in picker_body
+            and "current" in picker_body
+            and "enter switch" in picker_body
+        )
+        print("model_picker_opens:", model_picker_open)
+
+        type_text(stdin_handle, "al")
+        picker_filtered = stable_screen(width, height, "model · al", timeout=10.0)
+        print("--- model picker filter ---")
+        print(picker_filtered)
+        filtered_picker_body = palette_body(
+            picker_filtered, "model · al", "enter switch"
+        )
+        model_picker_filter = (
+            "alt-model" in filtered_picker_body
+            and "probe-model" not in filtered_picker_body
+        )
+        print("model_picker_filters:", model_picker_filter)
+
+        type_text(stdin_handle, "\r")
+        switched = wait_until_idle(
+            width, height, "Model switched to alt-model", timeout=15.0
+        )
+        print("--- model switched ---")
+        print(switched)
+        model_switched = "Model switched to alt-model" in switched
+        print("model_switch_end_to_end:", model_switched)
+
+        type_text(stdin_handle, "/status\r")
+        model_status = stable_screen(width, height, "Model: alt-model", timeout=10.0)
+        model_status_ok = "Model: alt-model (profile alt)" in model_status
+        print("model_status_reports_profile:", model_status_ok)
+
+        type_text(stdin_handle, "/model ")
+        stable_screen(width, height, "enter switch", timeout=10.0)
+        type_text(stdin_handle, "custom-probe-model")
+        custom_picker = stable_screen(width, height, "use as a model ID", timeout=10.0)
+        print("--- custom model row ---")
+        print(custom_picker)
+        custom_body = palette_body(
+            custom_picker, "model · custom-probe-model", "enter switch"
+        )
+        custom_row = (
+            "custom-probe-model" in custom_body
+            and "use as a model ID" in custom_body
+        )
+        print("custom_model_row:", custom_row)
+
+        type_text(stdin_handle, "\r")
+        custom_switched = wait_until_idle(
+            width, height, "Model switched to custom-probe-model", timeout=15.0
+        )
+        custom_model = "Model switched to custom-probe-model" in custom_switched
+        print("custom_model_switch:", custom_model)
+
+        type_text(stdin_handle, "/status\r")
+        custom_status = stable_screen(
+            width, height, "Model: custom-probe-model", timeout=10.0
+        )
+        custom_status_ok = (
+            "Model: custom-probe-model" in custom_status
+            and "Model: custom-probe-model (" not in custom_status
+        )
+        print("custom_model_has_no_profile:", custom_status_ok)
+
         type_text(stdin_handle, "/exit\r")
         try:
             code = process.wait(timeout=15)
@@ -669,6 +760,13 @@ def main():
             and palette_escape
             and palette_ran
             and palette_new
+            and model_picker_open
+            and model_picker_filter
+            and model_switched
+            and model_status_ok
+            and custom_row
+            and custom_model
+            and custom_status_ok
             and len(FakeProvider.captured) == 2
             and bool(requests)
             and all(request.get("stream") is True for request in requests)

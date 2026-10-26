@@ -5,8 +5,8 @@ use serde_json::Value;
 use std::io::{self, BufRead, IsTerminal, Write};
 
 const BANNER: &str = "Jani interactive terminal. Conversation is retained for this task.\n\
-Commands: /help /status /skills /inspect /budget /approvals /approval /new /exit\n\
-Authority is fixed at startup; restart to change write, command or policy scopes.";
+Commands: /help /status /model /skills /inspect /budget /approvals /approval /new /exit\n\
+Authority is fixed at startup; model profiles can be switched with /model. Restart to change write, command or policy scopes.";
 
 #[derive(Clone, Copy)]
 pub(crate) struct Command {
@@ -16,7 +16,7 @@ pub(crate) struct Command {
     pub requires_argument: bool,
 }
 
-pub(crate) static COMMANDS: [Command; 10] = [
+pub(crate) static COMMANDS: [Command; 11] = [
     Command {
         name: "help",
         usage: "",
@@ -27,6 +27,12 @@ pub(crate) static COMMANDS: [Command; 10] = [
         name: "status",
         usage: "",
         summary: "Show frozen authority, task, model and history size",
+        requires_argument: false,
+    },
+    Command {
+        name: "model",
+        usage: "[NAME]",
+        summary: "Switch model or settings profile for later turns",
         requires_argument: false,
     },
     Command {
@@ -94,9 +100,10 @@ pub(crate) fn help_text() -> String {
     text
 }
 
-pub(crate) const COMMAND_NAMES: [&str; 10] = [
+pub(crate) const COMMAND_NAMES: [&str; 11] = [
     "help",
     "status",
+    "model",
     "skills",
     "inspect",
     "budget",
@@ -207,6 +214,28 @@ pub(crate) fn execute_command(
             )
         }
         "status" => agent.status(),
+        "model" => {
+            if argument.is_empty() {
+                let mut text = format!("Model: {}", agent.model());
+                if let Some(profile) = agent.model_profile() {
+                    text.push_str(&format!(" (profile {profile})"));
+                }
+                if agent.model_choices().is_empty() {
+                    text.push_str(
+                        "\nNo model profiles in settings; /model MODEL_ID uses the current API and key.",
+                    );
+                } else {
+                    text.push_str("\nAvailable profiles:");
+                    for choice in agent.model_choices() {
+                        text.push_str(&format!("\n  {:<20} {}", choice.label, choice.model));
+                    }
+                    text.push_str("\nusage: /model PROFILE|MODEL");
+                }
+                text
+            } else {
+                agent.select_model(argument)?
+            }
+        }
         "skills" => catalog.listing(),
         "budget" => write_json(&agent.budget()?)?,
         "inspect" => {

@@ -1,5 +1,5 @@
 use crate::agent::{Agent, TurnEvent};
-use crate::config::{Config, JResult};
+use crate::config::{Config, JResult, ModelChoice};
 use crate::repl::{execute_command, Command, Flow, COMMANDS, COMMAND_NAMES};
 use crate::skills::Catalog;
 use ratatui::backend::CrosstermBackend;
@@ -70,6 +70,7 @@ pub fn run(agent: &mut Agent<'_>, cfg: &Config, catalog: &Catalog) -> JResult<()
     install_panic_restore();
     let meta = Meta::new(cfg, agent);
     let mut state = State::new(meta, agent.turns(), agent.pending_approvals().len());
+    state.models = cfg.model_choices.clone();
     let _guard = TerminalGuard::enter().map_err(io_error)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout())).map_err(io_error)?;
     terminal.clear().map_err(io_error)?;
@@ -254,17 +255,29 @@ fn run_command(state: &mut State, agent: &mut Agent<'_>, catalog: &Catalog, line
 }
 
 fn palette_run(state: &mut State, agent: &mut Agent<'_>, catalog: &Catalog) {
-    let Some(target) = palette_target(state) else {
+    let Some(action) = palette_action(state) else {
         return;
     };
     state.palette = None;
-    match target {
-        PaletteTarget::Prefill(command) => {
+    match action {
+        PaletteAction::Prefill(command) => {
             state.editor.text = format!("/{} ", command.name);
             state.editor.cursor = state.editor.text.len();
         }
-        PaletteTarget::Run(command) => {
+        PaletteAction::Run(command) => {
             state.editor.text = format!("/{}", command.name);
+            state.editor.cursor = state.editor.text.len();
+            let line = state.editor.take();
+            state.follow = true;
+            run_command(state, agent, catalog, line);
+        }
+        PaletteAction::Models => {
+            state.editor.text = "/model ".into();
+            state.editor.cursor = state.editor.text.len();
+            state.palette = Some(Palette::models());
+        }
+        PaletteAction::Select(target) => {
+            state.editor.text = format!("/model {target}");
             state.editor.cursor = state.editor.text.len();
             let line = state.editor.take();
             state.follow = true;
@@ -389,15 +402,33 @@ fn editor_key(state: &mut State, key: KeyEvent) {
 }
 
 fn palette_complete(state: &mut State) {
-    let Some(command) = state.palette_choice() else {
+    let Some(palette) = state.palette.as_ref() else {
         return;
     };
-    state.palette = None;
-    state.editor.text = format!("/{}", command.name);
-    if command.requires_argument {
-        state.editor.text.push(' ');
+    match palette.mode {
+        PaletteMode::Commands => {
+            let Some(command) = palette.command_choice(&state.editor) else {
+                return;
+            };
+            state.palette = None;
+            state.editor.text = format!("/{}", command.name);
+            if command.requires_argument {
+                state.editor.text.push(' ');
+            }
+            state.editor.cursor = state.editor.text.len();
+        }
+        PaletteMode::Models => {
+            let rows = palette.matches(&state.editor, &state.models);
+            let target = match rows.get(palette.selected.min(rows.len().saturating_sub(1))) {
+                Some(PaletteRow::Profile(choice)) => choice.label.clone(),
+                Some(PaletteRow::Custom(model)) => model.clone(),
+                _ => return,
+            };
+            state.palette = None;
+            state.editor.text = format!("/model {target} ");
+            state.editor.cursor = state.editor.text.len();
+        }
     }
-    state.editor.cursor = state.editor.text.len();
 }
 
 fn editor_only_key(state: &mut State, key: KeyEvent) {
@@ -474,8 +505,8 @@ impl Meta {
                 "enterprise" => "enterprise",
                 _ => "local",
             },
-            model: cfg.model.clone(),
-            profile: cfg.settings_profile.clone(),
+            model: agent.model().to_string(),
+            profile: agent.model_profile().map(str::to_string),
             writes,
             exec: cfg.allow_exec,
             sandbox: agent.sandbox_profile(),
@@ -490,6 +521,7 @@ struct State {
     entries: Vec<Entry>,
     editor: Editor,
     palette: Option<Palette>,
+    models: Vec<ModelChoice>,
     live: Option<LiveTurn>,
     scroll_top: usize,
     viewport: usize,
@@ -521,21 +553,53 @@ struct LiveTurn {
     reasoning_open: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum PaletteMode {
+    #[default]
+    Commands,
+    Models,
+}
+
 #[derive(Default)]
 struct Palette {
     selected: usize,
+    mode: PaletteMode,
+}
+
+enum PaletteRow<'a> {
+    Command(&'static Command),
+    Profile(&'a ModelChoice),
+    Custom(String),
 }
 
 impl Palette {
-    fn query<'a>(&self, editor: &'a Editor) -> Option<&'a str> {
-        let body = editor.text.strip_prefix('/')?;
-        if body.contains(char::is_whitespace) {
-            return None;
+    fn models() -> Self {
+        Self {
+            selected: 0,
+            mode: PaletteMode::Models,
         }
-        Some(body)
     }
 
-    fn matches(&self, editor: &Editor) -> Vec<&'static Command> {
+    fn query<'a>(&self, editor: &'a Editor) -> Option<&'a str> {
+        match self.mode {
+            PaletteMode::Commands => {
+                let body = editor.text.strip_prefix('/')?;
+                if body.contains(char::is_whitespace) {
+                    return None;
+                }
+                Some(body)
+            }
+            PaletteMode::Models => {
+                let body = editor.text.strip_prefix("/model ")?;
+                if body.contains(char::is_whitespace) {
+                    return None;
+                }
+                Some(body)
+            }
+        }
+    }
+
+    fn command_matches(&self, editor: &Editor) -> Vec<&'static Command> {
         let Some(query) = self.query(editor) else {
             return Vec::new();
         };
@@ -546,12 +610,39 @@ impl Palette {
             .collect()
     }
 
-    fn choice(&self, editor: &Editor) -> Option<&'static Command> {
-        let matches = self.matches(editor);
-        if matches.is_empty() {
-            return None;
+    fn command_choice(&self, editor: &Editor) -> Option<&'static Command> {
+        let matches = self.command_matches(editor);
+        matches
+            .get(self.selected.min(matches.len().saturating_sub(1)))
+            .copied()
+    }
+
+    fn matches<'a>(&self, editor: &Editor, models: &'a [ModelChoice]) -> Vec<PaletteRow<'a>> {
+        let Some(query) = self.query(editor) else {
+            return Vec::new();
+        };
+        match self.mode {
+            PaletteMode::Commands => self
+                .command_matches(editor)
+                .into_iter()
+                .map(PaletteRow::Command)
+                .collect(),
+            PaletteMode::Models => {
+                let folded = query.to_ascii_lowercase();
+                let mut rows: Vec<PaletteRow<'a>> = models
+                    .iter()
+                    .filter(|choice| {
+                        choice.label.to_ascii_lowercase().starts_with(&folded)
+                            || choice.model.to_ascii_lowercase().starts_with(&folded)
+                    })
+                    .map(PaletteRow::Profile)
+                    .collect();
+                if !query.is_empty() && rows.is_empty() {
+                    rows.push(PaletteRow::Custom(query.to_string()));
+                }
+                rows
+            }
         }
-        Some(matches[self.selected.min(matches.len() - 1)])
     }
 
     fn move_selection(&mut self, delta: isize, len: usize) {
@@ -563,18 +654,35 @@ impl Palette {
     }
 }
 
-enum PaletteTarget {
+enum PaletteAction {
     Run(&'static Command),
     Prefill(&'static Command),
+    Models,
+    Select(String),
 }
 
-fn palette_target(state: &State) -> Option<PaletteTarget> {
-    let command = state.palette_choice()?;
-    Some(if command.requires_argument {
-        PaletteTarget::Prefill(command)
-    } else {
-        PaletteTarget::Run(command)
-    })
+fn palette_action(state: &State) -> Option<PaletteAction> {
+    let palette = state.palette.as_ref()?;
+    match palette.mode {
+        PaletteMode::Commands => {
+            let command = palette.command_choice(&state.editor)?;
+            Some(if command.name == "model" {
+                PaletteAction::Models
+            } else if command.requires_argument {
+                PaletteAction::Prefill(command)
+            } else {
+                PaletteAction::Run(command)
+            })
+        }
+        PaletteMode::Models => {
+            let rows = palette.matches(&state.editor, &state.models);
+            match rows.get(palette.selected.min(rows.len().saturating_sub(1)))? {
+                PaletteRow::Profile(choice) => Some(PaletteAction::Select(choice.label.clone())),
+                PaletteRow::Custom(model) => Some(PaletteAction::Select(model.clone())),
+                PaletteRow::Command(_) => None,
+            }
+        }
+    }
 }
 
 impl State {
@@ -584,6 +692,7 @@ impl State {
             entries: Vec::new(),
             editor: Editor::default(),
             palette: None,
+            models: Vec::new(),
             live: None,
             scroll_top: 0,
             viewport: 0,
@@ -606,32 +715,42 @@ impl State {
         self.entries.push(entry);
     }
 
-    fn palette_choice(&self) -> Option<&'static Command> {
-        self.palette.as_ref()?.choice(&self.editor)
-    }
-
     fn palette_move(&mut self, delta: isize) {
         let len = self
             .palette
             .as_ref()
-            .map(|palette| palette.matches(&self.editor).len())
+            .map(|palette| palette.matches(&self.editor, &self.models).len())
             .unwrap_or(0);
         if let Some(palette) = self.palette.as_mut() {
             palette.move_selection(delta, len);
         }
     }
 
+    fn palette_candidate(&self) -> Option<Palette> {
+        if self.busy {
+            return None;
+        }
+        if self.editor.text == "/" {
+            return Some(Palette::default());
+        }
+        let rest = self.editor.text.strip_prefix("/model ")?;
+        if rest.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(Palette::models())
+    }
+
     fn reconcile_palette(&mut self, text_changed: bool) {
-        let Some(palette) = self.palette.as_mut() else {
-            if !self.busy && self.editor.text == "/" {
-                self.palette = Some(Palette::default());
-            }
+        let Some(palette) = self.palette.as_ref() else {
+            self.palette = self.palette_candidate();
             return;
         };
         if palette.query(&self.editor).is_none() {
-            self.palette = None;
+            self.palette = self.palette_candidate();
         } else if text_changed {
-            palette.selected = 0;
+            if let Some(palette) = self.palette.as_mut() {
+                palette.selected = 0;
+            }
         }
     }
 
@@ -746,6 +865,8 @@ impl State {
     }
 
     fn sync(&mut self, agent: &mut Agent<'_>) {
+        self.meta.model = agent.model().to_string();
+        self.meta.profile = agent.model_profile().map(str::to_string);
         self.turns = agent.turns();
         let pending = agent.pending_approvals();
         self.pending = pending.len();
@@ -1500,10 +1621,10 @@ fn draw_palette(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
     if available < 4 || width < 20 {
         return;
     }
-    let matches = palette.matches(&state.editor);
+    let rows = palette.matches(&state.editor, &state.models);
     let max_rows = usize::from(available.saturating_sub(3)).max(1);
-    let rows = matches.len().clamp(1, max_rows);
-    let height = (rows as u16 + 3).min(available);
+    let visible = rows.len().clamp(1, max_rows);
+    let height = (visible as u16 + 3).min(available);
     let area = Rect::new(
         content.x + (content.width - width) / 2,
         input.y - height,
@@ -1511,10 +1632,11 @@ fn draw_palette(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
         height,
     );
     frame.render_widget(Clear, area);
-    let title = if query.is_empty() {
-        " commands ".to_string()
-    } else {
-        format!(" commands · {query} ")
+    let title = match (palette.mode, query.is_empty()) {
+        (PaletteMode::Commands, true) => " commands ".to_string(),
+        (PaletteMode::Commands, false) => format!(" commands · {query} "),
+        (PaletteMode::Models, true) => " model ".to_string(),
+        (PaletteMode::Models, false) => format!(" model · {query} "),
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1527,46 +1649,80 @@ fn draw_palette(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
         return;
     }
     let list_height = usize::from(inner.height) - 1;
-    let selected = palette.selected.min(matches.len().saturating_sub(1));
-    let first = if matches.len() > list_height {
+    let selected = palette.selected.min(rows.len().saturating_sub(1));
+    let first = if rows.len() > list_height {
         selected
             .saturating_sub(list_height / 2)
-            .min(matches.len() - list_height)
+            .min(rows.len() - list_height)
     } else {
         0
     };
-    let name_width = COMMANDS
+    let name_width = rows
         .iter()
-        .map(|command| command_label(command).width())
+        .map(|row| match row {
+            PaletteRow::Command(command) => command_label(command).width(),
+            PaletteRow::Profile(choice) => choice.label.width(),
+            PaletteRow::Custom(model) => model.width(),
+        })
         .max()
         .unwrap_or(0);
     let description_width = usize::from(inner.width).saturating_sub(name_width + 4);
     let mut lines = Vec::new();
-    if matches.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("  no command matches \"/{query}\""),
-            Style::default().fg(DIM),
-        )));
+    if rows.is_empty() {
+        let message = match palette.mode {
+            PaletteMode::Commands => format!("  no command matches \"/{query}\""),
+            PaletteMode::Models => "  no model profiles in settings; type a model ID".to_string(),
+        };
+        lines.push(Line::from(Span::styled(message, Style::default().fg(DIM))));
     } else {
-        for (offset, command) in matches[first..first + rows].iter().enumerate() {
+        for (offset, row) in rows[first..first + visible].iter().enumerate() {
             let active = first + offset == selected;
             let marker = if active { "› " } else { "  " };
-            let label = command_label(command);
+            let (name, summary, current, unavailable) = match row {
+                PaletteRow::Command(command) => (
+                    command_label(command),
+                    command.summary.to_string(),
+                    false,
+                    false,
+                ),
+                PaletteRow::Profile(choice) => (
+                    choice.label.clone(),
+                    choice.model.clone(),
+                    state.meta.profile.as_deref() == Some(choice.label.as_str()),
+                    choice.api_key().is_none(),
+                ),
+                PaletteRow::Custom(model) => (
+                    model.clone(),
+                    "use as a model ID with the current API and key".to_string(),
+                    false,
+                    false,
+                ),
+            };
+            let name = if name.width() > name_width {
+                clip(&name, name_width)
+            } else {
+                name
+            };
             let mut line = Line::from(vec![
                 Span::styled(
                     marker,
                     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{label:<name_width$}"),
+                    format!("{name:<name_width$}"),
                     Style::default().fg(if active { ACCENT } else { TEXT }),
                 ),
                 Span::raw("  "),
-                Span::styled(
-                    clip(command.summary, description_width),
-                    Style::default().fg(DIM),
-                ),
+                Span::styled(clip(&summary, description_width), Style::default().fg(DIM)),
             ]);
+            if current {
+                line.spans
+                    .push(Span::styled(" · current", Style::default().fg(CODE)));
+            }
+            if unavailable {
+                line.spans
+                    .push(Span::styled(" · no credential", Style::default().fg(ERROR)));
+            }
             if active {
                 line = line.style(Style::default().bg(SELECT));
             }
@@ -1577,12 +1733,13 @@ fn draw_palette(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
         Paragraph::new(lines).style(Style::default().bg(PANEL)),
         Rect::new(inner.x, inner.y, inner.width, list_height as u16),
     );
+    let footer = match palette.mode {
+        PaletteMode::Commands => "enter run · tab complete · esc close",
+        PaletteMode::Models => "enter switch · tab complete · esc close",
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            clip(
-                "enter run · tab complete · esc close",
-                usize::from(inner.width),
-            ),
+            clip(footer, usize::from(inner.width)),
             Style::default().fg(FAINT),
         )))
         .style(Style::default().bg(PANEL)),
@@ -1759,10 +1916,14 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let line = if state.palette.is_some() {
+    let line = if let Some(palette) = state.palette.as_ref() {
+        let action = match palette.mode {
+            PaletteMode::Commands => " run  ",
+            PaletteMode::Models => " switch  ",
+        };
         hints_line(&[
             ("↑↓", " select  "),
-            ("enter", " run  "),
+            ("enter", action),
             ("tab", " complete  "),
             ("esc", " close"),
         ])
@@ -3044,6 +3205,14 @@ mod tests {
         assert_eq!(state.editor.cursor, 5);
     }
 
+    fn palette_choice(state: &State) -> Option<&'static Command> {
+        let palette = state.palette.as_ref()?;
+        if palette.mode != PaletteMode::Commands {
+            return None;
+        }
+        palette.command_choice(&state.editor)
+    }
+
     fn open_palette(state: &mut State, query: &str) {
         state.editor.clear();
         editor_only_key(state, KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
@@ -3087,29 +3256,29 @@ mod tests {
         assert!(text.contains("commands · st"), "{text}");
         assert!(text.contains("/status"), "{text}");
         assert!(!text.contains("/budget"), "{text}");
-        assert_eq!(state.palette_choice().unwrap().name, "status");
+        assert_eq!(palette_choice(&state).unwrap().name, "status");
     }
 
     #[test]
     fn palette_navigation_cycles_and_resets_on_filter_edits() {
         let mut state = State::new(meta(), 0, 0);
         open_palette(&mut state, "s");
-        assert_eq!(state.palette_choice().unwrap().name, "status");
+        assert_eq!(palette_choice(&state).unwrap().name, "status");
         editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(state.palette_choice().unwrap().name, "skills");
+        assert_eq!(palette_choice(&state).unwrap().name, "skills");
         editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(state.palette_choice().unwrap().name, "status");
+        assert_eq!(palette_choice(&state).unwrap().name, "status");
         editor_key(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(state.palette_choice().unwrap().name, "skills");
+        assert_eq!(palette_choice(&state).unwrap().name, "skills");
 
         open_palette(&mut state, "");
         editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(state.palette_choice().unwrap().name, "status");
+        assert_eq!(palette_choice(&state).unwrap().name, "status");
         editor_only_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         );
-        assert_eq!(state.palette_choice().unwrap().name, "new");
+        assert_eq!(palette_choice(&state).unwrap().name, "new");
     }
 
     #[test]
@@ -3166,14 +3335,19 @@ mod tests {
         let mut state = State::new(meta(), 0, 0);
         open_palette(&mut state, "appr");
         editor_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        match palette_target(&state) {
-            Some(PaletteTarget::Prefill(command)) => assert_eq!(command.name, "approval"),
+        match palette_action(&state) {
+            Some(PaletteAction::Prefill(command)) => assert_eq!(command.name, "approval"),
             _ => panic!("expected an argument prompt"),
         }
         open_palette(&mut state, "sta");
-        match palette_target(&state) {
-            Some(PaletteTarget::Run(command)) => assert_eq!(command.name, "status"),
+        match palette_action(&state) {
+            Some(PaletteAction::Run(command)) => assert_eq!(command.name, "status"),
             _ => panic!("expected an immediate action"),
+        }
+        open_palette(&mut state, "model");
+        match palette_action(&state) {
+            Some(PaletteAction::Models) => {}
+            _ => panic!("expected the model picker"),
         }
     }
 
@@ -3192,7 +3366,7 @@ mod tests {
         state.push(Entry::new(Kind::User, "previous"));
 
         open_palette(&mut state, "ne");
-        assert_eq!(state.palette_choice().unwrap().name, "new");
+        assert_eq!(palette_choice(&state).unwrap().name, "new");
         palette_run(&mut state, &mut agent, &catalog);
 
         assert!(state.palette.is_none());
@@ -3202,10 +3376,156 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.kind == Kind::Command && entry.text == "/new"));
+    }
+
+    fn model_config(root: &std::path::Path) -> Config {
+        std::fs::create_dir_all(root.join(".jani")).unwrap();
+        let path = root.join(".jani").join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "model": "alpha",
+                "models": {
+                    "alpha": {
+                        "model": "alpha-model",
+                        "apiBase": "https://alpha.test/v1",
+                        "apiKey": "unit-test-alpha-key"
+                    },
+                    "beta": {
+                        "model": "beta-model",
+                        "apiBase": "https://beta.test/v1",
+                        "apiKey": "unit-test-beta-key"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        Config::from_args(&[
+            "repl".to_string(),
+            "--repo".into(),
+            root.to_string_lossy().into_owned(),
+            "--settings".into(),
+            path.to_string_lossy().into_owned(),
+        ])
+        .unwrap()
+    }
+
+    fn type_text(state: &mut State, text: &str) {
+        for ch in text.chars() {
+            editor_only_key(state, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn the_model_picker_switches_between_settings_profiles() {
+        let root = workspace("model-picker");
+        let cfg = model_config(&root);
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        let mut state = State::new(Meta::new(&cfg, &agent), 0, 0);
+        state.models = cfg.model_choices.clone();
+
+        open_palette(&mut state, "model");
+        assert_eq!(palette_choice(&state).unwrap().name, "model");
+        palette_run(&mut state, &mut agent, &catalog);
+        assert_eq!(state.palette.as_ref().unwrap().mode, PaletteMode::Models);
+        assert_eq!(state.editor.text, "/model ");
+        let text = render(&mut state, 100, 30);
+        assert!(text.contains("alpha"), "{text}");
+        assert!(text.contains("beta-model"), "{text}");
+        assert!(text.contains("current"), "{text}");
+        assert!(text.contains("enter switch"), "{text}");
+
+        type_text(&mut state, "be");
+        let text = render(&mut state, 100, 30);
+        assert!(text.contains("model · be"), "{text}");
+        assert!(text.contains("beta-model"), "{text}");
+        let rows = state
+            .palette
+            .as_ref()
+            .unwrap()
+            .matches(&state.editor, &state.models);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0], PaletteRow::Profile(choice) if choice.label == "beta"));
+
+        palette_run(&mut state, &mut agent, &catalog);
+        assert!(state.palette.is_none());
+        assert_eq!(agent.model(), "beta-model");
+        assert_eq!(state.meta.model, "beta-model");
+        assert_eq!(state.meta.profile.as_deref(), Some("beta"));
         assert!(state
             .entries
             .iter()
-            .any(|entry| entry.text.contains("Conversation cleared")));
+            .any(|entry| entry.kind == Kind::Command && entry.text == "/model beta"));
+        assert!(state
+            .entries
+            .iter()
+            .any(|entry| entry.text.contains("Model switched to beta-model")));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_model_picker_accepts_a_custom_model_id_without_profiles() {
+        let root = workspace("model-custom");
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        cfg.model = "test-model".into();
+        cfg.api_key = Some("unit-test-key".into());
+        cfg.api_key_source = "test".into();
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        let mut state = State::new(meta(), 0, 0);
+        state.models = cfg.model_choices.clone();
+
+        type_text(&mut state, "/model ");
+        assert_eq!(state.palette.as_ref().unwrap().mode, PaletteMode::Models);
+        let text = render(&mut state, 100, 30);
+        assert!(text.contains("no model profiles"), "{text}");
+
+        type_text(&mut state, "custom-123");
+        let text = render(&mut state, 100, 30);
+        assert!(text.contains("custom-123"), "{text}");
+        assert!(text.contains("use as a model ID"), "{text}");
+
+        palette_run(&mut state, &mut agent, &catalog);
+        assert_eq!(agent.model(), "custom-123");
+        assert_eq!(agent.model_profile(), None);
+        assert_eq!(state.meta.model, "custom-123");
+        assert_eq!(state.meta.profile, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_model_picker_tab_completes_and_escape_clears() {
+        let root = workspace("model-tab");
+        let cfg = model_config(&root);
+        let catalog = Catalog::default();
+        let agent = Agent::new(&cfg, &catalog).unwrap();
+        let mut state = State::new(Meta::new(&cfg, &agent), 0, 0);
+        state.models = cfg.model_choices.clone();
+
+        type_text(&mut state, "/model be");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(state.palette.is_none());
+        assert_eq!(state.editor.text, "/model beta ");
+
+        state.editor.clear();
+        type_text(&mut state, "/model ");
+        assert!(state.palette.is_some());
+        editor_key(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(state.palette.is_none());
+        assert!(state.editor.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_model_picker_does_not_open_while_a_turn_runs() {
+        let mut state = State::new(meta(), 0, 0);
+        state.busy = true;
+        type_text(&mut state, "/model ");
+        assert!(state.palette.is_none());
+        assert_eq!(state.editor.text, "/model ");
     }
 }

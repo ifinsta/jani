@@ -1,4 +1,4 @@
-use crate::config::{Config, JResult};
+use crate::config::{JResult, ModelChoice};
 use crate::types::ModelProtocol;
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
@@ -32,19 +32,19 @@ pub struct ChatModel {
 }
 
 impl ChatModel {
-    pub fn new(cfg: &Config) -> JResult<Self> {
-        let key = cfg.api_key.clone().ok_or_else(|| {
+    pub fn new(choice: &ModelChoice) -> JResult<Self> {
+        let key = choice.api_key().map(str::to_string).ok_or_else(|| {
             format!(
                 "set JANI_API_KEY, OPENAI_API_KEY, or a settings apiKey/apiKeyEnv to call model '{}'",
-                cfg.model
+                choice.model
             )
         })?;
         let client = Client::builder()
             .timeout(Duration::from_secs(180))
             .build()
             .map_err(|e| e.to_string())?;
-        let base = cfg.api_base.trim_end_matches('/');
-        let endpoint = match cfg.protocol {
+        let base = choice.api_base.trim_end_matches('/');
+        let endpoint = match choice.protocol {
             ModelProtocol::OpenAi => format!("{base}/chat/completions"),
             ModelProtocol::Anthropic => {
                 if base.ends_with("/v1") {
@@ -57,10 +57,10 @@ impl ChatModel {
         Ok(Self {
             client,
             endpoint,
-            model: cfg.model.clone(),
+            model: choice.model.clone(),
             key,
-            protocol: cfg.protocol,
-            max_output_tokens: cfg.max_output_tokens,
+            protocol: choice.protocol,
+            max_output_tokens: choice.max_output_tokens,
         })
     }
 
