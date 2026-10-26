@@ -165,6 +165,23 @@ def duplicate(handle):
     return duplicate_handle
 
 
+class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", COORD),
+        ("dwCursorPosition", COORD),
+        ("wAttributes", wintypes.WORD),
+        ("srWindow", SMALL_RECT),
+        ("dwMaximumWindowSize", COORD),
+    ]
+
+
+kernel32.GetConsoleScreenBufferInfo.argtypes = [
+    wintypes.HANDLE,
+    ctypes.POINTER(CONSOLE_SCREEN_BUFFER_INFO),
+]
+GEOMETRY = None
+
+
 def read_screen(width, height):
     handle = kernel32.CreateFileW(
         "CONOUT$",
@@ -177,16 +194,39 @@ def read_screen(width, height):
     )
     if handle == wintypes.HANDLE(-1).value:
         fail("open CONOUT$ for reading")
-    buffer = ctypes.create_unicode_buffer(width * height)
+    # The host can resize the buffer after the probe sets its initial geometry,
+    # so trust the live buffer stride rather than the requested width.
+    info = CONSOLE_SCREEN_BUFFER_INFO()
+    if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+        kernel32.CloseHandle(handle)
+        fail("GetConsoleScreenBufferInfo")
+    global GEOMETRY
+    stride = info.dwSize.X
+    top = info.srWindow.Top
+    window_width = info.srWindow.Right - info.srWindow.Left + 1
+    window_height = info.srWindow.Bottom - info.srWindow.Top + 1
+    geometry = (stride, info.dwSize.Y, window_width, window_height, top)
+    if geometry != GEOMETRY:
+        GEOMETRY = geometry
+        print(
+            f"console_geometry: buffer={stride}x{info.dwSize.Y}"
+            f" window={window_width}x{window_height} top={top}"
+        )
+    cols = min(stride, window_width if window_width > 0 else width)
+    rows = max(0, min(height, window_height, info.dwSize.Y - top))
+    buffer = ctypes.create_unicode_buffer(stride * max(rows, 1))
     read = wintypes.DWORD()
     if not kernel32.ReadConsoleOutputCharacterW(
-        handle, buffer, width * height, COORD(0, 0), ctypes.byref(read)
+        handle, buffer, stride * rows, COORD(0, top), ctypes.byref(read)
     ):
         kernel32.CloseHandle(handle)
         fail("ReadConsoleOutputCharacterW")
     kernel32.CloseHandle(handle)
     text = buffer[: read.value]
-    return "\n".join(text[row * width : (row + 1) * width].rstrip() for row in range(height))
+    return "\n".join(
+        text[row * stride : (row + 1) * stride][:cols].rstrip()
+        for row in range(read.value // stride)
+    )
 
 
 def wait_for(width, height, needle, timeout=12.0):
