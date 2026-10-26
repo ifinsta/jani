@@ -17,6 +17,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 ## Start here
 
 - [README](../README.md) — what Jani is, quick start and the authority model
+- [PRODUCT EXECUTION PROGRAMME](PRODUCT_EXECUTION_PROGRAM.md) — phase gates, acceptance criteria and evidence
 - [COMPONENT CONTRACTS](COMPONENT_CONTRACTS.md)
 - [PROJECT CONTRACT](PROJECT_CONTRACT.md)
 - [RELEASE ACCEPTANCE](RELEASE_ACCEPTANCE.md)
