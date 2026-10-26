@@ -30,6 +30,23 @@ tests:
 
 See [validation](../VALIDATION.md), [architecture](ARCHITECTURE.md), [existing engineering roadmap](ROADMAP.md), [release acceptance](RELEASE_ACCEPTANCE.md) and [Sentinel operations](SENTINEL_OPERATIONS.md).
 
+## Delivery status — 2026-10-26
+
+This register reports committed **source**, not a certified release. A new Windows agent binary was not compiled or published for these changes, so all runtime/CI gates below remain open.
+
+| Track | Source delivered | Still required before phase sign-off |
+| --- | --- | --- |
+| Phase 0 | Repositioned README, documentation index, normative programme and manifest | Fresh doccheck, claims check, reviewer acceptance |
+| Phase 1A | First-run read-only task drafts, terminal authority/profile clarity, Windows probe extensions | Real Windows console and Cargo validation |
+| Phase 1B | Bounded multiline editor, Shift+Enter, newline paste, tool status timeline, audit-only completion status | Clippy, accessibility, 40x10/80x24/120x40, real provider and UX E2E |
+| Phase 2 | Cooperative cancellation before future tool actions, exact failed-turn context restoration, read-only journal-based recovery inventory | Crash-safe persisted model checkpoint, operation fencing, idempotency, real abort of blocked requests and source-of-truth reconciliation |
+| Phase 3 | `jani evidence RUN_ID` journal-verified receipt with explicit unverified-outcome flags | Independent acceptance verifier, signed or externally anchored receipts and acceptance tests |
+| Phase 4 | Prior security broker / sandbox refusals retained | OS-level Windows/macOS confinement tests, key rotation, supply chain signatures and external security review |
+| Phase 5 | Existing governed MCP and non-executable plugin manifest registry retained | Isolated executable plugin runtime, expanded provider conformance, malicious plugin tests |
+| Phase 6 | Existing Sentinel laboratory sources retained | Live-host fleet coverage, consent/privacy proof, recovery drills, HA and measured SLOs |
+
+Run [the Windows validation script](../tools/verify_tui_phase1.ps1) from a disposable checkout; capture commit SHA, exact binary SHA-256, commands, stdout/stderr and host OS details. No automated job or local assertion is currently evidence of a passed release. The 5-million-case corpus is a generated corpus, not five million executed agent scenarios.
+
 ## Execution rules
 
 1. No weakening of operator ceilings, signed policy enforcement, audit-before-effects, data egress policy, approval separation or fail-closed sandbox selection for UI convenience.
