@@ -888,7 +888,7 @@ mod tests {
         cfg.api_key = None;
         let catalog = Catalog::default();
         let mut agent = Agent::new(&cfg, &catalog).unwrap();
-        for index in 0..9 {
+        for index in 0..18 {
             agent.session.messages.push(json!({
                 "role": "user", "content": format!("old-{index}-{}", "x".repeat(18_000))
             }));
