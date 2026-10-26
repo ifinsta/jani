@@ -440,6 +440,16 @@ def main():
     os.makedirs(os.path.join(scratch, ".jani"))
     with open(os.path.join(scratch, "notes.txt"), "w", encoding="utf-8") as handle:
         handle.write("probe notes\n")
+    skill_dir = os.path.join(scratch, ".agents", "skills", "probe-skill")
+    os.makedirs(skill_dir)
+    with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as handle:
+        handle.write(
+            "---\n"
+            "name: probe-skill\n"
+            "description: Probe the styled skills listing in a real console.\n"
+            "---\n"
+            "# Probe skill\n"
+        )
     provider = ThreadingHTTPServer(("127.0.0.1", 0), FakeProvider)
     provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
     provider_thread.start()
@@ -568,6 +578,26 @@ def main():
         print("no_usage_dump:", "USAGE:" not in status)
         permissions_loaded = "Project permissions: mode=default allow=1 ask=1 deny=1" in status
         print("permissions_loaded:", permissions_loaded)
+
+        # /skills must render a structured catalog block, not one dim paragraph:
+        # an accent header, a marked skill name, the description and a readable
+        # path. It must not call the provider.
+        type_text(stdin_handle, "/skills\r")
+        skills_screen = stable_screen(width, height, "◆ probe-skill", timeout=10.0)
+        print("--- skills screen ---")
+        print(skills_screen)
+        skills_header = "skills · " in skills_screen and "discovered" in skills_screen
+        skills_block = (
+            skills_header
+            and "◆ probe-skill" in skills_screen
+            and "Probe the styled skills listing" in skills_screen
+            and "SKILL.md" in skills_screen
+            and "\\\\?\\" not in skills_screen
+        )
+        skills_no_request = len(FakeProvider.captured) == 0
+        print("skills_header_rendered:", skills_header)
+        print("skills_block_rendered:", skills_block)
+        print("skills_no_request:", skills_no_request)
 
         type_text(stdin_handle, "hello\r")
         busy = wait_for(width, height, "step 1/", timeout=5.0)
@@ -803,6 +833,9 @@ def main():
             and "Task:" in status
             and "USAGE:" not in status
             and permissions_loaded
+            and skills_header
+            and skills_block
+            and skills_no_request
             and "step 1/" in busy
             and "reading notes.txt" in tool
             and "Hello from the fake provider." in answer

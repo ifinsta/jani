@@ -1,7 +1,7 @@
 use crate::agent::{Agent, TurnEvent};
 use crate::config::{Config, JResult, ModelChoice};
 use crate::repl::{execute_command, Command, Flow, COMMANDS, COMMAND_NAMES};
-use crate::skills::Catalog;
+use crate::skills::{Catalog, Skill};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
     cursor,
@@ -257,7 +257,10 @@ fn run_command(state: &mut State, agent: &mut Agent<'_>, catalog: &Catalog, line
     state.push(Entry::new(Kind::Command, line));
     match result {
         Ok((flow, text)) => {
-            if !text.is_empty() {
+            if name == "skills" && !catalog.skills.is_empty() {
+                let skills = catalog.skills.values().cloned().collect();
+                state.push(Entry::listing(text, skills));
+            } else if !text.is_empty() {
                 state.push(Entry::new(Kind::Note, text));
             }
             if matches!(flow, Flow::Exit) {
@@ -970,6 +973,7 @@ struct Entry {
     kind: Kind,
     text: String,
     open: bool,
+    skills: Vec<Skill>,
 }
 
 impl Entry {
@@ -978,6 +982,16 @@ impl Entry {
             kind,
             text: text.into(),
             open: false,
+            skills: Vec::new(),
+        }
+    }
+
+    fn listing(text: impl Into<String>, skills: Vec<Skill>) -> Self {
+        Self {
+            kind: Kind::Skills,
+            text: text.into(),
+            open: false,
+            skills,
         }
     }
 
@@ -996,6 +1010,7 @@ enum Kind {
     Command,
     Tool,
     Reasoning,
+    Skills,
 }
 
 impl Kind {
@@ -1008,6 +1023,7 @@ impl Kind {
             Self::Command => "command",
             Self::Tool => "tool",
             Self::Reasoning => "think",
+            Self::Skills => "skills",
         }
     }
 
@@ -1020,6 +1036,7 @@ impl Kind {
             Self::Command => FAINT,
             Self::Tool => CODE,
             Self::Reasoning => FAINT,
+            Self::Skills => ACCENT,
         }
     }
 
@@ -1029,6 +1046,7 @@ impl Kind {
             Self::Note | Self::Tool | Self::Reasoning => Style::default().fg(DIM),
             Self::Error => Style::default().fg(ERROR),
             Self::Command => Style::default().fg(DIM),
+            Self::Skills => Style::default().fg(TEXT),
         }
     }
 }
@@ -1618,6 +1636,7 @@ fn transcript(state: &State, width: usize) -> Transcript {
                 out.push(kind_label(entry.kind), None);
                 out.extend(markdown_block(&entry.text, body_width), None);
             }
+            Kind::Skills => out.extend(listing_block(entry, body_width), None),
             Kind::Tool => {
                 let failed = entry.text.ends_with("(failed)");
                 let color = if failed { ERROR } else { CODE };
@@ -1711,6 +1730,64 @@ fn markdown_block(text: &str, width: usize) -> Vec<Line<'static>> {
         } else {
             let mut spans = vec![Span::raw("  ")];
             spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        }
+    }
+    lines
+}
+
+fn listing_block(entry: &Entry, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            Kind::Skills.label(),
+            Style::default()
+                .fg(Kind::Skills.label_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" · {} discovered", entry.skills.len()),
+            Style::default().fg(DIM),
+        ),
+    ])];
+    let inner = width.saturating_sub(4).max(1);
+    for (index, skill) in entry.skills.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("◆ ", Style::default().fg(ACCENT)),
+            Span::styled(
+                skill.name.clone(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        let description = skill.description.trim();
+        if description.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    "(no description)",
+                    Style::default().fg(FAINT).add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        } else {
+            for part in wrap(description, inner) {
+                let mut spans = vec![Span::raw("    ")];
+                if !part.is_empty() {
+                    spans.push(Span::styled(part, Style::default().fg(TEXT)));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+        for part in wrap(&short_path(&skill.file, 96), inner) {
+            let mut spans = vec![
+                Span::raw("    "),
+                Span::styled("↳ ", Style::default().fg(FAINT)),
+            ];
+            if !part.is_empty() {
+                spans.push(Span::styled(part, Style::default().fg(FAINT)));
+            }
             lines.push(Line::from(spans));
         }
     }
@@ -3233,6 +3310,85 @@ mod tests {
         assert!(text.iter().any(|line| line == "jani"));
         assert!(text.iter().any(|line| line == "  hello there"));
         assert!(text.iter().any(|line| line == "  general kenobi"));
+    }
+
+    #[test]
+    fn skills_command_renders_a_styled_catalog_block() {
+        let root = workspace("skills-listing");
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        cfg.tenant = "t1".into();
+        cfg.principal = "p1".into();
+        cfg.task_id = Some("task-1".into());
+        let mut catalog = Catalog::default();
+        for (name, description) in [
+            ("doc-truth", "Check documentation claims against evidence."),
+            ("no-notes", ""),
+            ("pay-ui", "Payment interface conventions."),
+        ] {
+            catalog.skills.insert(
+                name.into(),
+                Skill {
+                    name: name.into(),
+                    description: description.into(),
+                    file: root
+                        .join(".agents")
+                        .join("skills")
+                        .join(name)
+                        .join("SKILL.md"),
+                },
+            );
+        }
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        let mut state = State::new(meta(), 0, 0);
+        run_command(&mut state, &mut agent, &catalog, "/skills".into());
+
+        let entry = state
+            .entries
+            .iter()
+            .find(|entry| entry.kind == Kind::Skills)
+            .expect("a structured skills entry");
+        assert_eq!(entry.skills.len(), 3);
+
+        let listing = transcript(&state, 100);
+        let text: Vec<String> = listing
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert!(text.iter().any(|line| line == "skills · 3 discovered"));
+        assert!(text.iter().any(|line| line.contains("◆ doc-truth")));
+        assert!(text
+            .iter()
+            .any(|line| line.contains("Check documentation claims")));
+        assert!(text.iter().any(|line| line.contains("(no description)")));
+        assert!(text
+            .iter()
+            .any(|line| line.trim_start().starts_with("↳ ") && line.ends_with("SKILL.md")));
+        assert!(!text.iter().any(|line| line.contains("\\\\?\\")));
+        let doc = text
+            .iter()
+            .position(|line| line.contains("doc-truth"))
+            .unwrap();
+        let pay = text
+            .iter()
+            .position(|line| line.contains("pay-ui"))
+            .unwrap();
+        assert!(doc < pay);
+        for line in &listing.lines {
+            assert!(line.width() <= 100, "{line:?}");
+        }
+
+        let narrow = transcript(&state, 40);
+        for line in &narrow.lines {
+            assert!(line.width() <= 40, "{line:?}");
+        }
     }
 
     #[test]

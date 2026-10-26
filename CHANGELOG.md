@@ -23,6 +23,8 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- `/skills` in the full-screen interface now renders a structured catalog instead of one dim paragraph: an accent header with the discovered count, each skill name marked and bold, its description in normal text, and a faint `SKILL.md` path with the Windows verbatim prefix and home directory shortened. Long descriptions and paths wrap to the transcript width, empty descriptions are labelled, and skills are separated by blank lines. The command remains read-only and makes no provider call. Line-mode `/skills` and `jani skills` keep their existing plain one-line-per-skill output. A new TUI test covers ordering, empty descriptions, path shortening and 40-column wrapping, and the real-console probe asserts the styled block and zero provider requests.
+
 - Corrected failed-turn context restoration: rather than truncating by message count after potentially dropping old turns, the runtime restores the exact pre-turn conversation snapshot. Added a regression fixture above the 256 KiB trimming threshold; this remains source-only until the updated tests run.
 
 - Added `jani evidence RUN_ID`, a standalone read-only evidence receipt built from a hash-chain-verified journal. It marks task outcome verification, effect reconciliation and automatic replay as false; a new CLI regression covers tampered-journal rejection. Source only, unverified by a fresh Rust build.
