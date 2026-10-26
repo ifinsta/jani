@@ -81,6 +81,12 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     assert!(completed.status.success(), "{}", String::from_utf8_lossy(&completed.stderr));
     assert!(String::from_utf8_lossy(&completed.stdout).contains("recorded_model_complete"));
     assert!(invoke(&["inspect", "run-test"]).status.success());
+    let evidence = invoke(&["evidence", "run-test"]);
+    assert!(evidence.status.success(), "{}", String::from_utf8_lossy(&evidence.stderr));
+    let receipt: serde_json::Value = serde_json::from_slice(&evidence.stdout).unwrap();
+    assert_eq!(receipt["journalChainVerified"], true);
+    assert_eq!(receipt["outcomeVerified"], false);
+    assert_eq!(receipt["safeToAutoReplay"], false);
 
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
@@ -92,6 +98,7 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     let corrupted = invoke(&["recovery", "status"]);
     assert!(!corrupted.status.success());
     assert!(!invoke(&["inspect", "run-test"]).status.success());
+    assert!(!invoke(&["evidence", "run-test"]).status.success());
     fs::remove_dir_all(root).unwrap();
 }
 
