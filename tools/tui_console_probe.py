@@ -1,15 +1,16 @@
 """Drive the full-screen Jani UI through a real Windows console and audit frames.
 
 The probe allocates a console, binds the child's stdin/stdout/stderr to it and
-injects keys with WriteConsoleInputW. It reads the active screen buffer, so it
-checks rendered text rather than piped output. A local fake OpenAI-compatible
-provider proves that a turn reaches the model gateway without exposing the key.
+injects key and mouse records with WriteConsoleInputW. It reads the active
+screen buffer, so it checks rendered text rather than piped output. A local fake
+OpenAI-compatible provider proves that a turn reaches the model gateway without
+exposing the key.
 
 Usage:
     python tools/tui_console_probe.py target/release/jani.exe target/tui-run
 
-Windows only. It does not replace a terminal-emulator test: resize, paste,
-scrollback, color fidelity and rendering on Linux or macOS remain manual.
+Windows only. It does not replace a terminal-emulator test: paste, scrollback,
+color fidelity and rendering on Linux or macOS remain manual.
 """
 
 import ctypes
@@ -50,6 +51,15 @@ OPEN_EXISTING = 3
 DUPLICATE_SAME_ACCESS = 0x00000002
 ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 KEY_EVENT = 1
+MOUSE_EVENT = 2
+# dwEventFlags in a MOUSE_EVENT_RECORD: 0x0004 is the vertical wheel and 0x0008
+# is the horizontal one. SendInput's MOUSEEVENTF_FROMWHEEL (0x08) is a different
+# encoding and does not work here.
+MOUSE_WHEELED = 0x0004
+ENABLE_MOUSE_INPUT = 0x0010
+ENABLE_EXTENDED_FLAGS = 0x0080
+VK_RETURN = 0x0D
+VK_PAGE_UP = 0x21
 
 kernel32.GetCurrentProcess.restype = wintypes.HANDLE
 kernel32.CreateFileW.restype = wintypes.HANDLE
@@ -110,8 +120,19 @@ class KEY_EVENT_RECORD(ctypes.Structure):
     ]
 
 
+class MOUSE_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("dwMousePosition", COORD),
+        ("dwButtonState", wintypes.DWORD),
+        ("dwControlKeyState", wintypes.DWORD),
+        # dwEventFlags is a WORD in Win32. Declaring it wider shifts the value
+        # into an offset the reader interprets as a horizontal wheel event.
+        ("dwEventFlags", wintypes.WORD),
+    ]
+
+
 class EVENT_UNION(ctypes.Union):
-    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+    _fields_ = [("KeyEvent", KEY_EVENT_RECORD), ("MouseEvent", MOUSE_EVENT_RECORD)]
 
 
 class INPUT_RECORD(ctypes.Structure):
@@ -194,20 +215,92 @@ def stable_screen(width, height, needle, timeout=12.0):
     return screen
 
 
+def wait_until_idle(width, height, needle, timeout=25.0):
+    # A streamed turn redraws continuously, so a settled frame is not enough: the
+    # authority line only returns once the turn has finished.
+    deadline = time.time() + timeout
+    screen = ""
+    while time.time() < deadline:
+        first = read_screen(width, height)
+        screen = first
+        if needle in first and "writes off" in first:
+            time.sleep(0.3)
+            second = read_screen(width, height)
+            screen = second
+            if first == second:
+                return second
+        time.sleep(0.15)
+    return screen
+
+
+def key(handle, virtual_key=0, char="\x00", control_state=0):
+    record = INPUT_RECORD()
+    record.EventType = KEY_EVENT
+    record.Event.KeyEvent.bKeyDown = 1
+    record.Event.KeyEvent.wRepeatCount = 1
+    record.Event.KeyEvent.wVirtualKeyCode = virtual_key
+    record.Event.KeyEvent.uChar.UnicodeChar = char
+    record.Event.KeyEvent.dwControlKeyState = control_state
+    write_records(handle, (record,))
+
+
 def type_text(handle, text):
-    records = (INPUT_RECORD * len(text))()
-    for index, ch in enumerate(text):
-        record = records[index]
+    records = []
+    for ch in text:
+        record = INPUT_RECORD()
         record.EventType = KEY_EVENT
         record.Event.KeyEvent.bKeyDown = 1
         record.Event.KeyEvent.wRepeatCount = 1
-        record.Event.KeyEvent.wVirtualKeyCode = 0x0D if ch == "\r" else 0
+        record.Event.KeyEvent.wVirtualKeyCode = VK_RETURN if ch == "\r" else 0
         record.Event.KeyEvent.uChar.UnicodeChar = ch
+        records.append(record)
+    # One call per string: the app reads one record per animation tick, so a
+    # burst stays in the buffer until it is consumed.
+    write_records(handle, records)
+
+
+def write_records(handle, records):
+    array = (INPUT_RECORD * len(records))(*records)
     written = wintypes.DWORD()
-    if not kernel32.WriteConsoleInputW(handle, records, len(records), ctypes.byref(written)):
+    if not kernel32.WriteConsoleInputW(handle, array, len(records), ctypes.byref(written)):
         fail("WriteConsoleInputW")
     if written.value != len(records):
         fail(f"WriteConsoleInputW wrote {written.value}/{len(records)}")
+
+
+def enable_mouse(handle):
+    """Set the mouse bit early so records are not dropped while the app starts."""
+    mode = wintypes.DWORD()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        fail("GetConsoleMode")
+    wanted = wintypes.DWORD(mode.value | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT)
+    if not kernel32.SetConsoleMode(handle, wanted):
+        fail("SetConsoleMode")
+
+
+def send_mouse(handle, column, row, button_state, flags):
+    record = INPUT_RECORD()
+    record.EventType = MOUSE_EVENT
+    record.Event.MouseEvent.dwMousePosition = COORD(column, row)
+    record.Event.MouseEvent.dwButtonState = button_state & 0xFFFFFFFF
+    record.Event.MouseEvent.dwEventFlags = flags
+    write_records(handle, (record,))
+
+
+def wheel(handle, column, row, ticks):
+    send_mouse(handle, column, row, ticks, MOUSE_WHEELED)
+
+
+def click(handle, column, row):
+    send_mouse(handle, column, row, 1, 0)
+    send_mouse(handle, column, row, 0, 0)
+
+
+def row_of(screen, needle):
+    for index, line in enumerate(screen.split("\n")):
+        if needle in line:
+            return index
+    return -1
 
 
 class FakeProvider(BaseHTTPRequestHandler):
@@ -393,7 +486,7 @@ def main():
         print("--- tool screen ---")
         print(tool)
         print("tool_activity_rendered:", "reading notes.txt" in tool)
-        answer = stable_screen(width, height, "Hello from the fake provider.", timeout=25.0)
+        answer = wait_until_idle(width, height, "• beta item", timeout=25.0)
         print("--- answer screen ---")
         print(answer)
         print("answer_rendered:", "Hello from the fake provider." in answer)
@@ -414,6 +507,51 @@ def main():
             "key_not_in_body:",
             all("probe-secret-key" not in body for body in FakeProvider.captured),
         )
+
+        # Scrolling: /help lengthens the transcript past the viewport. PageUp,
+        # the wheel and a click on a fold label each have to move the view.
+        type_text(stdin_handle, "/help\r")
+        overflow = stable_screen(width, height, "Any other input", timeout=10.0)
+        print("--- overflow screen ---")
+        print(overflow)
+        print("scrollbar_rendered:", "║" in overflow or "█" in overflow)
+        print("following_at_bottom:", "• beta item" in overflow)
+        print("earlier_block_hidden:", "Jani v0.1.0" not in overflow)
+
+        key(stdin_handle, VK_PAGE_UP)
+        keyed = stable_screen(width, height, "below the bottom", timeout=10.0)
+        print("--- page up ---")
+        print(keyed)
+        print("pageup_scrolls:", "below the bottom" in keyed)
+
+        enable_mouse(stdin_handle)
+        for _ in range(8):
+            wheel(stdin_handle, 40, 10, 120)
+            time.sleep(0.05)
+        scrolled = stable_screen(width, height, "Jani v0.1.0", timeout=10.0)
+        print("--- wheel up ---")
+        print(scrolled)
+        print("wheel_scroll_up:", "below the bottom" in scrolled and scrolled != keyed)
+        earlier = "Jani v0.1.0" in scrolled and "Any other input" not in scrolled
+        print("earlier_content_visible:", earlier)
+        fold_row = row_of(scrolled, "▸ think")
+        print("fold_row:", fold_row)
+        click_expanded = False
+        if fold_row >= 0:
+            click(stdin_handle, 5, fold_row)
+            expanded = wait_for(width, height, "checking the fake provider", timeout=5.0)
+            click_expanded = "checking the fake provider" in expanded
+            print("--- click expand ---")
+            print(expanded)
+        print("click_expands_thinking:", click_expanded)
+        for _ in range(12):
+            wheel(stdin_handle, 40, 10, -120)
+            time.sleep(0.05)
+        resumed = stable_screen(width, height, "Any other input", timeout=10.0)
+        print("--- wheel down ---")
+        print(resumed)
+        print("wheel_resume_follow:", "below the bottom" not in resumed)
+        print("back_at_bottom:", "Any other input" in resumed and "Jani v0.1.0" not in resumed)
 
         type_text(stdin_handle, "/exit\r")
         try:
@@ -441,6 +579,18 @@ def main():
             and "reasoning line" in answer
             and "checking the fake provider" not in answer
             and "1 turn" in answer
+            and ("║" in overflow or "█" in overflow)
+            and "• beta item" in overflow
+            and "Jani v0.1.0" not in overflow
+            and "below the bottom" in keyed
+            and "below the bottom" in scrolled
+            and scrolled != keyed
+            and "Jani v0.1.0" in scrolled
+            and "Any other input" not in scrolled
+            and click_expanded
+            and "below the bottom" not in resumed
+            and "Any other input" in resumed
+            and "Jani v0.1.0" not in resumed
             and len(FakeProvider.captured) == 2
             and bool(requests)
             and all(request.get("stream") is True for request in requests)

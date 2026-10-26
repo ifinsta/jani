@@ -53,7 +53,7 @@ See [Configuration reference](CONFIGURATION_REFERENCE.md) for the schema and [th
 - A failed turn rolls the conversation back to the checkpoint taken before that prompt, so a partial tool call cannot poison later turns. The rolled-back prompt and any partial tool results are not model context: the next prompt continues from the last successful turn, and the interface says so. History itself is process-local and is not persisted across restarts.
 - With redirected or piped stdin, `jani repl` warns that stdin is not a terminal and reads commands until EOF. Answers go to stdout; the banner and `jani> ` prompt go to stderr.
 
-When **both** stdin and stdout are terminals, the session runs as a full-screen terminal interface: an alternate-screen workspace with the conversation transcript, a multi-line input box, a frozen-authority meta line, key hints, a rotating tip and a status bar. Rendering requires a terminal of at least 40x10; smaller windows show a resize message instead of a clipped layout. A terminal emulator is not required for correctness: if either stream is redirected, Jani falls back to line mode with a warning, so pipes and existing automation keep working.
+When **both** stdin and stdout are terminals, the session runs as a full-screen terminal interface: an alternate-screen workspace with a scrollable conversation transcript and its scrollbar, a multi-line input box, a frozen-authority meta line, key hints, a rotating tip and a status bar. Rendering requires a terminal of at least 40x10; smaller windows show a resize message instead of a clipped layout. A terminal emulator is not required for correctness: if either stream is redirected, Jani falls back to line mode with a warning, so pipes and existing automation keep working.
 
 Keys in the full-screen interface:
 
@@ -62,18 +62,22 @@ Keys in the full-screen interface:
 | `Enter` | Submit the current input |
 | `Tab` | Complete a slash command |
 | `Up` / `Down` | Walk input history; the in-progress draft is restored when you return |
-| `Left` / `Right`, `Home` / `End` | Move the cursor; `Ctrl+A` / `Ctrl+E` jump to the ends |
+| `Left` / `Right`, `Home` / `End` | Move the cursor; `Ctrl+A` / `Ctrl+E` jump to the ends. With an empty input, or with `Ctrl` held, `Home` jumps the transcript to its top and `End` resumes following |
 | `Backspace` / `Delete` | Edit by Unicode scalar, not byte |
-| `PgUp` / `PgDn` | Scroll the transcript; scrolling up pauses follow mode until you return to the bottom |
-| `Ctrl+T` | Show or hide model reasoning; reasoning is folded by default |
+| `PgUp` / `PgDn` | Scroll the transcript ten lines; scrolling up pauses follow mode until you return to the bottom |
+| Mouse wheel | Scroll the transcript three lines per notch; `Home` / `End` and `PgDn` also resume following |
+| Mouse click | On a `▸ think` label, expand or fold that one block; on the scrollbar, jump to that proportion of the transcript |
+| `Ctrl+T` | Expand or fold the most recent thinking block; blocks start folded |
 | `Esc` | Clear the input |
 | `Ctrl+U` | Clear the input before the cursor |
 | `Ctrl+C` | Clear a non-empty input, or exit on an empty input; during a turn it exits after that turn |
 | `Ctrl+D` | Exit when the input is empty |
 
+Once the transcript is taller than the viewport, Jani reserves its rightmost column for a vertical scrollbar and the tip line reports how many lines sit below the bottom; windows at the 40-column minimum keep the full width for text and scroll without a bar. Follow mode pins the view to the newest line; any scroll-up gesture unpins it and the view stays where you put it while the next turn streams. Mouse capture is on, so the pointer scrolls and clicks instead of selecting text in the window — use the terminal's own selection override (Shift in Windows Terminal and most emulators) to copy.
+
 The interface never decides an approval and never prints provider credentials. The per-turn run banner that line mode writes to stderr is suppressed in full-screen mode so it cannot corrupt the frame; the same run identity is available through `/status` and `/inspect`. Assistant answers are rendered as Markdown: headings, bold and italic, inline code, bullet and numbered lists, block quotes, rules, tables and fenced code blocks are formatted, and the raw markers are not shown. Rendering is style-aware for wrapping and falls back to literal text for malformed constructs.
 
-While a turn runs, the interface streams progress. The meta line shows the current step and action, each finished tool adds a `tool` entry with a short summary (for example `reading notes.txt`), and the answer preview is rendered as Markdown as it arrives. Model reasoning, when the provider emits it, is folded into a one-line summary; `Ctrl+T` expands or hides it. Transcript follow mode stays pinned to the newest content unless you scroll up with `PgUp`; `PgDn` returns to the bottom.
+While a turn runs, the interface streams progress. The meta line shows the current step and action, each finished tool adds a `tool` entry with a short summary (for example `reading notes.txt`), and the answer preview is rendered as Markdown as it arrives. Model reasoning, when the provider emits it, becomes its own thinking block with a one-line `▸ think` summary: click that line, or press `Ctrl+T` for the newest block, to expand it, and a block you left open stays open once the turn is committed to the transcript. The view is pinned to the newest line until you scroll up with `PgUp`, the mouse wheel or `Home`; the tip line then counts the lines below the bottom, and `PgDn`, `End` or a wheel-down gesture resumes following.
 
 Streaming keeps the same output inspection as non-streaming turns: preview text is inspected before it is shown, only complete lines are released, and an unterminated private-key block is withheld from its header. As a consequence, an answer with no newlines appears only when the turn completes, and a streaming request cannot be retried after the provider has sent response headers. Providers must support SSE streaming; line mode uses the non-streaming request path.
 

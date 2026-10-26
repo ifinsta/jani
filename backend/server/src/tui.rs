@@ -6,8 +6,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
     cursor,
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -15,7 +15,9 @@ use ratatui::crossterm::{
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
 use std::io::{self, IsTerminal, Stdout};
@@ -37,6 +39,8 @@ const CODE: Color = Color::Rgb(150, 214, 170);
 const MIN_WIDTH: u16 = 40;
 const MIN_HEIGHT: u16 = 10;
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
+const WHEEL_STEP: i32 = 3;
+const PAGE_STEP: i32 = 10;
 
 const LOGO: [&str; 6] = [
     "     ██╗ █████╗ ███╗   ██╗██╗",
@@ -76,7 +80,12 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste) {
+        if let Err(error) = execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture
+        ) {
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -94,6 +103,7 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(
         io::stdout(),
+        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen,
         cursor::Show
@@ -168,10 +178,20 @@ fn handle_event(
             }
         }
         Event::Paste(text) => state.editor.insert_str(&text),
+        Event::Mouse(mouse) => handle_mouse(state, mouse),
         Event::Resize(_, _) => {}
         _ => {}
     }
     Ok(())
+}
+
+fn handle_mouse(state: &mut State, mouse: MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => state.scroll_by(-WHEEL_STEP),
+        MouseEventKind::ScrollDown => state.scroll_by(WHEEL_STEP),
+        MouseEventKind::Down(_) => state.click(mouse.column, mouse.row),
+        _ => {}
+    }
 }
 
 fn submit(
@@ -248,16 +268,17 @@ fn run_turn(
             }
             if event::poll(Duration::from_millis(120)).map_err(io_error)? {
                 let event = event::read().map_err(io_error)?;
-                if let Event::Key(key) = event {
-                    if key.kind == KeyEventKind::Press {
+                match event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if is_ctrl(&key, 'c') {
                             state.quit_after_turn = true;
                         } else {
                             editor_key(state, key);
                         }
                     }
-                } else if let Event::Paste(text) = event {
-                    state.editor.insert_str(&text);
+                    Event::Paste(text) => state.editor.insert_str(&text),
+                    Event::Mouse(mouse) => handle_mouse(state, mouse),
+                    _ => {}
                 }
             }
         }
@@ -272,7 +293,8 @@ fn run_turn(
     match outcome.expect("turn outcome") {
         Ok(answer) => {
             if !live.reasoning.trim().is_empty() {
-                state.push(Entry::new(Kind::Reasoning, live.reasoning));
+                let open = live.reasoning_open;
+                state.push(Entry::new(Kind::Reasoning, live.reasoning).folded(open));
             }
             state.push(Entry::new(Kind::Assistant, answer.trim_end()));
         }
@@ -293,9 +315,22 @@ fn run_turn(
 
 fn editor_key(state: &mut State, key: KeyEvent) {
     if is_ctrl(&key, 't') {
-        state.reasoning_open = !state.reasoning_open;
+        if let Some(target) = state.latest_fold() {
+            state.toggle_fold(target);
+        }
         return;
     }
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::PageUp => state.scroll_by(-PAGE_STEP),
+        KeyCode::PageDown => state.scroll_by(PAGE_STEP),
+        KeyCode::Home if control || state.editor.is_empty() => state.scroll_to_top(),
+        KeyCode::End if control || state.editor.is_empty() => state.scroll_to_bottom(),
+        _ => editor_only_key(state, key),
+    }
+}
+
+fn editor_only_key(state: &mut State, key: KeyEvent) {
     let editor = &mut state.editor;
     match key.code {
         KeyCode::Left => editor.left(),
@@ -310,13 +345,6 @@ fn editor_key(state: &mut State, key: KeyEvent) {
             editor.complete(&COMMAND_NAMES);
         }
         KeyCode::Esc => editor.clear(),
-        KeyCode::PageUp => {
-            state.follow = false;
-            state.scroll_top = state.scroll_top.saturating_sub(10);
-        }
-        KeyCode::PageDown => {
-            state.scroll_top = state.scroll_top.saturating_add(10);
-        }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => editor.home(),
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => editor.end(),
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => editor.clear(),
@@ -389,8 +417,12 @@ struct State {
     entries: Vec<Entry>,
     editor: Editor,
     live: Option<LiveTurn>,
-    reasoning_open: bool,
     scroll_top: usize,
+    viewport: usize,
+    line_count: usize,
+    folds: Vec<Option<Fold>>,
+    transcript_area: Rect,
+    scrollbar_col: Option<u16>,
     follow: bool,
     busy: bool,
     quit_after_turn: bool,
@@ -401,11 +433,18 @@ struct State {
     quit: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fold {
+    Entry(usize),
+    Live,
+}
+
 #[derive(Default)]
 struct LiveTurn {
     activity: String,
     answer: String,
     reasoning: String,
+    reasoning_open: bool,
 }
 
 impl State {
@@ -415,8 +454,12 @@ impl State {
             entries: Vec::new(),
             editor: Editor::default(),
             live: None,
-            reasoning_open: false,
             scroll_top: 0,
+            viewport: 0,
+            line_count: 0,
+            folds: Vec::new(),
+            transcript_area: Rect::default(),
+            scrollbar_col: None,
             follow: true,
             busy: false,
             quit_after_turn: false,
@@ -430,6 +473,85 @@ impl State {
 
     fn push(&mut self, entry: Entry) {
         self.entries.push(entry);
+    }
+
+    fn max_top(&self) -> usize {
+        self.line_count.saturating_sub(self.viewport)
+    }
+
+    fn lines_below(&self) -> usize {
+        if self.follow {
+            0
+        } else {
+            self.max_top().saturating_sub(self.scroll_top)
+        }
+    }
+
+    fn scroll_by(&mut self, delta: i32) {
+        let max_top = self.max_top();
+        let moved = self.scroll_top as i64 + i64::from(delta);
+        self.scroll_top = moved.clamp(0, max_top as i64) as usize;
+        self.follow = self.scroll_top >= max_top;
+    }
+
+    fn scroll_to_top(&mut self) {
+        self.scroll_top = 0;
+        self.follow = self.max_top() == 0;
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        self.follow = true;
+    }
+
+    fn latest_fold(&self) -> Option<Fold> {
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|live| !live.reasoning.trim().is_empty())
+        {
+            return Some(Fold::Live);
+        }
+        self.entries
+            .iter()
+            .rposition(|entry| entry.kind == Kind::Reasoning)
+            .map(Fold::Entry)
+    }
+
+    fn toggle_fold(&mut self, target: Fold) {
+        match target {
+            Fold::Entry(index) => {
+                if let Some(entry) = self.entries.get_mut(index) {
+                    entry.open = !entry.open;
+                }
+            }
+            Fold::Live => {
+                if let Some(live) = self.live.as_mut() {
+                    live.reasoning_open = !live.reasoning_open;
+                }
+            }
+        }
+    }
+
+    fn click(&mut self, column: u16, row: u16) {
+        let area = self.transcript_area;
+        if row < area.y || row >= area.bottom() {
+            return;
+        }
+        if column == self.scrollbar_col.unwrap_or(u16::MAX) {
+            let height = usize::from(area.height.max(1));
+            let offset = (row - area.y) as usize;
+            let max_top = self.max_top();
+            self.scroll_top = max_top.min(offset * max_top / height.max(1));
+            self.follow = self.scroll_top >= max_top;
+            return;
+        }
+        if column < area.x || column >= area.right() {
+            return;
+        }
+        let line = self.scroll_top + (row - area.y) as usize;
+        if let Some(Some(target)) = self.folds.get(line).copied() {
+            self.toggle_fold(target);
+        }
     }
 
     fn apply(&mut self, event: TurnEvent) {
@@ -488,6 +610,7 @@ impl State {
 struct Entry {
     kind: Kind,
     text: String,
+    open: bool,
 }
 
 impl Entry {
@@ -495,11 +618,17 @@ impl Entry {
         Self {
             kind,
             text: text.into(),
+            open: false,
         }
+    }
+
+    fn folded(mut self, open: bool) -> Self {
+        self.open = open;
+        self
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     User,
     Assistant,
@@ -932,9 +1061,14 @@ fn draw_transcript(frame: &mut Frame, state: &mut State, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let lines = transcript_lines(state, area.width as usize);
     let height = area.height as usize;
-    let total = lines.len();
+    let mut view = transcript(state, area.width as usize);
+    let mut scrollbar_col = None;
+    if view.lines.len() > height && area.width > MIN_WIDTH {
+        view = transcript(state, area.width.saturating_sub(2) as usize);
+        scrollbar_col = Some(area.x + area.width - 1);
+    }
+    let total = view.lines.len();
     let max_top = total.saturating_sub(height);
     if state.follow {
         state.scroll_top = max_top;
@@ -944,38 +1078,91 @@ fn draw_transcript(frame: &mut Frame, state: &mut State, area: Rect) {
             state.follow = true;
         }
     }
-    let visible: Vec<Line<'_>> = lines
+    state.line_count = total;
+    state.viewport = height;
+    state.folds = view.folds;
+    state.transcript_area = area;
+    state.scrollbar_col = scrollbar_col;
+
+    let body = Rect::new(
+        area.x,
+        area.y,
+        area.width - u16::from(scrollbar_col.is_some()),
+        area.height,
+    );
+    let visible: Vec<Line<'_>> = view
+        .lines
         .into_iter()
         .skip(state.scroll_top)
         .take(height)
         .collect();
-    frame.render_widget(Paragraph::new(visible).style(Style::default().bg(BG)), area);
+    frame.render_widget(Paragraph::new(visible).style(Style::default().bg(BG)), body);
+    if scrollbar_col.is_some() {
+        let mut position = ScrollbarState::new(total)
+            .position(state.scroll_top)
+            .viewport_content_length(height);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_style(Style::default().fg(DIM))
+                .track_style(Style::default().fg(FAINT))
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut position,
+        );
+    }
 }
 
-fn transcript_lines(state: &State, width: usize) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
+struct Transcript {
+    lines: Vec<Line<'static>>,
+    folds: Vec<Option<Fold>>,
+}
+
+impl Transcript {
+    fn push(&mut self, line: Line<'static>, fold: Option<Fold>) {
+        self.lines.push(line);
+        self.folds.push(fold);
+    }
+
+    fn extend(&mut self, block: Vec<Line<'static>>, fold: Option<Fold>) {
+        for line in block {
+            self.push(line, fold);
+        }
+    }
+
+    fn blank(&mut self) {
+        self.push(Line::default(), None);
+    }
+}
+
+fn transcript(state: &State, width: usize) -> Transcript {
+    let mut out = Transcript {
+        lines: Vec::new(),
+        folds: Vec::new(),
+    };
     let body_width = width.saturating_sub(2);
     for (index, entry) in state.entries.iter().enumerate() {
-        if index > 0 {
-            lines.push(Line::default());
+        if !out.lines.is_empty() {
+            out.blank();
         }
-        lines.push(kind_label(entry.kind));
         match entry.kind {
-            Kind::Assistant => lines.extend(markdown_block(&entry.text, body_width)),
             Kind::Reasoning => {
-                lines.extend(reasoning_block(
-                    &entry.text,
-                    body_width,
-                    state.reasoning_open,
-                ));
+                let fold = Some(Fold::Entry(index));
+                out.push(fold_label(entry.open), fold);
+                out.extend(reasoning_block(&entry.text, body_width, entry.open), fold);
             }
-            _ => {
+            Kind::Assistant => {
+                out.push(kind_label(entry.kind), None);
+                out.extend(markdown_block(&entry.text, body_width), None);
+            }
+            other => {
+                out.push(kind_label(other), None);
                 for part in wrap(&entry.text, body_width) {
                     let mut spans = vec![Span::raw("  ")];
                     if !part.is_empty() {
-                        spans.push(Span::styled(part, entry.kind.body_style()));
+                        spans.push(Span::styled(part, other.body_style()));
                     }
-                    lines.push(Line::from(spans));
+                    out.push(Line::from(spans), None);
                 }
             }
         }
@@ -984,27 +1171,27 @@ fn transcript_lines(state: &State, width: usize) -> Vec<Line<'static>> {
         let has_reasoning = !live.reasoning.trim().is_empty();
         let has_answer = !live.answer.trim().is_empty();
         if has_reasoning || has_answer {
-            if !lines.is_empty() {
-                lines.push(Line::default());
+            if !out.lines.is_empty() {
+                out.blank();
             }
             if has_reasoning {
-                lines.push(kind_label(Kind::Reasoning));
-                lines.extend(reasoning_block(
-                    &live.reasoning,
-                    body_width,
-                    state.reasoning_open,
-                ));
+                let fold = Some(Fold::Live);
+                out.push(fold_label(live.reasoning_open), fold);
+                out.extend(
+                    reasoning_block(&live.reasoning, body_width, live.reasoning_open),
+                    fold,
+                );
             }
             if has_answer {
                 if has_reasoning {
-                    lines.push(Line::default());
+                    out.blank();
                 }
-                lines.push(kind_label(Kind::Assistant));
-                lines.extend(markdown_block(&live.answer, body_width));
+                out.push(kind_label(Kind::Assistant), None);
+                out.extend(markdown_block(&live.answer, body_width), None);
             }
         }
     }
-    lines
+    out
 }
 
 fn kind_label(kind: Kind) -> Line<'static> {
@@ -1012,6 +1199,16 @@ fn kind_label(kind: Kind) -> Line<'static> {
         kind.label(),
         Style::default()
             .fg(kind.label_color())
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn fold_label(open: bool) -> Line<'static> {
+    let marker = if open { "▾" } else { "▸" };
+    Line::from(Span::styled(
+        format!("{marker} {}", Kind::Reasoning.label()),
+        Style::default()
+            .fg(Kind::Reasoning.label_color())
             .add_modifier(Modifier::BOLD),
     ))
 }
@@ -1052,7 +1249,10 @@ fn reasoning_block(text: &str, width: usize, open: bool) -> Vec<Line<'static>> {
         .count()
         .max(1);
     vec![Line::from(Span::styled(
-        format!("  {count} reasoning line{} · ctrl+t to show", plural(count)),
+        format!(
+            "  {count} reasoning line{} · click or ctrl+t",
+            plural(count)
+        ),
         Style::default().fg(FAINT),
     ))]
 }
@@ -1136,14 +1336,14 @@ fn meta_line(state: &State, width: usize) -> Line<'static> {
             .map(|live| live.activity.as_str())
             .filter(|activity| !activity.is_empty())
             .unwrap_or("working");
-        let reasoning_hint = if state
-            .live
-            .as_ref()
-            .is_some_and(|live| !live.reasoning.trim().is_empty())
-        {
-            "  ctrl+t reasoning"
+        let below = state.lines_below();
+        let suffix = if state.follow || below == 0 {
+            "  ctrl+c exits after this turn".to_string()
         } else {
-            ""
+            format!(
+                "  {below} line{} below · end resumes  ctrl+c exits after this turn",
+                plural(below)
+            )
         };
         return Line::from(vec![
             Span::styled(
@@ -1154,10 +1354,7 @@ fn meta_line(state: &State, width: usize) -> Line<'static> {
                 activity.to_string(),
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("  ctrl+c exits after this turn{reasoning_hint}"),
-                Style::default().fg(DIM),
-            ),
+            Span::styled(suffix, Style::default().fg(DIM)),
         ]);
     }
 
@@ -1268,43 +1465,38 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
         return;
     }
     let line = if state.busy {
-        let mut spans = Vec::new();
-        spans.extend(key("pgup/pgdn"));
-        spans.push(Span::styled(" scroll   ", Style::default().fg(DIM)));
-        spans.extend(key("ctrl+t"));
-        spans.push(Span::styled(" reasoning   ", Style::default().fg(DIM)));
-        spans.extend(key("ctrl+c"));
-        spans.push(Span::styled(
-            " exits after the current turn",
-            Style::default().fg(DIM),
-        ));
-        Line::from(spans)
+        hints_line(&[
+            ("pgup/wheel", " scroll  "),
+            ("ctrl+t", " thinking  "),
+            ("ctrl+c", " exits after the current turn"),
+        ])
     } else if area.width < 64 {
-        let mut spans = Vec::new();
-        spans.extend(key("enter"));
-        spans.push(Span::styled(" send   ", Style::default().fg(DIM)));
-        spans.extend(key("/"));
-        spans.push(Span::styled(" commands   ", Style::default().fg(DIM)));
-        spans.extend(key("ctrl+c"));
-        spans.push(Span::styled(" exit", Style::default().fg(DIM)));
-        Line::from(spans)
+        hints_line(&[
+            ("enter", " send  "),
+            ("/", " commands  "),
+            ("ctrl+c", " exit"),
+        ])
+    } else if area.width < 96 {
+        hints_line(&[
+            ("enter", " send  "),
+            ("pgup/wheel", " scroll  "),
+            ("ctrl+t", " thinking  "),
+            ("ctrl+c", " exit"),
+        ])
     } else {
-        let mut spans = Vec::new();
-        spans.extend(key("enter"));
-        spans.push(Span::styled(" send   ", Style::default().fg(DIM)));
-        spans.extend(key("/"));
-        spans.push(Span::styled(" commands   ", Style::default().fg(DIM)));
-        spans.extend(key("↑↓"));
-        spans.push(Span::styled(" history   ", Style::default().fg(DIM)));
-        spans.extend(key("pgup/pgdn"));
-        spans.push(Span::styled(" scroll   ", Style::default().fg(DIM)));
-        if !state.follow {
-            spans.extend(key("end"));
-            spans.push(Span::styled(" resume   ", Style::default().fg(DIM)));
-        }
-        spans.extend(key("ctrl+c"));
-        spans.push(Span::styled(" exit", Style::default().fg(DIM)));
-        Line::from(spans)
+        let jump = if state.follow {
+            ("home/end", " jump  ")
+        } else {
+            ("end", " resume  ")
+        };
+        hints_line(&[
+            ("enter", " send  "),
+            ("/", " commands  "),
+            ("pgup/wheel", " scroll  "),
+            jump,
+            ("ctrl+t", " thinking  "),
+            ("ctrl+c", " exit"),
+        ])
     };
     frame.render_widget(
         Paragraph::new(line)
@@ -1312,6 +1504,23 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
             .style(Style::default().bg(BG)),
         area,
     );
+}
+
+fn hints_line(groups: &[(&'static str, &'static str)]) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (index, (name, label)) in groups.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.extend(key(name));
+        let text = if index + 1 == groups.len() {
+            label.trim_end()
+        } else {
+            label
+        };
+        spans.push(Span::styled(text.to_string(), Style::default().fg(DIM)));
+    }
+    Line::from(spans)
 }
 
 fn key(name: &'static str) -> Vec<Span<'static>> {
@@ -1345,9 +1554,17 @@ fn draw_tip(frame: &mut Frame, state: &State, area: Rect) {
     );
 }
 
-fn tip_text(state: &State) -> &'static str {
+fn tip_text(state: &State) -> String {
+    if !state.follow && state.lines_below() > 0 {
+        let below = state.lines_below();
+        return format!(
+            "{below} line{} below the bottom · end or wheel down resumes following",
+            plural(below)
+        );
+    }
     if state.pending > 0 {
-        return "Approvals are pending. Decide outside this session, then attach with /approval <id>.";
+        return "Approvals are pending. Decide outside this session, then attach with /approval <id>."
+            .into();
     }
     match state.turns % 4 {
         0 => "Type a message to begin. /help lists every command.",
@@ -1355,6 +1572,7 @@ fn tip_text(state: &State) -> &'static str {
         2 => "Write scopes are fixed at startup; a session cannot widen them.",
         _ => "Approvals are decided outside this session and attached explicitly.",
     }
+    .into()
 }
 
 fn draw_status(frame: &mut Frame, state: &State, area: Rect) {
@@ -2269,7 +2487,7 @@ mod tests {
         let mut state = State::new(meta(), 0, 0);
         state.push(Entry::new(Kind::User, "hello there"));
         state.push(Entry::new(Kind::Assistant, "general kenobi"));
-        let lines = transcript_lines(&state, 60);
+        let lines = transcript(&state, 60).lines;
         let text: Vec<String> = lines
             .iter()
             .map(|line| {
@@ -2367,7 +2585,7 @@ mod tests {
         assert!(!text.contains("compare both options"), "{text}");
         assert!(!text.contains("**"), "{text}");
 
-        state.reasoning_open = true;
+        state.toggle_fold(Fold::Live);
         let text = render(&mut state, 80, 30);
         assert!(text.contains("compare both options"), "{text}");
         assert!(text.contains("pick the safer one"), "{text}");
@@ -2389,18 +2607,138 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_toggles_reasoning_folding() {
+    fn ctrl_t_toggles_the_latest_thinking_block() {
         let mut state = State::new(meta(), 0, 0);
-        assert!(!state.reasoning_open);
+        state.push(Entry::new(Kind::Reasoning, "earlier thought"));
+        state.push(Entry::new(Kind::Reasoning, "later thought"));
+        assert_eq!(state.latest_fold(), Some(Fold::Entry(1)));
         editor_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
         );
-        assert!(state.reasoning_open);
+        assert!(state.entries[1].open);
+        assert!(!state.entries[0].open);
         editor_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
         );
-        assert!(!state.reasoning_open);
+        assert!(!state.entries[1].open);
+    }
+
+    #[test]
+    fn thinking_blocks_fold_independently() {
+        let mut state = State::new(meta(), 0, 0);
+        state.push(Entry::new(Kind::Reasoning, "first thought"));
+        state.push(Entry::new(Kind::Reasoning, "second thought"));
+        let text = render(&mut state, 80, 30);
+        let rows: Vec<&str> = text.lines().collect();
+        let first = rows
+            .iter()
+            .position(|row| row.contains("▸ think"))
+            .expect("first folded block");
+        let second = first
+            + 1
+            + rows[first + 1..]
+                .iter()
+                .position(|row| row.contains("▸ think"))
+                .expect("second folded block");
+        state.click(4, second as u16);
+        assert!(state.entries[1].open);
+        assert!(!state.entries[0].open);
+        let text = render(&mut state, 80, 30);
+        assert!(text.contains("second thought"), "{text}");
+        assert!(!text.contains("first thought"), "{text}");
+    }
+
+    #[test]
+    fn an_expanded_live_block_stays_expanded_when_committed() {
+        let mut state = State::new(meta(), 0, 0);
+        state.live = Some(LiveTurn::default());
+        state.apply(TurnEvent::Reasoning("a thought".into()));
+        state.toggle_fold(Fold::Live);
+        let open = state.live.as_ref().expect("live turn").reasoning_open;
+        state.push(Entry::new(Kind::Reasoning, "a thought").folded(open));
+        assert!(state.entries[0].open);
+    }
+
+    #[test]
+    fn wheel_scrolling_leaves_and_returns_to_the_bottom() {
+        let mut state = State::new(meta(), 0, 0);
+        for index in 0..20 {
+            state.push(Entry::new(Kind::User, format!("question {index}")));
+        }
+        render(&mut state, 80, 24);
+        assert!(state.follow);
+        assert_eq!(state.lines_below(), 0);
+
+        handle_mouse(
+            &mut state,
+            MouseEvent {
+                column: 10,
+                row: 10,
+                kind: MouseEventKind::ScrollUp,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(!state.follow);
+        assert!(state.scroll_top > 0);
+        assert!(state.lines_below() > 0);
+
+        for _ in 0..20 {
+            handle_mouse(
+                &mut state,
+                MouseEvent {
+                    column: 10,
+                    row: 10,
+                    kind: MouseEventKind::ScrollDown,
+                    modifiers: KeyModifiers::NONE,
+                },
+            );
+        }
+        assert!(state.follow);
+        assert_eq!(state.lines_below(), 0);
+    }
+
+    #[test]
+    fn a_long_transcript_gets_a_scrollbar_and_a_below_tip() {
+        let mut state = State::new(meta(), 0, 0);
+        for index in 0..20 {
+            state.push(Entry::new(Kind::User, format!("question {index}")));
+        }
+        let text = render(&mut state, 80, 24);
+        assert!(text.contains('║'), "{text}");
+        assert!(text.contains('█'), "{text}");
+        assert!(state.scrollbar_col.is_some());
+
+        state.scroll_to_top();
+        let text = render(&mut state, 80, 24);
+        assert!(text.contains("below the bottom"), "{text}");
+        assert!(text.contains("question 0"), "{text}");
+        assert!(!text.contains("question 19"), "{text}");
+    }
+
+    #[test]
+    fn home_and_end_jump_the_transcript_when_the_editor_is_empty() {
+        let mut state = State::new(meta(), 0, 0);
+        for index in 0..20 {
+            state.push(Entry::new(Kind::User, format!("question {index}")));
+        }
+        render(&mut state, 80, 24);
+        editor_key(&mut state, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(state.scroll_top, 0);
+        assert!(!state.follow);
+        editor_key(&mut state, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(state.follow);
+    }
+
+    #[test]
+    fn home_and_end_still_edit_the_input_when_it_is_not_empty() {
+        let mut state = State::new(meta(), 0, 0);
+        state.editor.insert_str("draft");
+        editor_key(&mut state, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(state.editor.cursor, 0);
+        assert!(state.follow);
+        editor_key(&mut state, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(state.editor.cursor, 5);
     }
 }
