@@ -61,6 +61,7 @@ ENABLE_EXTENDED_FLAGS = 0x0080
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
 VK_F1 = 0x70
+SHIFT_PRESSED = 0x0010
 VK_PAGE_UP = 0x21
 VK_DOWN = 0x28
 
@@ -507,6 +508,17 @@ def main():
         starter_cleared = "Map modules and dependencies." not in cleared
         print("starter_cleared:", starter_cleared)
 
+        # Shift+Enter inserts a line break but must not submit any model call.
+        type_text(stdin_handle, "first line")
+        key(stdin_handle, VK_RETURN, "\r", SHIFT_PRESSED)
+        type_text(stdin_handle, "second line")
+        multiline = stable_screen(width, height, "second line", timeout=10.0)
+        multiline_visible = "first line" in multiline and "second line" in multiline
+        multiline_did_not_submit = len(FakeProvider.captured) == 0
+        print("multiline_visible:", multiline_visible)
+        print("multiline_did_not_submit:", multiline_did_not_submit)
+        key(stdin_handle, VK_ESCAPE)
+
         type_text(stdin_handle, "/status\r")
         status = stable_screen(width, height, "Task:")
         print("--- status screen ---")
@@ -746,6 +758,8 @@ def main():
             and starter_drafted
             and starter_no_request
             and starter_cleared
+            and multiline_visible
+            and multiline_did_not_submit
             and "Task:" in status
             and "USAGE:" not in status
             and permissions_loaded
