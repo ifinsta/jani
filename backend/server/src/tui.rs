@@ -231,7 +231,7 @@ fn submit(
         return Ok(());
     }
     state.follow = true;
-    if line.starts_with('/') {
+    if line.starts_with('/') && !line.contains('\n') {
         state.palette = None;
         run_command(state, agent, catalog, line);
         return Ok(());
@@ -3044,6 +3044,16 @@ mod tests {
         assert_eq!(state.editor.text, "\n");
         state.editor.insert_str("text");
         assert_eq!(state.editor.text, "\ntext");
+    }
+
+    #[test]
+    fn multiline_prompts_cannot_be_interpreted_as_slash_commands() {
+        let mut editor = Editor::default();
+        editor.insert_str("/status\nexplain this output");
+        let message = editor.take();
+        assert!(message.starts_with('/'));
+        assert!(message.contains('\n'));
+        assert!(!(message.starts_with('/') && !message.contains('\n')));
     }
 
     #[test]
