@@ -184,7 +184,7 @@ fn run_loop<R: BufRead, O: Write, E: Write>(
                 writeln!(err, "jani: {error}").map_err(io_error)?;
                 writeln!(
                     err,
-                    "note: this turn was rolled back and is not in model context"
+                    "note: model context was restored to the last successful turn; earlier file or external tool effects may remain. Inspect audit/worktree before retrying."
                 )
                 .map_err(io_error)?;
             }
