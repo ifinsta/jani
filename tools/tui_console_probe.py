@@ -489,7 +489,7 @@ def main():
         print("--- welcome screen ---")
         print(welcome)
         print("--- markers ---")
-        print("welcome_logo:", "GOVERNED CODING AGENT" in welcome)
+        print("welcome_logo:", "GOVERNED ENGINEERING AGENT" in welcome)
         print("welcome_prompt:", "Type a message" in welcome)
         print("welcome_hints:", "ctrl+c" in welcome)
         print("env_model_applied:", "probe-model" in welcome)
@@ -726,7 +726,7 @@ def main():
 
         print(f"exit={code}")
         ok = (
-            "GOVERNED CODING AGENT" in welcome
+            "GOVERNED ENGINEERING AGENT" in welcome
             and "Type a message" in welcome
             and "ctrl+c" in welcome
             and "probe-model" in welcome
