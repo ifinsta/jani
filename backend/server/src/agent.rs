@@ -493,6 +493,7 @@ Discovered skill names: {skills}"#,
                 let response = match parsed {
                     Ok(params) => {
                         let invocation_id = new_id("inv");
+                        ensure_active(cancelled, &run_meta, &mut self.journal)?;
                         let mut broker = Broker {
                             cfg,
                             policy: &self.policy,
