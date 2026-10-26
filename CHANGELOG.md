@@ -23,6 +23,8 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- Added `jani evidence RUN_ID`, a standalone read-only evidence receipt built from a hash-chain-verified journal. It marks task outcome verification, effect reconciliation and automatic replay as false; a new CLI regression covers tampered-journal rejection. Source only, unverified by a fresh Rust build.
+
 - Phase 1B source: multiline bounded terminal composer with Shift+Enter and newline-preserving paste, status-marked tool activities, and audit-only run evidence that explicitly does not independently certify completion.
 - Phase 2 foundation: read-only `jani recovery status` flags unfinished runs without unsafe replay; journal inspection checks integrity; Ctrl+C now requests cooperative cancellation at agent-safe boundaries. These source changes are not yet backed by a fresh Rust build or independent Windows runtime verification.
 
