@@ -6,6 +6,14 @@ The new F1–F4 shortcut suite in `backend/server/src/tui.rs` must prove shortcu
 
 A release candidate must pass: `cargo fmt --all -- --check`, full workspace clippy/tests, `python tools/doccheck.py`, `cargo run -p jani-claims -- check`, `cargo build --locked --release -p jani`, and the Windows `tools/tui_console_probe.py` against **the new binary**. Independently inspect 40x10 and 120x40 terminal layouts and verify that `profile trusted-dev` is not mistaken for actual OS isolation.
 
+Windows developers can invoke the reproducible gate script from a disposable clone:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify_tui_phase1.ps1
+```
+
+It runs formatting, clippy, workspace tests, architecture and claims checks, documentation validation, a locked release build and the real-console probe, then reports commit and binary SHA-256. It does not publish or install the build. Its existence is not proof that it has run.
+
 The baseline counts below predate this slice. Do not increase passing test counts until the new runs execute.
 
 ## Verification gates
