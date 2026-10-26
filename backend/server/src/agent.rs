@@ -581,7 +581,8 @@ impl<'a> Agent<'a> {
     fn run_turn_with(&mut self, prompt: &str, announce: bool) -> JResult<String> {
         let cfg = self.cfg;
         let catalog = self.catalog;
-        self.session.run_turn(cfg, catalog, prompt, announce, None, None)
+        self.session
+            .run_turn(cfg, catalog, prompt, announce, None, None)
     }
 
     pub fn task_id(&self) -> &str {
@@ -904,11 +905,8 @@ mod tests {
         let mut agent = Agent::new(&cfg, &catalog).unwrap();
         let cancellation = AtomicBool::new(true);
         let mut events = |_event: TurnEvent| {};
-        let result = agent.run_turn_events_with_cancel(
-            "do not run this",
-            &mut events,
-            &cancellation,
-        );
+        let result =
+            agent.run_turn_events_with_cancel("do not run this", &mut events, &cancellation);
         assert!(result.unwrap_err().contains("cancelled"));
         let receipt = agent.run_evidence().unwrap();
         assert_eq!(receipt["journalChainVerified"], true);

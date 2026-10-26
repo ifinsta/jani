@@ -723,9 +723,9 @@ impl Config {
                     cfg.command = "repl".into();
                     command_seen = true;
                 }
-                "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals" | "budget"
-                | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror" | "mcp"
-                | "native" => {
+                "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
+                | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
+                | "mcp" | "native" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {

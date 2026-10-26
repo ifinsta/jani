@@ -39,29 +39,36 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     let state_dir = root.join("state");
     let mut journal = Journal::open(&state_dir).unwrap();
     let mut record = |decision: &str| {
-        journal.record(EventInput {
-            tenant_id: "tenant-1",
-            task_id: "task-test",
-            run_id: "run-test",
-            invocation_id: "run",
-            actor_id: "operator",
-            worker_id: "operator",
-            action: "agent.run",
-            resource_digest: "digest",
-            decision,
-            reason_code: decision,
-            policy_revision: "runtime",
-            approval_id: None,
-            sandbox_receipt_id: None,
-            data_classification: Classification::Internal,
-        }).unwrap();
+        journal
+            .record(EventInput {
+                tenant_id: "tenant-1",
+                task_id: "task-test",
+                run_id: "run-test",
+                invocation_id: "run",
+                actor_id: "operator",
+                worker_id: "operator",
+                action: "agent.run",
+                resource_digest: "digest",
+                decision,
+                reason_code: decision,
+                policy_revision: "runtime",
+                approval_id: None,
+                sandbox_receipt_id: None,
+                data_classification: Classification::Internal,
+            })
+            .unwrap();
     };
     let root_str = root.to_str().unwrap().to_string();
     let state_str = state_dir.to_str().unwrap().to_string();
     let invoke = |command: &[&str]| {
         support::jani()
             .args(command)
-            .args(["--repo", root_str.as_str(), "--state-dir", state_str.as_str()])
+            .args([
+                "--repo",
+                root_str.as_str(),
+                "--state-dir",
+                state_str.as_str(),
+            ])
             .env_remove("JANI_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .output()
@@ -69,19 +76,34 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     };
     record("started");
     let uncertain = invoke(&["recovery", "status"]);
-    assert!(uncertain.status.success(), "{}", String::from_utf8_lossy(&uncertain.stderr));
+    assert!(
+        uncertain.status.success(),
+        "{}",
+        String::from_utf8_lossy(&uncertain.stderr)
+    );
     let output = String::from_utf8_lossy(&uncertain.stdout);
-    assert!(output.contains("unknown_requires_reconciliation"), "{output}");
+    assert!(
+        output.contains("unknown_requires_reconciliation"),
+        "{output}"
+    );
     assert!(output.contains("\"safeToAutoReplay\": false"), "{output}");
 
     record("completed");
     drop(journal);
     let completed = invoke(&["recovery", "status"]);
-    assert!(completed.status.success(), "{}", String::from_utf8_lossy(&completed.stderr));
+    assert!(
+        completed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&completed.stderr)
+    );
     assert!(String::from_utf8_lossy(&completed.stdout).contains("recorded_model_complete"));
     assert!(invoke(&["inspect", "run-test"]).status.success());
     let evidence = invoke(&["evidence", "run-test"]);
-    assert!(evidence.status.success(), "{}", String::from_utf8_lossy(&evidence.stderr));
+    assert!(
+        evidence.status.success(),
+        "{}",
+        String::from_utf8_lossy(&evidence.stderr)
+    );
     let receipt: serde_json::Value = serde_json::from_slice(&evidence.stdout).unwrap();
     assert_eq!(receipt["journalChainVerified"], true);
     assert_eq!(receipt["outcomeVerified"], false);

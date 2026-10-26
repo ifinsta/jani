@@ -98,22 +98,24 @@ mod tests {
     }
 
     fn record(journal: &mut Journal, decision: &str) {
-        journal.record(EventInput {
-            tenant_id: "tenant-a",
-            task_id: "task-1",
-            run_id: "run-1",
-            invocation_id: "run",
-            actor_id: "operator",
-            worker_id: "operator",
-            action: "agent.run",
-            resource_digest: "test",
-            decision,
-            reason_code: decision,
-            policy_revision: "runtime",
-            approval_id: None,
-            sandbox_receipt_id: None,
-            data_classification: Classification::Internal,
-        }).unwrap();
+        journal
+            .record(EventInput {
+                tenant_id: "tenant-a",
+                task_id: "task-1",
+                run_id: "run-1",
+                invocation_id: "run",
+                actor_id: "operator",
+                worker_id: "operator",
+                action: "agent.run",
+                resource_digest: "test",
+                decision,
+                reason_code: decision,
+                policy_revision: "runtime",
+                approval_id: None,
+                sandbox_receipt_id: None,
+                data_classification: Classification::Internal,
+            })
+            .unwrap();
     }
 
     #[test]
@@ -123,7 +125,10 @@ mod tests {
         record(&mut journal, "started");
         let result = status(&dir).unwrap();
         assert_eq!(result["unreconciledRuns"], 1);
-        assert_eq!(result["runs"][0]["outcome"], "unknown_requires_reconciliation");
+        assert_eq!(
+            result["runs"][0]["outcome"],
+            "unknown_requires_reconciliation"
+        );
         assert_eq!(result["runs"][0]["safeToAutoReplay"], false);
         drop(journal);
         fs::remove_dir_all(dir).unwrap();

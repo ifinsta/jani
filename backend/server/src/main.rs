@@ -1,6 +1,6 @@
 pub use jani_core::{
-    approvals, budget, config, crypto, data, evidence, identity, journal, permissions, policy, process,
-    recovery, schema, types,
+    approvals, budget, config, crypto, data, evidence, identity, journal, permissions, policy,
+    process, recovery, schema, types,
 };
 mod agent;
 mod attention;
@@ -68,7 +68,9 @@ fn run() -> JResult<()> {
         };
     }
     if cfg.command == "evidence" {
-        let run_id = cfg.run_id.as_ref()
+        let run_id = cfg
+            .run_id
+            .as_ref()
             .or_else(|| cfg.positional.first())
             .ok_or("evidence requires a run ID")?;
         return print_json(&evidence::receipt(&cfg.state_dir, run_id)?);

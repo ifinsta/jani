@@ -36,9 +36,10 @@ pub fn receipt(state_dir: &Path, run_id: &str) -> Result<Value, String> {
     }
     let first = events.first().expect("nonempty verified run");
     let last = events.last().expect("nonempty verified run");
-    if events.iter().any(|event| {
-        event.tenant_id != first.tenant_id || event.task_id != first.task_id
-    }) {
+    if events
+        .iter()
+        .any(|event| event.tenant_id != first.tenant_id || event.task_id != first.task_id)
+    {
         return Err("run ID was reused across tenant/task boundaries".into());
     }
     Ok(json!({
@@ -72,22 +73,24 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let mut journal = Journal::open(&root).unwrap();
         for decision in ["started", "completed"] {
-            journal.record(EventInput {
-                tenant_id: "tenant",
-                task_id: "task",
-                run_id: "run",
-                invocation_id: "run",
-                actor_id: "operator",
-                worker_id: "operator",
-                action: "agent.run",
-                resource_digest: "digest",
-                decision,
-                reason_code: "test",
-                policy_revision: "runtime",
-                approval_id: None,
-                sandbox_receipt_id: None,
-                data_classification: Classification::Internal,
-            }).unwrap();
+            journal
+                .record(EventInput {
+                    tenant_id: "tenant",
+                    task_id: "task",
+                    run_id: "run",
+                    invocation_id: "run",
+                    actor_id: "operator",
+                    worker_id: "operator",
+                    action: "agent.run",
+                    resource_digest: "digest",
+                    decision,
+                    reason_code: "test",
+                    policy_revision: "runtime",
+                    approval_id: None,
+                    sandbox_receipt_id: None,
+                    data_classification: Classification::Internal,
+                })
+                .unwrap();
         }
         let proof = receipt(&root, "run").unwrap();
         assert_eq!(proof["journalChainVerified"], true);

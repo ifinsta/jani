@@ -340,7 +340,8 @@ fn run_turn(
                         if is_ctrl(&key, 'c') {
                             cancellation.store(true, Ordering::SeqCst);
                             if let Some(live) = state.live.as_mut() {
-                                live.activity = "cancellation requested; waiting for safe boundary".into();
+                                live.activity =
+                                    "cancellation requested; waiting for safe boundary".into();
                             }
                         } else {
                             editor_key(state, key);
@@ -394,10 +395,7 @@ fn run_turn(
         }
         Err(error) => {
             state.push(Entry::new(Kind::Error, format!("jani: {error}")));
-            state.push(Entry::new(
-                Kind::Note,
-                FAILED_TURN_NOTE,
-            ));
+            state.push(Entry::new(Kind::Note, FAILED_TURN_NOTE));
         }
     }
     Ok(())
@@ -416,10 +414,7 @@ fn starter_prompt(key: &KeyCode) -> Option<&'static str> {
 
 fn editor_key(state: &mut State, key: KeyEvent) {
     // A shortcut only drafts a message. It never submits or widens authority.
-    if state.entries.is_empty()
-        && state.editor.is_empty()
-        && state.palette.is_none()
-        && !state.busy
+    if state.entries.is_empty() && state.editor.is_empty() && state.palette.is_none() && !state.busy
     {
         if let Some(prompt) = starter_prompt(&key.code) {
             state.editor.insert_str(prompt);
@@ -520,7 +515,7 @@ fn editor_only_key(state: &mut State, key: KeyEvent) {
             } else {
                 editor.history_next();
             }
-        },
+        }
         KeyCode::Tab => {
             editor.complete(&COMMAND_NAMES);
         }
@@ -1281,7 +1276,6 @@ impl Editor {
         self.text = format!("/{common}");
         self.cursor = self.text.len();
     }
-
 }
 
 fn approval_summary(requests: &[Value]) -> String {
@@ -1631,7 +1625,10 @@ fn transcript(state: &State, width: usize) -> Transcript {
                 out.push(
                     Line::from(vec![
                         Span::styled(format!("{marker} "), Style::default().fg(color)),
-                        Span::styled("tool", Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            "tool",
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
                     ]),
                     None,
                 );
@@ -1639,7 +1636,10 @@ fn transcript(state: &State, width: usize) -> Transcript {
                     out.push(
                         Line::from(vec![
                             Span::raw("  "),
-                            Span::styled(part, Style::default().fg(if failed { ERROR } else { DIM })),
+                            Span::styled(
+                                part,
+                                Style::default().fg(if failed { ERROR } else { DIM }),
+                            ),
                         ]),
                         None,
                     );
@@ -1797,8 +1797,9 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
                 frame.set_cursor_position(Position::new(text_x, inner.y));
             }
         } else {
-            let (rows, cursor_row, cursor_column) =
-                state.editor.layout(text_width.saturating_sub(1), text_height);
+            let (rows, cursor_row, cursor_column) = state
+                .editor
+                .layout(text_width.saturating_sub(1), text_height);
             let visible: Vec<Line<'_>> = rows
                 .into_iter()
                 .map(|line| Line::from(Span::styled(line, Style::default().fg(TEXT))))
@@ -3362,12 +3363,21 @@ mod tests {
     #[test]
     fn tool_timeline_displays_success_and_failure_distinctly() {
         let mut state = State::new(meta(), 0, 0);
-        state.push(Entry::new(Kind::Tool, "workspace_read · reading src/main.rs"));
-        state.push(Entry::new(Kind::Tool, "workspace_write · writing denied.rs (failed)"));
+        state.push(Entry::new(
+            Kind::Tool,
+            "workspace_read · reading src/main.rs",
+        ));
+        state.push(Entry::new(
+            Kind::Tool,
+            "workspace_write · writing denied.rs (failed)",
+        ));
         let rendered = render(&mut state, 100, 30);
         assert!(rendered.contains("✓ tool"), "{rendered}");
         assert!(rendered.contains("× tool"), "{rendered}");
-        assert!(rendered.contains("writing denied.rs (failed)"), "{rendered}");
+        assert!(
+            rendered.contains("writing denied.rs (failed)"),
+            "{rendered}"
+        );
     }
 
     #[test]
