@@ -118,7 +118,7 @@ Track per phase: successful task outcome rate (externally checked), false comple
 
 1. **Slice 0:** this phase plan, first-page product messaging and doc navigation.
 2. **Slice 1A:** read-only starter prompts mapped to F1–F4 and honest sandbox-*profile* labelling in the existing ratatui TUI; update TUI tests and console probe expectation.
-3. **Slice 1B (next):** multiline composer, responsive summary of effective vs requested permissions, stream/tool timeline, accessible focus and draft preservation.
+3. **Slice 1B (next):** multiline composer, responsive summary of effective vs requested permissions, stream/tool timeline, accessible focus and draft preservation. Verify Slice 1A first using [the Windows gate script](../tools/verify_tui_phase1.ps1); no binary from these commits has been published.
 4. **Slice 2A (next):** cancellation contract and execution state-machine specification; instrument and test a real cancellation path without overclaiming recovery. A preliminary correction to TUI/line-mode failure notices now makes clear that model-context rollback cannot reverse earlier tool effects.
 5. Subsequent slices enter only when preceding gate evidence exists and are independently reviewed.
 
