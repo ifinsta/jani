@@ -1,13 +1,16 @@
 ---
 id: JANI-OPS-001
 title: "Recovery and replay"
-status: proposed
+status: implemented-partial
 owner: backend/server/src/agent.rs
 version: 1.0.0
 last-reviewed: 2026-10-25
 source:
   - backend/server/src/agent.rs
-tests: []
+  - backend/core/src/recovery.rs
+tests:
+  - backend/core/src/recovery.rs
+  - backend/server/tests/cli.rs
 ---
 
 # Recovery and replay
