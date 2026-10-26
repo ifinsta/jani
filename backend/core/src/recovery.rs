@@ -33,7 +33,10 @@ pub fn status(state_dir: &Path) -> Result<Value, String> {
         }
         if event.action == "agent.run" {
             if event.decision == "started" {
+                // A reused run identifier must not inherit an earlier completion.
                 snapshot.started = true;
+                snapshot.last_decision.clear();
+                snapshot.reason.clear();
             }
             if event.decision == "completed" || event.decision == "failed" {
                 snapshot.last_decision = event.decision;
