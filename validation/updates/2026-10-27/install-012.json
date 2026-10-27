@@ -1,0 +1,35 @@
+{
+  "action": "install",
+  "artifact": {
+    "binary": "jani-0.1.2-x86_64-pc-windows-msvc.exe",
+    "builtAt": "2026-10-27T04:22:29Z",
+    "commit": "c2b8b6013ad92ef904a364d020a3828e81746b1d",
+    "sha256": "5c11ec31c6957463f18011436f08dc884db607783c00626ae2bf591e9a510c79",
+    "sizeBytes": 9818112,
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "artifactVerified": true,
+  "builtAt": "2026-10-27T04:22:29Z",
+  "commit": "c2b8b6013ad92ef904a364d020a3828e81746b1d",
+  "latestVersion": "0.1.2",
+  "platform": "windows",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\.jani\\updates\\23076-1793075201033769600-5.json",
+  "schemaVersion": "jani.update/v1",
+  "source": "http://127.0.0.1:56123",
+  "status": "installed",
+  "tag": "v0.1.2",
+  "target": "x86_64-pc-windows-msvc",
+  "targets": [
+    {
+      "backup": "C:\\Users\\user\\AppData\\Local/Jani/bin\\.jani.exe.jani-old-23076-1793075201020317300-4",
+      "bytes": 9818112,
+      "newVersion": "0.1.2",
+      "path": "C:\\Users\\user\\AppData\\Local/Jani/bin/jani.exe",
+      "previousVersion": "0.1.1",
+      "restartRequired": true,
+      "sha256": "5c11ec31c6957463f18011436f08dc884db607783c00626ae2bf591e9a510c79",
+      "status": "installed",
+      "updateAvailable": false
+    }
+  ]
+}

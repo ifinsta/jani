@@ -3,8 +3,8 @@ id: JANI-GOV-002
 title: "Changelog"
 status: implemented-partial
 owner: project
-version: 1.3.0
-last-reviewed: 2026-10-26
+version: 1.4.0
+last-reviewed: 2026-10-27
 source:
   - README.md
 tests: []
@@ -16,15 +16,17 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Release status
 
-- **No Git tags exist.** The workspace version in `Cargo.toml` is `0.1.1`.
-- `releases/` is a commit-based channel, not a tagged release feed. `releases/agent/windows/v0.1.1/` contains the Windows binary built from commit `01d8e87` with clean build inputs (SHA-256 `6b1315cd…`, 9,821,696 bytes); the installed copy at `%LOCALAPPDATA%\Jani\bin\jani.exe` has the same digest. It has not passed independent release acceptance.
-- This page describes commit `01d8e87` (2026-10-27). Later documentation, probe and evidence changes are listed under Unreleased.
-- One commit has `v0.1.2` in its subject line. It is a development marker from earlier work, not a tagged or published release. Do not cite it as a version.
+- **No Git tags exist.** The workspace version in `Cargo.toml` is `0.1.2`.
+- `releases/` is a commit-based channel, not a tagged release feed. `releases/agent/windows/v0.1.2/` contains the Windows binary built from commit `c2b8b60` with clean build inputs (SHA-256 `5c11ec31…`, 9,818,112 bytes); the installed copy at `%LOCALAPPDATA%\Jani\bin\jani.exe` has the same digest.
+- This page describes commit `c2b8b60` (2026-10-27). Later documentation, probe and evidence changes are listed under Unreleased.
 
-## Unreleased
+## Short tool names and rendered hash-led tables — `c2b8b60`
 
 - The model-facing workspace tools are now `list`, `read`, `write` and `command` (previously `workspace_list`, `workspace_read`, `workspace_write` and `workspace_command`); `skill_read` and `native_tool` keep their names. The transcript shows the short names. Journals are unaffected because they record actions such as `repo.read`, and project permission rules still map through `Read`, `Write` and `Bash`; the broker rejects the old names as unknown.
 - Markdown tables whose first column header is `#` now render as tables. The heading parser previously claimed the line before the table parser saw it, so a table with a row-number column was emitted as raw pipe text. The real-console probe now streams a table with a `#` header and asserts the rendered header and row.
+- `v0.1.2` release proof recorded in `validation/updates/2026-10-27/`: the typed artifact passed all 52 boolean console-probe checks (rendered `#` table, folded section with the last three `read` calls), `cargo test --workspace --all-targets` passed 260 tests, and `jani update install` over a loopback origin replaced the installed 0.1.1 bytes with 0.1.2 (SHA-256 `5c11ec31…`) under the channel manifest. The command ran from the installed 0.1.1 image, so it reported `restartRequired`; a fresh invocation reports `jani 0.1.2`. The live 0.1.0 session (PID 9836) was not killed.
+
+## Unreleased
 
 - `v0.1.1` release proof recorded in `validation/updates/2026-10-27/`: the typed artifact passed all 51 boolean console-probe checks (folded tool section with `last 3 shown`, expansion to five calls, scrollbar, palette, model picker). Real-channel evidence shows two 0.1.0 device copies upgraded to 0.1.1 with digest verification and a receipt, a repeated install that was up-to-date with no download, a watch process that started on v0.1.0 and installed v0.1.1 published while it ran over eight cycles, and update delivery over a loopback origin that replaced the installed `%LOCALAPPDATA%` client from 0.1.0 to 0.1.1 with the channel SHA-256. The live 0.1.0 session was not killed; it keeps its mapped image until restarted, and the installed bytes are already 0.1.1. The probe now derives its status-line marker from the binary's `--version` and waits for the full model-picker query, removing two hardcoded-version and settle-race failures.
 

@@ -1,3 +1,15 @@
+## v0.1.2 release proof — short tool names and hash-led Markdown tables (2026-10-27, Windows x86_64)
+
+`main` at commit `c2b8b60` renames the model-facing workspace tools to `list`, `read`, `write` and `command` and moves table detection ahead of heading parsing, so a Markdown table whose first column header is `#` renders as joined cells instead of a heading plus a raw separator row. The typed Windows artifact `releases/agent/windows/v0.1.2/jani-0.1.2-x86_64-pc-windows-msvc.exe` was built from that commit with clean build inputs (SHA-256 `5c11ec31c6957463f18011436f08dc884db607783c00626ae2bf591e9a510c79`, 9,818,112 bytes; manifest commit `c2b8b60`).
+
+Final gates on this tree: `cargo fmt --all -- --check` is clean, `cargo clippy --workspace --all-targets -- -D warnings` reports zero warnings, `cargo test --workspace --all-targets` passed 260 tests (225 unit, 35 CLI/integration including ten E2E tests), `cargo run -p jani-check` passes, `python tools/doccheck.py` validates 58 normative documents and twelve core contracts, `cargo run -p jani-claims -- check` reports 0 unresolved findings, and `python tools/release_catalog.py check` verifies every typed Windows manifest.
+
+The real-console probe ran against the typed artifact and passed all 52 boolean checks: the fake provider streamed a table whose first column header is `#`, and the frame showed `#  │  claim  │  verdict` and the `1  │  md  │  ok` row with no raw `---` separator; the five fake tool calls display `✓ read · reading notes.txt`, still fold into `▸ tools · 5 calls · last 3 shown` with exactly three rows, expand to five and recollapse.
+
+`jani update install --source <loopback origin> --to %LOCALAPPDATA%\Jani\bin\jani.exe` verified the channel manifest, exact size and SHA-256, executed the candidate's `--version`, and replaced the installed 0.1.1 bytes with 0.1.2 (SHA-256 `5c11ec31…`), writing a receipt. The command ran from the installed 0.1.1 image at the replacement path, so the updater flagged `restartRequired`; a fresh invocation reports `jani 0.1.2` with the channel digest. The live 0.1.0 session (PID 9836) was not killed. Evidence: `validation/updates/2026-10-27/tui-probe-012.log`, `install-012.json` and `install-self-proof-012.json`.
+
+**Trust limits** are unchanged from v0.1.1: release manifests are not cryptographically signed, there is no automatic rollback, and the update origin exercised here is loopback HTTP.
+
 ## v0.1.1 release proof — self-distributed updates, foldable tools, soak and autonomous assignment (2026-10-27, Windows x86_64)
 
 `main` at commit `01d8e87` adds verified self-distributed update delivery (`jani update check|install|watch`), foldable tool-call sections that keep the three most recent calls visible, hardened model transport, an autonomous assignment E2E test and a 2,000-turn fault-injecting soak. The typed Windows artifact `releases/agent/windows/v0.1.1/jani-0.1.1-x86_64-pc-windows-msvc.exe` was built from that commit with clean build inputs (SHA-256 `6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122`, 9,821,696 bytes; manifest commit `01d8e87`).
@@ -46,7 +58,7 @@ Snapshot: 2026-10-27, Windows `x86_64-pc-windows-msvc`, Rust 1.95.0 pinned by `r
 | --- | --- | --- |
 | Formatting | `cargo fmt --all -- --check` | Clean |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | Zero warnings |
-| Tests | `cargo test --workspace --all-targets` | 259 passed, 0 failed: 224 unit, 35 CLI/integration (including 10 E2E) |
+| Tests | `cargo test --workspace --all-targets` | 260 passed, 0 failed: 225 unit, 35 CLI/integration (including 10 E2E) |
 | Release build | `cargo build --release -p jani` | Succeeds; `jani --version` and `jani --help` run |
 | CLI smoke | `jani doctor`, `jani sandbox doctor` | Report worktree, skills, model, settings source, permissions and sandbox support |
 | Architecture gate | `cargo run -p jani-check` | Passes |
@@ -54,9 +66,9 @@ Snapshot: 2026-10-27, Windows `x86_64-pc-windows-msvc`, Rust 1.95.0 pinned by `r
 | Claims register | `cargo run -p jani-claims -- check` | Register current; 0 unresolved deterministic findings |
 | Synthetic corpus | `python -m synthetic.generate generate` / `verify` | 5,000,000 cases generated and integrity-verified locally |
 | Native corpus | `python -m synthetic.native_tools generate` / `verify` | Generated and verified; CI exercises 2,400 cases |
-| Release updater | `jani update install --source <loopback origin> --to %LOCALAPPDATA%\Jani\bin\jani.exe` | Delivered the typed `v0.1.1` artifact over loopback HTTP: channel, exact size and SHA-256 verified, candidate `--version` checked, running 0.1.0 image renamed aside, installed binary reports `jani 0.1.1` with the channel digest, and a receipt was written; a two-device fleet and a mid-run watch publication are recorded in `validation/updates/2026-10-27/` |
+| Release updater | `jani update install --source <loopback origin> --to %LOCALAPPDATA%\Jani\bin\jani.exe` | Delivered the typed `v0.1.2` artifact over loopback HTTP: channel, exact size and SHA-256 verified, candidate `--version` checked, installed 0.1.1 image replaced, installed binary reports `jani 0.1.2` with the channel digest, and a receipt was written; the v0.1.1 two-device fleet and mid-run watch publication are recorded in `validation/updates/2026-10-27/` |
 | Reliability soak | `python tools/soak.py ...` | 2,000/2,000 turns completed, 0 failed runs, 1,117 injected faults all recovered, audit chain verified; accelerated clock simulates 2.78 days |
-| Console probe | `python tools/tui_console_probe.py <v0.1.1 artifact> ...` | 51/51 checks pass, including the folded tool section with the last three calls, expansion/recollapse, scrollbar, palette and model picker |
+| Console probe | `python tools/tui_console_probe.py <v0.1.2 artifact> ...` | 52/52 checks pass, including the hash-led Markdown table, the folded tool section with the last three `read` calls, expansion/recollapse, scrollbar, palette and model picker |
 | CI matrix | `.github/workflows/ci.yml` | Ubuntu and Windows jobs run formatting, claims, docs, clippy, tests and release build |
 
 ### Security behavior covered by negative tests

@@ -1,0 +1,960 @@
+console_geometry: buffer=120x40 window=120x40 top=0
+--- welcome screen ---
+   ·                                                   jani 0.1.2             ✧              ✧
+                 ✦                          ·   ⋅  ██╗ █████╗ ███╗   ██╗██╗
+                                                   ██║██╔══██╗████╗  ██║██║                        ·              ⋅
+              ⋅       ⋅           ·                ██║███████║██╔██╗ ██║██║ ✧
+                               ⋅     ·        ██   ██║██╔══██║██║╚██╗██║██║
+    ⋅                                         ╚█████╔╝██║  ██║██║ ╚████║██║        ·           ✧
+                                               ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝ ✧                        ✧
+        ✦                                      GOVERNED ENGINEERING AGENT
+         ·                           ⋅                                                               ✦
+                                     Type a message to begin.  /help lists commands.                 ✦
+
+
+
+
+
+
+
+                                           What would you like to accomplish?
+                                     Choose a starter task or type your own message.
+
+                                                  F1 Inspect repository
+                                                F2 Plan architecture work
+                                                   F3 Review open risks
+                                                 F4 Inspect test coverage
+
+                        Shortcuts draft only; Enter sends. A sandbox profile is not OS isolation.
+
+
+
+
+
+
+
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                ● Tip Type a message to begin. /help lists every command.
+ …/target/tui-run-012-typed · task-187a8fdb                                                          v0.1.2  ·  0 turns
+--- markers ---
+welcome_logo: True
+welcome_prompt: True
+welcome_hints: True
+env_model_applied: True
+starter_drafted: True
+starter_no_request: True
+starter_cleared: True
+multiline_visible: True
+multiline_did_not_submit: True
+--- status screen ---
+   JANI  governed engineering agent                                                         task-187a8fdb  ·  0 turns
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /status
+
+   note
+     Jani v0.1.2
+     Task: task-187a8fdb06d27ae9b5595bd6
+     Worktree: \\?\C:\Users\user\CascadeProjects\jani\target\tui-run-012-typed
+     Mode: local-unmanaged (tenant local, principal local-operator)
+     Model: probe-model (profile probe)
+     Model API: openai http://127.0.0.1:64802/v1
+     Project permissions: mode=default allow=1 ask=1 deny=1
+     Turns: 0; history messages: 0
+     Last run: none
+     Max steps per turn: 20
+     Writes: false; paths: none
+     Commands: false
+     Sandbox: trusted-dev; network: deny
+     Approvals: 0 attached; 0 pending
+
+
+
+
+
+
+
+
+
+
+
+
+
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                ● Tip Type a message to begin. /help lists every command.
+ …/target/tui-run-012-typed · task-187a8fdb                                                          v0.1.2  ·  0 turns
+status_ran: True
+status_agent_label: True
+no_usage_dump: True
+permissions_loaded: True
+--- skills screen ---
+   JANI  governed engineering agent                                                         task-187a8fdb  ·  0 turns
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /status
+
+   note
+     Jani v0.1.2
+     Task: task-187a8fdb06d27ae9b5595bd6
+     Worktree: \\?\C:\Users\user\CascadeProjects\jani\target\tui-run-012-typed
+     Mode: local-unmanaged (tenant local, principal local-operator)
+     Model: probe-model (profile probe)
+     Model API: openai http://127.0.0.1:64802/v1
+     Project permissions: mode=default allow=1 ask=1 deny=1
+     Turns: 0; history messages: 0
+     Last run: none
+     Max steps per turn: 20
+     Writes: false; paths: none
+     Commands: false
+     Sandbox: trusted-dev; network: deny
+     Approvals: 0 attached; 0 pending
+
+   command
+     /skills
+
+   skills · 1 discovered
+     ◆ probe-skill
+       Probe the styled skills listing in a real console.
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md
+
+
+
+
+
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                ● Tip Type a message to begin. /help lists every command.
+ …/target/tui-run-012-typed · task-187a8fdb                                                          v0.1.2  ·  0 turns
+skills_header_rendered: True
+skills_block_rendered: True
+skills_no_request: True
+--- busy screen ---
+   JANI  governed engineering agent                                                         task-187a8fdb  ·  0 turns
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /status
+
+   note
+     Jani v0.1.2
+     Task: task-187a8fdb06d27ae9b5595bd6
+     Worktree: \\?\C:\Users\user\CascadeProjects\jani\target\tui-run-012-typed
+     Mode: local-unmanaged (tenant local, principal local-operator)
+     Model: probe-model (profile probe)
+     Model API: openai http://127.0.0.1:64802/v1
+     Project permissions: mode=default allow=1 ask=1 deny=1
+     Turns: 0; history messages: 0
+     Last run: none
+     Max steps per turn: 20
+     Writes: false; paths: none
+     Commands: false
+     Sandbox: trusted-dev; network: deny
+     Approvals: 0 attached; 0 pending
+
+   command
+     /skills
+
+   skills · 1 discovered
+     ◆ probe-skill
+       Probe the styled skills listing in a real console.
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md
+
+   you
+     hello
+
+
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ \ step 1/20  ctrl+c requests cancellation at the next safe boundary                                            │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                         pgup/wheel  scroll     ctrl+t  thinking     ctrl+c  request cancellation
+                                ● Tip Type a message to begin. /help lists every command.
+ …/target/tui-run-012-typed · task-187a8fdb                                                          v0.1.2  ·  0 turns
+busy_live_activity: True
+--- tool screen ---
+   JANI  governed engineering agent                                                         task-187a8fdb  ·  0 turns
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   note                                                                                                             ║
+     Jani v0.1.2                                                                                                    █
+     Task: task-187a8fdb06d27ae9b5595bd6                                                                            █
+     Worktree: \\?\C:\Users\user\CascadeProjects\jani\target\tui-run-012-typed                                      █
+     Mode: local-unmanaged (tenant local, principal local-operator)                                                 █
+     Model: probe-model (profile probe)                                                                             █
+     Model API: openai http://127.0.0.1:64802/v1                                                                    █
+     Project permissions: mode=default allow=1 ask=1 deny=1                                                         █
+     Turns: 0; history messages: 0                                                                                  █
+     Last run: none                                                                                                 █
+     Max steps per turn: 20                                                                                         █
+     Writes: false; paths: none                                                                                     █
+     Commands: false                                                                                                █
+     Sandbox: trusted-dev; network: deny                                                                            █
+     Approvals: 0 attached; 0 pending                                                                               █
+                                                                                                                    █
+   command                                                                                                          ║
+     /skills                                                                                                        ║
+                                                                                                                    ║
+   skills · 1 discovered                                                                                            ║
+     ◆ probe-skill                                                                                                  ║
+       Probe the styled skills listing in a real console.                                                           ║
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md                        ║
+                                                                                                                    ║
+   you                                                                                                              ║
+     hello                                                                                                          ║
+                                                                                                                    ║
+   ▸ tools · 5 calls · last 3 shown · click or ctrl+t                                                               ║
+     ✓ read · reading notes.txt · 6ms                                                                               ║
+     ✓ read · reading notes.txt · 6ms                                                                               ║
+     ✓ read · reading notes.txt · 11ms                                                                              ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ | step 2/20  ctrl+c requests cancellation at the next safe boundary                                            │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                         pgup/wheel  scroll     ctrl+t  thinking     ctrl+c  request cancellation
+                                ● Tip Type a message to begin. /help lists every command.
+ …/target/tui-run-012-typed · task-187a8fdb                                                          v0.1.2  ·  0 turns
+tool_activity_rendered: True
+--- answer screen ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command                                                                                                          ║
+     /skills                                                                                                        ║
+                                                                                                                    ║
+   skills · 1 discovered                                                                                            ║
+     ◆ probe-skill                                                                                                  ║
+       Probe the styled skills listing in a real console.                                                           ║
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md                        ║
+                                                                                                                    █
+   you                                                                                                              █
+     hello                                                                                                          █
+                                                                                                                    █
+   ▸ tools · 5 calls · last 3 shown · click or ctrl+t                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 11ms                                                                              █
+                                                                                                                    █
+   ▸ think                                                                                                          █
+     1 reasoning line · click or ctrl+t                                                                             █
+                                                                                                                    █
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+answer_rendered: True
+markdown_list_rendered: True
+markdown_table_rendered: True
+no_raw_markdown: True
+reasoning_folded: True
+turn_counted: True
+--- collapsed tools ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command                                                                                                          ║
+     /skills                                                                                                        ║
+                                                                                                                    ║
+   skills · 1 discovered                                                                                            ║
+     ◆ probe-skill                                                                                                  ║
+       Probe the styled skills listing in a real console.                                                           ║
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md                        ║
+                                                                                                                    █
+   you                                                                                                              █
+     hello                                                                                                          █
+                                                                                                                    █
+   ▸ tools · 5 calls · last 3 shown · click or ctrl+t                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 11ms                                                                              █
+                                                                                                                    █
+   ▸ think                                                                                                          █
+     1 reasoning line · click or ctrl+t                                                                             █
+                                                                                                                    █
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+tool_calls_collapsed_to_three: True
+tool_count_readable: True
+--- expanded tools ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                    ║
+   skills · 1 discovered                                                                                            ║
+     ◆ probe-skill                                                                                                  ║
+       Probe the styled skills listing in a real console.                                                           ║
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md                        ║
+                                                                                                                    ║
+   you                                                                                                              ║
+     hello                                                                                                          ║
+                                                                                                                    █
+   ▾ tools · 5 calls                                                                                                █
+     ✓ read · reading notes.txt · 10ms                                                                              █
+     ✓ read · reading notes.txt · 5ms                                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 11ms                                                                              █
+                                                                                                                    █
+   ▸ think                                                                                                          █
+     1 reasoning line · click or ctrl+t                                                                             █
+                                                                                                                    █
+   jani                                                                                                             █
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+tool_calls_expand_to_five: True
+tool_calls_recollapse: True
+provider_requests: 2
+five_tool_results_round_trip: True
+streaming_requested: True
+key_not_in_body: True
+--- overflow screen ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                    ║
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 █
+                                                                                                                    █
+   command                                                                                                          █
+     /help                                                                                                          █
+                                                                                                                    █
+   note                                                                                                             █
+     /help              Show this help                                                                              █
+     /status            Show frozen authority, task, model and history size                                         █
+     /model [NAME]      Switch model or settings profile for later turns                                            █
+     /skills            List discovered skills                                                                      █
+     /inspect [RUN_ID]  Show journal events (default: latest turn)                                                  ║
+     /budget            Show the persisted task budget                                                              ║
+     /approvals         List approval requests                                                                      ║
+     /approval ID       Attach an approval a verified approver already decided                                      ║
+     /new               Clear conversation history; task and budget continue                                        ║
+     /exit              End the session                                                                             ║
+     /quit              End the session (alias of /exit)                                                            ║
+                                                                                                                    ║
+     Any other input is sent to the model as a task.                                                                ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+scrollbar_rendered: True
+following_at_bottom: True
+earlier_block_hidden: True
+--- page up ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   you                                                                                                              ║
+     hello                                                                                                          ║
+                                                                                                                    ║
+   ▸ tools · 5 calls · last 3 shown · click or ctrl+t                                                               ║
+     ✓ read · reading notes.txt · 6ms                                                                               ║
+     ✓ read · reading notes.txt · 6ms                                                                               ║
+     ✓ read · reading notes.txt · 11ms                                                                              ║
+                                                                                                                    ║
+   ▸ think                                                                                                          ║
+     1 reasoning line · click or ctrl+t                                                                             █
+                                                                                                                    █
+   jani                                                                                                             █
+     Hello from the fake provider.                                                                                  █
+                                                                                                                    █
+     #  │  claim  │  verdict                                                                                        █
+     1  │  md  │  ok                                                                                                █
+                                                                                                                    █
+     • alpha item                                                                                                   █
+     • beta item                                                                                                    █
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 ║
+                                                                                                                    ║
+   command                                                                                                          ║
+     /help                                                                                                          ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     /help              Show this help                                                                              ║
+     /status            Show frozen authority, task, model and history size                                         ║
+     /model [NAME]      Switch model or settings profile for later turns                                            ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     end  resume     ctrl+t  thinking     ctrl+c  exit
+                          ● Tip 10 lines below the bottom · end or wheel down resumes following
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+pageup_scrolls: True
+--- wheel up ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   note                                                                                                             ║
+     Jani v0.1.2                                                                                                    █
+     Task: task-187a8fdb06d27ae9b5595bd6                                                                            █
+     Worktree: \\?\C:\Users\user\CascadeProjects\jani\target\tui-run-012-typed                                      █
+     Mode: local-unmanaged (tenant local, principal local-operator)                                                 █
+     Model: probe-model (profile probe)                                                                             █
+     Model API: openai http://127.0.0.1:64802/v1                                                                    █
+     Project permissions: mode=default allow=1 ask=1 deny=1                                                         █
+     Turns: 0; history messages: 0                                                                                  █
+     Last run: none                                                                                                 █
+     Max steps per turn: 20                                                                                         █
+     Writes: false; paths: none                                                                                     ║
+     Commands: false                                                                                                ║
+     Sandbox: trusted-dev; network: deny                                                                            ║
+     Approvals: 0 attached; 0 pending                                                                               ║
+                                                                                                                    ║
+   command                                                                                                          ║
+     /skills                                                                                                        ║
+                                                                                                                    ║
+   skills · 1 discovered                                                                                            ║
+     ◆ probe-skill                                                                                                  ║
+       Probe the styled skills listing in a real console.                                                           ║
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md                        ║
+                                                                                                                    ║
+   you                                                                                                              ║
+     hello                                                                                                          ║
+                                                                                                                    ║
+   ▸ tools · 5 calls · last 3 shown · click or ctrl+t                                                               ║
+     ✓ read · reading notes.txt · 6ms                                                                               ║
+     ✓ read · reading notes.txt · 6ms                                                                               ║
+     ✓ read · reading notes.txt · 11ms                                                                              ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     end  resume     ctrl+t  thinking     ctrl+c  exit
+                          ● Tip 34 lines below the bottom · end or wheel down resumes following
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+wheel_scroll_up: True
+earlier_content_visible: True
+fold_row: 16
+--- click expand ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                    ║
+   skills · 1 discovered                                                                                            ║
+     ◆ probe-skill                                                                                                  ║
+       Probe the styled skills listing in a real console.                                                           ║
+       ↳ ~\CascadeProjects\jani\target\tui-run-012-typed\.agents\skills\probe-skill\SKILL.md                        ║
+                                                                                                                    ║
+   you                                                                                                              ║
+     hello                                                                                                          █
+                                                                                                                    █
+   ▸ tools · 5 calls · last 3 shown · click or ctrl+t                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 6ms                                                                               █
+     ✓ read · reading notes.txt · 11ms                                                                              █
+                                                                                                                    █
+   ▾ think                                                                                                          █
+     checking the fake provider                                                                                     █
+                                                                                                                    █
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 ║
+                                                                                                                    ║
+   command                                                                                                          ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     end  resume     ctrl+t  thinking     ctrl+c  exit
+                          ● Tip 16 lines below the bottom · end or wheel down resumes following
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+click_expands_thinking: True
+--- wheel down ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                    ║
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 █
+                                                                                                                    █
+   command                                                                                                          █
+     /help                                                                                                          █
+                                                                                                                    █
+   note                                                                                                             █
+     /help              Show this help                                                                              █
+     /status            Show frozen authority, task, model and history size                                         █
+     /model [NAME]      Switch model or settings profile for later turns                                            █
+     /skills            List discovered skills                                                                      █
+     /inspect [RUN_ID]  Show journal events (default: latest turn)                                                  ║
+     /budget            Show the persisted task budget                                                              ║
+     /approvals         List approval requests                                                                      ║
+     /approval ID       Attach an approval a verified approver already decided                                      ║
+     /new               Clear conversation history; task and budget continue                                        ║
+     /exit              End the session                                                                             ║
+     /quit              End the session (alias of /exit)                                                            ║
+                                                                                                                    ║
+     Any other input is sent to the model as a task.                                                                ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+wheel_resume_follow: True
+back_at_bottom: True
+--- command palette ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                    ║
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 █
+                                                                                                                    █
+   command                                                                                                          █
+     /help                                                                                                          █
+                                                                                                                    █
+   note             ┌ commands ────────────────────────────────────────────────────────────────────┐                █
+     /help          │› /help              Show this help                                           │                █
+     /status        │  /status            Show frozen authority, task, model and history size      │                █
+     /model [NAME]  │  /model [NAME]      Switch model or settings profile for later turns         │                █
+     /skills        │  /skills            List discovered skills                                   │                █
+     /inspect [RUN_I│  /inspect [RUN_ID]  Show journal events (default: latest turn)               │                ║
+     /budget        │  /budget            Show the persisted task budget                           │                ║
+     /approvals     │  /approvals         List approval requests                                   │                ║
+     /approval ID   │  /approval ID       Attach an approval a verified approver already decided   │                ║
+     /new           │  /new               Clear conversation history; task and budget continue     │                ║
+     /exit          │  /exit              End the session                                          │                ║
+     /quit          │  /quit              End the session (alias of /exit)                         │                ║
+                    │enter run · tab complete · esc close                                          │                ║
+     Any other input└──────────────────────────────────────────────────────────────────────────────┘                ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › /                                                                                                            │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                ↑↓  select     enter  run     tab  complete     esc  close
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+palette_opens: True
+--- command palette filter ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                    ║
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 █
+                                                                                                                    █
+   command                                                                                                          █
+     /help                                                                                                          █
+                                                                                                                    █
+   note                                                                                                             █
+     /help              Show this help                                                                              █
+     /status            Show frozen authority, task, model and history size                                         █
+     /model [NAME]      Switch model or settings profile for later turns                                            █
+     /skills            List discovered skills                                                                      █
+     /inspect [RUN_ID]  Show journal events (default: latest turn)                                                  ║
+     /budget            Show the persisted task budget                                                              ║
+     /approvals         List approval requests                                                                      ║
+     /approval ID       Attach an approval a verified approver already decided                                      ║
+     /new               Clear conversation history; task and budget continue                                        ║
+     /exit          ┌ commands · st ───────────────────────────────────────────────────────────────┐                ║
+     /quit          │› /status  Show frozen authority, task, model and history size                │                ║
+                    │enter run · tab complete · esc close                                          │                ║
+     Any other input└──────────────────────────────────────────────────────────────────────────────┘                ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › /st                                                                                                          │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                ↑↓  select     enter  run     tab  complete     esc  close
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+palette_filters: True
+--- palette closed ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                    ║
+   jani                                                                                                             ║
+     Hello from the fake provider.                                                                                  ║
+                                                                                                                    ║
+     #  │  claim  │  verdict                                                                                        ║
+     1  │  md  │  ok                                                                                                ║
+                                                                                                                    ║
+     • alpha item                                                                                                   ║
+     • beta item                                                                                                    ║
+                                                                                                                    ║
+   note                                                                                                             ║
+     Run run-5f1df6ef4181518a39b77a5a · tools: 5 ok, 0 failed · audit chain verified · 12 events · 0 denials. Task  ║
+     outcome NOT independently verified. Use /inspect for evidence.                                                 █
+                                                                                                                    █
+   command                                                                                                          █
+     /help                                                                                                          █
+                                                                                                                    █
+   note                                                                                                             █
+     /help              Show this help                                                                              █
+     /status            Show frozen authority, task, model and history size                                         █
+     /model [NAME]      Switch model or settings profile for later turns                                            █
+     /skills            List discovered skills                                                                      █
+     /inspect [RUN_ID]  Show journal events (default: latest turn)                                                  ║
+     /budget            Show the persisted task budget                                                              ║
+     /approvals         List approval requests                                                                      ║
+     /approval ID       Attach an approval a verified approver already decided                                      ║
+     /new               Clear conversation history; task and budget continue                                        ║
+     /exit              End the session                                                                             ║
+     /quit              End the session (alias of /exit)                                                            ║
+                                                                                                                    ║
+     Any other input is sent to the model as a task.                                                                ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+palette_escape_closes: True
+--- palette ran status ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     /status            Show frozen authority, task, model and history size                                         ║
+     /model [NAME]      Switch model or settings profile for later turns                                            ║
+     /skills            List discovered skills                                                                      ║
+     /inspect [RUN_ID]  Show journal events (default: latest turn)                                                  ║
+     /budget            Show the persisted task budget                                                              ║
+     /approvals         List approval requests                                                                      ║
+     /approval ID       Attach an approval a verified approver already decided                                      ║
+     /new               Clear conversation history; task and budget continue                                        ║
+     /exit              End the session                                                                             ║
+     /quit              End the session (alias of /exit)                                                            ║
+                                                                                                                    ║
+     Any other input is sent to the model as a task.                                                                ║
+                                                                                                                    ║
+   command                                                                                                          ║
+     /status                                                                                                        ║
+                                                                                                                    █
+   note                                                                                                             █
+     Jani v0.1.2                                                                                                    █
+     Task: task-187a8fdb06d27ae9b5595bd6                                                                            █
+     Worktree: \\?\C:\Users\user\CascadeProjects\jani\target\tui-run-012-typed                                      █
+     Mode: local-unmanaged (tenant local, principal local-operator)                                                 █
+     Model: probe-model (profile probe)                                                                             █
+     Model API: openai http://127.0.0.1:64802/v1                                                                    █
+     Project permissions: mode=default allow=1 ask=1 deny=1                                                         ║
+     Turns: 1; history messages: 8                                                                                  ║
+     Last run: run-5f1df6ef4181518a39b77a5a                                                                         ║
+     Max steps per turn: 20                                                                                         ║
+     Writes: false; paths: none                                                                                     ║
+     Commands: false                                                                                                ║
+     Sandbox: trusted-dev; network: deny                                                                            ║
+     Approvals: 0 attached; 0 pending                                                                               ║
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+palette_runs_selected: True
+--- palette ran new ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /new
+
+   note
+     Conversation cleared. Task task-187a8fdb06d27ae9b5595bd6 and its budget continue.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+palette_runs_new: True
+--- model picker ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /new
+
+   note
+     Conversation cleared. Task task-187a8fdb06d27ae9b5595bd6 and its budget continue.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                    ┌ model ───────────────────────────────────────────────────────────────────────┐
+                    │› alt    alt-model                                                            │
+                    │  probe  probe-model · current                                                │
+                    │enter switch · tab complete · esc close                                       │
+                    └──────────────────────────────────────────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › /model                                                                                                       │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                              ↑↓  select     enter  switch     tab  complete     esc  close
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+model_picker_opens: True
+--- model picker filter ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /new
+
+   note
+     Conversation cleared. Task task-187a8fdb06d27ae9b5595bd6 and its budget continue.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                    ┌ model · al ──────────────────────────────────────────────────────────────────┐
+                    │› alt  alt-model                                                              │
+                    │enter switch · tab complete · esc close                                       │
+                    └──────────────────────────────────────────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › /model al                                                                                                    │
+   │ LOCAL  ·  probe-model (probe)  ·  writes off  ·  profile trusted-dev  ·  net deny                              │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                              ↑↓  select     enter  switch     tab  complete     esc  close
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+model_picker_filters: True
+--- model switched ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /new
+
+   note
+     Conversation cleared. Task task-187a8fdb06d27ae9b5595bd6 and its budget continue.
+
+   command
+     /model alt
+
+   note
+     Model switched to alt-model (profile alt; openai http://127.0.0.1:64802/v1; output ceiling 4096; key env
+     JANI_API_KEY). The conversation continues with the new model.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › Type a message… (/ for commands)                                                                             │
+   │ LOCAL  ·  alt-model (alt)  ·  writes off  ·  profile trusted-dev  ·  net deny                                  │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    enter  send     shift+enter  newline     pgup/wheel  scroll     home/end  jump     ctrl+t  thinking     ctrl+c  e
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+model_switch_end_to_end: True
+model_status_reports_profile: True
+--- custom model row ---
+   JANI  governed engineering agent                                                          task-187a8fdb  ·  1 turn
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   command
+     /new
+
+   note
+     Conversation cleared. Task task-187a8fdb06d27ae9b5595bd6 and its budget continue.
+
+   command
+     /model alt
+
+   note
+     Model switched to alt-model (profile alt; openai http://127.0.0.1:64802/v1; output ceiling 4096; key env
+     JANI_API_KEY). The conversation continues with the new model.
+
+   command
+     /status
+
+   note
+     Jani v0.1.2
+     Task: task-187a8fdb06d27ae9b5595bd6
+     Worktree: \\?\C:\Users\user\CascadeProjects\jani\target\tui-run-012-typed
+     Mode: local-unmanaged (tenant local, principal local-operator)
+     Model: alt-model (profile alt)
+     Model API: openai http://127.0.0.1:64802/v1
+     Project permissions: mode=default allow=1 ask=1 deny=1
+     Turns: 1; history messages: 0
+     Last run: run-5f1df6ef4181518a39b77a5a
+     Max steps per turn: 20
+     Writes: false; ┌ model · custom-probe-model ──────────────────────────────────────────────────┐
+     Commands: false│› custom-probe-model  use as a model ID with the current API and key          │
+     Sandbox: truste│enter switch · tab complete · esc close                                       │
+     Approvals: 0 at└──────────────────────────────────────────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ › /model custom-probe-model                                                                                    │
+   │ LOCAL  ·  alt-model (alt)  ·  writes off  ·  profile trusted-dev  ·  net deny                                  │
+   └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                              ↑↓  select     enter  switch     tab  complete     esc  close
+                                  ● Tip /status shows the authority frozen at startup.
+ …/target/tui-run-012-typed · task-187a8fdb                                                           v0.1.2  ·  1 turn
+custom_model_row: True
+custom_model_switch: True
+custom_model_has_no_profile: True
+exit=0
+PROBE_RESULT=PASS

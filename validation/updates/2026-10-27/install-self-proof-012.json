@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "jani.install-proof/v1",
+  "date": "2026-10-27",
+  "path": "C:\\Users\\user\\AppData\\Local\\Jani\\bin\\jani.exe",
+  "before": {
+    "version": "0.1.1",
+    "sha256": "6b1315cdde6797b44f0c50fedbdb0e2b04ee1b3c2aeb59c243332a0e96e8d122"
+  },
+  "after": {
+    "version": "0.1.2",
+    "sha256": "5c11ec31c6957463f18011436f08dc884db607783c00626ae2bf591e9a510c79"
+  },
+  "releaseSha256": "5c11ec31c6957463f18011436f08dc884db607783c00626ae2bf591e9a510c79",
+  "releaseCommit": "c2b8b6013ad92ef904a364d020a3828e81746b1d",
+  "delivery": "jani update install --source <loopback origin> --to C:/Users/user/AppData/Local/Jani/bin/jani.exe",
+  "artifactVerified": true,
+  "restartRequired": true,
+  "restartNote": "The update command ran from the installed 0.1.1 image at the replacement path, so the updater flagged a restart; a fresh invocation reports 0.1.2.",
+  "runningSessionPid": 9836,
+  "runningSessionNote": "The live 0.1.0 process was not killed; it executes the previous image until the operator restarts it. The installed bytes are 0.1.2.",
+  "backup": ".jani.exe.jani-old-23076-1793075201020317300-4",
+  "receipt": "C:\\Users\\user\\CascadeProjects\\jani\\.jani\\updates\\23076-1793075201033769600-5.json"
+}
