@@ -147,7 +147,7 @@ fn governed_run_calls_a_local_provider_and_records_evidence() {
                     "id": "call-1",
                     "type": "function",
                     "function": {
-                        "name": "workspace_read",
+                        "name": "read",
                         "arguments": "{\"path\":\"src/one.txt\"}"
                     }
                 }]
@@ -414,20 +414,16 @@ fn autonomous_assignment_writes_reads_and_reports_a_deliverable_without_input() 
     let root = temp_root();
     let state = root.join("state");
     let (base, bodies, provider) = start_provider(vec![
-        tool_call("call-1", "workspace_list", json!({"directory": "src"})),
+        tool_call("call-1", "list", json!({"directory": "src"})),
         tool_call(
             "call-2",
-            "workspace_write",
+            "write",
             json!({
                 "path": "src/answer.txt",
                 "content": "autonomy proof: 42\n"
             }),
         ),
-        tool_call(
-            "call-3",
-            "workspace_read",
-            json!({"path": "src/answer.txt"}),
-        ),
+        tool_call("call-3", "read", json!({"path": "src/answer.txt"})),
         answer("Created src/answer.txt and verified its contents."),
     ]);
 

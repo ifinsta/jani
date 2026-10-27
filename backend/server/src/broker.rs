@@ -85,7 +85,7 @@ impl<'a> Broker<'a> {
                     resource: format!("skill:{name}"),
                 })
             }
-            "workspace_list" => {
+            "list" => {
                 let directory = args.get("directory").and_then(Value::as_str).unwrap_or(".");
                 Ok(Call {
                     action: "repo.list",
@@ -94,13 +94,13 @@ impl<'a> Broker<'a> {
                     resource: canonical_resource("repo", directory)?,
                 })
             }
-            "workspace_read" => Ok(Call {
+            "read" => Ok(Call {
                 action: "repo.read",
                 effect: Effect::Read,
                 risk: RiskTier::R0,
                 resource: canonical_resource("repo", get_str(args, "path")?)?,
             }),
-            "workspace_write" => {
+            "write" => {
                 get_str(args, "content")?;
                 Ok(Call {
                     action: "repo.write",
@@ -144,7 +144,7 @@ impl<'a> Broker<'a> {
                     ),
                 })
             }
-            "workspace_command" => {
+            "command" => {
                 let argv = get_argv(args)?;
                 let program = argv.first().ok_or("empty executable")?;
                 safe_label(program)?;
@@ -166,18 +166,18 @@ impl<'a> Broker<'a> {
         args: &'v Value,
     ) -> Result<Option<PermissionRequest<'v>>, String> {
         match tool {
-            "workspace_read" => Ok(Some(PermissionRequest::Read {
+            "read" => Ok(Some(PermissionRequest::Read {
                 path: get_str(args, "path")?,
                 directory: false,
             })),
-            "workspace_list" => Ok(Some(PermissionRequest::Read {
+            "list" => Ok(Some(PermissionRequest::Read {
                 path: args.get("directory").and_then(Value::as_str).unwrap_or("."),
                 directory: true,
             })),
-            "workspace_write" => Ok(Some(PermissionRequest::Write {
+            "write" => Ok(Some(PermissionRequest::Write {
                 path: get_str(args, "path")?,
             })),
-            "workspace_command" => Ok(Some(PermissionRequest::Command {
+            "command" => Ok(Some(PermissionRequest::Command {
                 line: get_argv(args)?.join(" "),
             })),
             _ => Ok(None),
@@ -324,12 +324,7 @@ impl<'a> Broker<'a> {
     pub fn invoke(&mut self, invocation_id: &str, tool: &str, args: &Value) -> ToolResult {
         let known = matches!(
             tool,
-            "skill_read"
-                | "workspace_list"
-                | "workspace_read"
-                | "workspace_write"
-                | "workspace_command"
-                | "native_tool"
+            "skill_read" | "list" | "read" | "write" | "command" | "native_tool"
         );
         if !known {
             return self.reject(
@@ -737,15 +732,15 @@ impl<'a> Broker<'a> {
                 let body = self.catalog.read(name)?;
                 Ok((json!({"skill": name, "contents": body}), None, None))
             }
-            "workspace_list" => {
+            "list" => {
                 let directory = args.get("directory").and_then(Value::as_str).unwrap_or(".");
                 Ok((json!({"files": workspace.list(directory)?}), None, None))
             }
-            "workspace_read" => {
+            "read" => {
                 let path = get_str(args, "path")?;
                 Ok((json!({"contents": workspace.read(path)?}), None, None))
             }
-            "workspace_write" => {
+            "write" => {
                 let path = get_str(args, "path")?;
                 let content = get_str(args, "content")?;
                 Ok((
@@ -791,7 +786,7 @@ impl<'a> Broker<'a> {
                 )?;
                 Ok((data, None, None))
             }
-            "workspace_command" => {
+            "command" => {
                 let argv = get_argv(args)?;
                 let timeout = args
                     .get("timeout_secs")
@@ -1003,8 +998,7 @@ mod tests {
         let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
         {
             let mut broker = env.broker();
-            let malformed =
-                broker.invoke("inv-1", "workspace_write", &json!({"path": "src/two.txt"}));
+            let malformed = broker.invoke("inv-1", "write", &json!({"path": "src/two.txt"}));
             assert_eq!(malformed.status, "denied");
             assert!(malformed
                 .error
@@ -1034,11 +1028,11 @@ mod tests {
         );
         {
             let mut broker = env.broker();
-            let read = broker.invoke("inv-1", "workspace_read", &json!({"path": "src/one.txt"}));
+            let read = broker.invoke("inv-1", "read", &json!({"path": "src/one.txt"}));
             assert_eq!(read.status, "ok");
             let write = broker.invoke(
                 "inv-2",
-                "workspace_write",
+                "write",
                 &json!({"path": "src/two.txt", "content": "x"}),
             );
             assert_eq!(write.status, "denied");
@@ -1059,7 +1053,7 @@ mod tests {
             let mut broker = env.broker();
             let write = broker.invoke(
                 "inv-3",
-                "workspace_write",
+                "write",
                 &json!({"path": "src/two.txt", "content": "x"}),
             );
             assert_eq!(write.status, "denied");
@@ -1082,7 +1076,7 @@ mod tests {
         .unwrap();
         let result = {
             let mut broker = env.broker();
-            broker.invoke("inv-1", "workspace_read", &json!({"path": "src/notes.txt"}))
+            broker.invoke("inv-1", "read", &json!({"path": "src/notes.txt"}))
         };
         assert_eq!(result.status, "ok");
         let data = result.data.unwrap();
@@ -1108,7 +1102,7 @@ mod tests {
         fs::write(env.dir.join("src/pii.txt"), "contact alice@example.com\n").unwrap();
         let result = {
             let mut broker = env.broker();
-            broker.invoke("inv-1", "workspace_read", &json!({"path": "src/pii.txt"}))
+            broker.invoke("inv-1", "read", &json!({"path": "src/pii.txt"}))
         };
         assert_eq!(result.status, "denied");
         assert!(result.data.is_none());
@@ -1132,9 +1126,9 @@ mod tests {
         let mut env = TestEnv::new(None, &limits, false);
         {
             let mut broker = env.broker();
-            let first = broker.invoke("inv-1", "workspace_read", &json!({"path": "src/one.txt"}));
+            let first = broker.invoke("inv-1", "read", &json!({"path": "src/one.txt"}));
             assert_eq!(first.status, "ok");
-            let second = broker.invoke("inv-2", "workspace_read", &json!({"path": "src/one.txt"}));
+            let second = broker.invoke("inv-2", "read", &json!({"path": "src/one.txt"}));
             assert_eq!(second.status, "denied");
             assert!(second
                 .error
@@ -1154,7 +1148,7 @@ mod tests {
         let args = json!({"path": "src/approved.txt", "content": "ok"});
         let approval_id = {
             let mut broker = env.broker();
-            let pending = broker.invoke("inv-1", "workspace_write", &args);
+            let pending = broker.invoke("inv-1", "write", &args);
             assert_eq!(pending.status, "approval_required");
             pending.data.unwrap()["approvalId"]
                 .as_str()
@@ -1171,13 +1165,13 @@ mod tests {
         env.cfg.approval_ids = vec![approval_id.clone()];
         {
             let mut broker = env.broker();
-            let executed = broker.invoke("inv-2", "workspace_write", &args);
+            let executed = broker.invoke("inv-2", "write", &args);
             assert_eq!(executed.status, "ok");
             assert_eq!(executed.approval_id.as_deref(), Some(approval_id.as_str()));
         }
         {
             let mut broker = env.broker();
-            let reused = broker.invoke("inv-3", "workspace_write", &args);
+            let reused = broker.invoke("inv-3", "write", &args);
             assert_eq!(reused.status, "approval_required");
             assert_ne!(
                 reused.data.unwrap()["approvalId"].as_str().unwrap(),
@@ -1194,7 +1188,7 @@ mod tests {
             let mut broker = env.broker();
             broker.invoke(
                 "inv-1",
-                "workspace_write",
+                "write",
                 &json!({"path": "tests/escape.rs", "content": "x"}),
             )
         };
@@ -1233,7 +1227,7 @@ mod tests {
         ));
         let result = {
             let mut broker = env.broker();
-            broker.invoke("inv-1", "workspace_read", &json!({"path": "src/one.txt"}))
+            broker.invoke("inv-1", "read", &json!({"path": "src/one.txt"}))
         };
         assert_eq!(result.status, "denied");
         assert!(result
@@ -1261,7 +1255,7 @@ mod tests {
             let mut broker = env.broker();
             broker.invoke(
                 "inv-1",
-                "workspace_command",
+                "command",
                 &json!({"argv": ["cargo", "fmt", "--check"], "timeout_secs": 30}),
             )
         };
@@ -1285,7 +1279,7 @@ mod tests {
             let mut broker = env.broker();
             broker.invoke(
                 "inv-2",
-                "workspace_command",
+                "command",
                 &json!({"argv": ["cargo", "test"], "timeout_secs": 30}),
             )
         };
@@ -1311,7 +1305,7 @@ mod tests {
             let mut broker = env.broker();
             broker.invoke(
                 "inv-1",
-                "workspace_write",
+                "write",
                 &json!({"path": "src/asked.txt", "content": "x"}),
             )
         };
@@ -1337,7 +1331,7 @@ mod tests {
             let mut broker = env.broker();
             broker.invoke(
                 "inv-1",
-                "workspace_write",
+                "write",
                 &json!({"path": "src/plan.txt", "content": "x"}),
             )
         };
@@ -1351,7 +1345,7 @@ mod tests {
             let mut broker = env.broker();
             broker.invoke(
                 "inv-2",
-                "workspace_command",
+                "command",
                 &json!({"argv": ["cargo", "check"], "timeout_secs": 30}),
             )
         };
@@ -1363,7 +1357,7 @@ mod tests {
             .contains("plan mode is read-only"));
         let read = {
             let mut broker = env.broker();
-            broker.invoke("inv-3", "workspace_read", &json!({"path": "src/one.txt"}))
+            broker.invoke("inv-3", "read", &json!({"path": "src/one.txt"}))
         };
         assert_eq!(read.status, "ok");
         cleanup(env);

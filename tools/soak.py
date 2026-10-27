@@ -189,7 +189,7 @@ class Provider:
                                 "id": "call-soak-tool",
                                 "type": "function",
                                 "function": {
-                                    "name": "workspace_read",
+                                    "name": "read",
                                     "arguments": json.dumps({"path": "src/one.txt"}),
                                 },
                             }
@@ -293,7 +293,7 @@ def parse_args():
     parser.add_argument("--max-consecutive-failures", type=int, default=3)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--tool-every", type=int, default=0,
-                        help="serve a workspace_read tool call every Nth successful turn")
+                        help="serve a read tool call every Nth successful turn")
     parser.add_argument("--latency-ms", type=int, default=0,
                         help="upper bound of simulated provider latency on successful replies")
     parser.add_argument("--simulated-interval-seconds", type=float, default=90.0)

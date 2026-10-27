@@ -3,7 +3,7 @@
 **Status:** partially implemented — bubblewrap/Job Object selection and receipts exist; see
 [the implementation review](jani_enterprise_proposals/IMPLEMENTATION_REVIEW.md) for platform limits.
 **Date:** 2026-10-25
-**Scope:** confine commands requested through `workspace_command` (and their descendants)
+**Scope:** confine commands requested through `command` (and their descendants)
 
 ## Summary
 
@@ -176,7 +176,7 @@ Rules:
 
 ## Observability
 
-`workspace_command` results gain a `sandbox` object:
+`command` results gain a `sandbox` object:
 
 ```json
 {"mode": "auto", "backend": "bwrap", "enforced": true, "network": "deny"}

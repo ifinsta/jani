@@ -2615,6 +2615,10 @@ fn markdown_lines(text: &str, width: usize) -> Vec<Line<'static>> {
             index += 1;
             continue;
         }
+        if is_table_header(&source, index) {
+            index = push_table(&mut out, &source, index, width, base);
+            continue;
+        }
         if let Some((level, content)) = heading(line) {
             let style = if level <= 2 {
                 base.fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -2648,10 +2652,6 @@ fn markdown_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                 base,
             );
             index += 1;
-            continue;
-        }
-        if is_table_header(&source, index) {
-            index = push_table(&mut out, &source, index, width, base);
             continue;
         }
         let mut parts = vec![line.trim()];
@@ -3369,6 +3369,22 @@ mod tests {
     }
 
     #[test]
+    fn markdown_renders_tables_whose_first_column_is_a_hash() {
+        let lines = markdown_lines("# | claim | verdict\n---|:---|---:\n1 | doc | false", 60);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        assert!(
+            text.iter()
+                .any(|line| line.contains("#  │  claim  │  verdict")),
+            "{text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("1  │  doc  │  false")),
+            "{text:?}"
+        );
+        assert!(!text.iter().any(|line| line.contains("---")), "{text:?}");
+    }
+
+    #[test]
     fn markdown_keeps_styled_lines_within_width() {
         let lines = markdown_lines(
             "**The quick brown fox jumps over the lazy dog** and `code_span` continues",
@@ -3571,11 +3587,11 @@ mod tests {
             max_steps: 4,
         });
         state.apply(TurnEvent::ToolStarted {
-            name: "workspace_read".into(),
+            name: "read".into(),
             activity: "reading notes.txt".into(),
         });
         state.apply(TurnEvent::ToolFinished {
-            name: "workspace_read".into(),
+            name: "read".into(),
             activity: "reading notes.txt".into(),
             ok: true,
             duration_ms: 120,
@@ -3612,8 +3628,8 @@ mod tests {
     fn tool_timeline_displays_success_and_failure_distinctly() {
         let mut state = State::new(meta(), 0, 0);
         let mut section = Entry::tools_section();
-        section.record(tool("workspace_read", "reading src/main.rs", true, 120));
-        section.record(tool("workspace_write", "writing denied.rs", false, 4_200));
+        section.record(tool("read", "reading src/main.rs", true, 120));
+        section.record(tool("write", "writing denied.rs", false, 4_200));
         state.push(section);
         let rendered = render(&mut state, 100, 30);
         assert!(
@@ -3621,11 +3637,11 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("✓ workspace_read · reading src/main.rs · 120ms"),
+            rendered.contains("✓ read · reading src/main.rs · 120ms"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("× workspace_write · writing denied.rs · 4.2s"),
+            rendered.contains("× write · writing denied.rs · 4.2s"),
             "{rendered}"
         );
     }
@@ -3635,7 +3651,7 @@ mod tests {
         let mut state = State::new(meta(), 0, 0);
         state.live = Some(LiveTurn::default());
         state.apply(TurnEvent::ToolFinished {
-            name: "workspace_read".into(),
+            name: "read".into(),
             activity: "reading missing.txt".into(),
             ok: false,
             duration_ms: 30,
@@ -3650,7 +3666,7 @@ mod tests {
         assert_eq!(section.tools[0].activity, "reading missing.txt");
         assert_eq!(state.live.as_ref().unwrap().tools_failed, 1);
         let rendered = render(&mut state, 100, 30);
-        assert!(rendered.contains("× workspace_read"), "{rendered}");
+        assert!(rendered.contains("× read"), "{rendered}");
         assert!(rendered.contains("1 failed"), "{rendered}");
     }
 
@@ -3734,7 +3750,7 @@ mod tests {
         state.push(Entry::new(Kind::Reasoning, "earlier thought"));
         state.live = Some(LiveTurn::default());
         state.apply(TurnEvent::ToolFinished {
-            name: "workspace_read".into(),
+            name: "read".into(),
             activity: "reading notes.txt".into(),
             ok: true,
             duration_ms: 50,

@@ -246,9 +246,9 @@ pub fn verifier(s: &State, op: &str) -> Result<Value, String> {
             tests.sort();tests.truncate(120);
             Ok(json!({"tool":"verifier","suggestedArgv":["cargo","test","--workspace","--all-targets"],
                 "candidateTests":tests,"executed":false,
-                "executionRoute":"existing governed workspace_command only"}))
+                "executionRoute":"existing governed command only"}))
         }
-        "run"=>Err("verifier cannot bypass the governed tool broker; submit suggested command to workspace_command".into()),
+        "run"=>Err("verifier cannot bypass the governed tool broker; submit suggested command to the command tool".into()),
         _=>Err("verifier supports select and governed run via broker".into())
     }
 }

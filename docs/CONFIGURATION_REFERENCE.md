@@ -3,8 +3,8 @@ id: JANI-OPS-002
 title: "Configuration reference"
 status: implemented-partial
 owner: backend/core/src/config.rs
-version: 1.2.0
-last-reviewed: 2026-10-26
+version: 1.3.0
+last-reviewed: 2026-10-27
 source:
   - backend/core/src/config.rs
   - backend/core/src/settings.rs
@@ -88,7 +88,7 @@ Select a profile with `--model-profile NAME`. Without it, a top-level `model` na
 
 Permission rules use `Read(./path)`, `Write(./path)` and `Bash(command *)`. Evaluation is deny > plan read-only > ask > per-category allowlist; a `deny` on a directory covers its subtree. An `ask` match adds an external approval of class `settings-permission`; it cannot waive a policy approval. If any `allow` rule exists for a category, unmatched calls in that category are denied. Path rules reject absolute paths and `..`. Unsupported tools and malformed rules fail closed.
 
-Rules map to the model-facing tools: `Read` covers `workspace_read` and `workspace_list` (directory), `Write` covers `workspace_write`, and `Bash` covers `workspace_command`. Native capabilities are separate `native.read` / `native.control` actions governed by the work contract and signed policy; their repository index excludes `.git`, `.jani`, `.env`, `target`, `claims`, generated directories and protected path components, but a project `Read` deny rule is not applied as an index filter.
+Rules map to the model-facing tools: `Read` covers `read` and `list` (directory), `Write` covers `write`, and `Bash` covers `command`. Native capabilities are separate `native.read` / `native.control` actions governed by the work contract and signed policy; their repository index excludes `.git`, `.jani`, `.env`, `target`, `claims`, generated directories and protected path components, but a project `Read` deny rule is not applied as an index filter.
 
 The full example is [settings.example.json](schemas/settings.example.json) and the JSON Schema is [settings.schema.json](schemas/settings.schema.json); field notes and signing formats are in [schema notes](schemas/README.md). The worktree `.jani/settings.json` is unignored so a project can commit non-secret settings; journals, approvals and ledgers remain untracked, and the user-wide file lives outside the repository.
 

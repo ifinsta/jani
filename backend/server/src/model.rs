@@ -797,17 +797,17 @@ pub fn specs() -> Vec<Value> {
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}),
         ),
         function(
-            "workspace_list",
+            "list",
             "List non-sensitive files in the assigned worktree",
             json!({"type":"object","properties":{"directory":{"type":"string","description":"relative directory or '.'"}},"required":["directory"],"additionalProperties":false}),
         ),
         function(
-            "workspace_read",
+            "read",
             "Read a UTF-8 source file from the assigned worktree",
             json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
         ),
         function(
-            "workspace_write",
+            "write",
             "Write one source file within the operator-approved edit scope",
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
         ),
@@ -821,7 +821,7 @@ pub fn specs() -> Vec<Value> {
             },"required":["tool","operation","args"],"additionalProperties":false}),
         ),
         function(
-            "workspace_command",
+            "command",
             "Run an allowlisted test or git command permitted by the operator",
             json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":300}},"required":["argv","timeout_secs"],"additionalProperties":false}),
         ),
@@ -864,17 +864,12 @@ mod tests {
             json!({"role": "assistant", "content": "", "tool_calls": [{
                 "id": "toolu_1",
                 "type": "function",
-                "function": {"name": "workspace_read", "arguments": "{\"path\":\"src/main.rs\"}"},
+                "function": {"name": "read", "arguments": "{\"path\":\"src/main.rs\"}"},
             }]}),
             json!({"role": "tool", "tool_call_id": "toolu_1", "content": "fn main() {}"}),
         ];
-        let request = anthropic_request(
-            "claude-sonnet-5-5",
-            8192,
-            &messages,
-            &[tool("workspace_read")],
-        )
-        .unwrap();
+        let request =
+            anthropic_request("claude-sonnet-5-5", 8192, &messages, &[tool("read")]).unwrap();
         assert_eq!(request["model"], "claude-sonnet-5-5");
         assert_eq!(request["max_tokens"], 8192);
         assert_eq!(request["system"], "policy");
@@ -887,7 +882,7 @@ mod tests {
         );
         assert_eq!(request["messages"][2]["role"], "user");
         assert_eq!(request["messages"][2]["content"][0]["type"], "tool_result");
-        assert_eq!(request["tools"][0]["name"], "workspace_read");
+        assert_eq!(request["tools"][0]["name"], "read");
         assert_eq!(request["tools"][0]["input_schema"]["type"], "object");
         assert_eq!(request["tool_choice"]["type"], "auto");
     }
@@ -897,7 +892,7 @@ mod tests {
         let value = json!({
             "content": [
                 {"type": "text", "text": "Here is the file."},
-                {"type": "tool_use", "id": "toolu_2", "name": "workspace_read", "input": {"path": "src/lib.rs"}}
+                {"type": "tool_use", "id": "toolu_2", "name": "read", "input": {"path": "src/lib.rs"}}
             ],
             "usage": {"input_tokens": 12, "output_tokens": 7}
         });
@@ -905,10 +900,7 @@ mod tests {
         assert_eq!(reply.message["role"], "assistant");
         assert_eq!(reply.message["content"], "Here is the file.");
         assert_eq!(reply.message["tool_calls"][0]["id"], "toolu_2");
-        assert_eq!(
-            reply.message["tool_calls"][0]["function"]["name"],
-            "workspace_read"
-        );
+        assert_eq!(reply.message["tool_calls"][0]["function"]["name"], "read");
         let arguments: Value = serde_json::from_str(
             reply.message["tool_calls"][0]["function"]["arguments"]
                 .as_str()
@@ -950,7 +942,7 @@ mod tests {
             "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"weigh \",\"content\":\"\"}}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"content\":\"world\\n\"}}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace_read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"notes.txt\\\"}\"}}]}}]}\n\n",
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7}}\n\n",
             "data: [DONE]\n\n",
@@ -971,10 +963,7 @@ mod tests {
         );
         assert_eq!(reply.message["content"], "Hello world\n");
         assert_eq!(reply.message["tool_calls"][0]["id"], "call_1");
-        assert_eq!(
-            reply.message["tool_calls"][0]["function"]["name"],
-            "workspace_read"
-        );
+        assert_eq!(reply.message["tool_calls"][0]["function"]["name"], "read");
         let arguments: Value = serde_json::from_str(
             reply.message["tool_calls"][0]["function"]["arguments"]
                 .as_str()
@@ -995,7 +984,7 @@ mod tests {
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"weigh options\"}}\n\n",
             "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
             "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer\"}}\n\n",
-            "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"workspace_read\",\"input\":{}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"read\",\"input\":{}}}\n\n",
             "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"notes.txt\\\"}\"}}\n\n",
             "data: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
             "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n",

@@ -390,7 +390,7 @@ class FakeProvider(BaseHTTPRequestHandler):
                                         "id": f"call_probe_{index}",
                                         "type": "function",
                                         "function": {
-                                            "name": "workspace_read",
+                                            "name": "read",
                                             "arguments": '{"path":"notes.txt"}',
                                         },
                                     }
@@ -416,6 +416,9 @@ class FakeProvider(BaseHTTPRequestHandler):
             )
             for chunk in (
                 "**Hello** from the `fake` provider.\n\n",
+                "# | claim | verdict\n",
+                "---|:---|---:\n",
+                "1 | md | ok\n\n",
                 "- alpha item\n",
                 "- beta item",
             ):
@@ -631,6 +634,12 @@ def main():
         print(answer)
         print("answer_rendered:", "Hello from the fake provider." in answer)
         print("markdown_list_rendered:", "• alpha item" in answer and "• beta item" in answer)
+        table_rendered = (
+            "#  │  claim  │  verdict" in answer
+            and "1  │  md  │  ok" in answer
+            and "---" not in answer
+        )
+        print("markdown_table_rendered:", table_rendered)
         print("no_raw_markdown:", "**" not in answer and "`" not in answer)
         print(
             "reasoning_folded:",
@@ -912,6 +921,7 @@ def main():
             and "Hello from the fake provider." in answer
             and "• alpha item" in answer
             and "• beta item" in answer
+            and table_rendered
             and "**" not in answer
             and "`" not in answer
             and "reasoning line" in answer

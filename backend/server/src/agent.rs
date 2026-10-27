@@ -104,11 +104,11 @@ pub enum TurnEvent {
 fn tool_activity(name: &str, params: &Value) -> String {
     let field = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
     match name {
-        "workspace_read" => format!("reading {}", field("path")),
-        "workspace_write" => format!("writing {}", field("path")),
-        "workspace_list" => format!("listing {}", field("directory")),
+        "read" => format!("reading {}", field("path")),
+        "write" => format!("writing {}", field("path")),
+        "list" => format!("listing {}", field("directory")),
         "skill_read" => format!("reading skill {}", field("name")),
-        "workspace_command" => {
+        "command" => {
             let argv = params
                 .get("argv")
                 .and_then(Value::as_array)
@@ -938,16 +938,16 @@ mod tests {
     #[test]
     fn tool_activity_describes_the_action_in_progress() {
         assert_eq!(
-            tool_activity("workspace_read", &json!({"path": "src/main.rs"})),
+            tool_activity("read", &json!({"path": "src/main.rs"})),
             "reading src/main.rs"
         );
         assert_eq!(
-            tool_activity("workspace_list", &json!({"directory": "."})),
+            tool_activity("list", &json!({"directory": "."})),
             "listing ."
         );
         assert_eq!(
             tool_activity(
-                "workspace_command",
+                "command",
                 &json!({"argv": ["cargo", "test"], "timeout_secs": 30})
             ),
             "running cargo test"
