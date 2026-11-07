@@ -78,9 +78,13 @@ pub fn run(
             "build" => repo::build(&mut s),
             "search" => repo::search(&s, rest.first().ok_or("index search requires query")?),
             "cargo-graph" => cargo_graph::import(
-                &s, rest.first().ok_or("index cargo-graph requires RELATIVE_METADATA_JSON")?
+                &s,
+                rest.first()
+                    .ok_or("index cargo-graph requires RELATIVE_METADATA_JSON")?,
             ),
-            _ => Err("index commands: build, search QUERY, cargo-graph RELATIVE_METADATA_JSON".into()),
+            _ => Err(
+                "index commands: build, search QUERY, cargo-graph RELATIVE_METADATA_JSON".into(),
+            ),
         },
         "context" => memory::context(&mut s, op, rest),
         "planner" => plans::planner(&mut s, op, rest, human_approved),
