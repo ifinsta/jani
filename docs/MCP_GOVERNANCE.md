@@ -150,3 +150,12 @@ cargo build --release -p jani
 ```
 
 Add an authenticated test MCP server that verifies its tokens and signed grants and issues signed results; fault-inject missing roles, revoked rights, forged entitlements, wrong tenant, replayed receipts, mismatched payload digests, malicious server output, partial HTTP responses, and attempts to bypass user-only commit. Cross-host and banking operation must remain disabled until these security gates pass.
+
+## Independent review-clearance verification
+
+Jani now has `jani_mcp::review::verify`, an Ed25519 public-key verifier for `jani.review-clearance/v1`. It binds a **different** reviewer from the author, tenant/task, full base and head Git commit SHAs, policy, multi-repository catalog, source review, isolated test and regression evidence SHA-256 digests, nonce and expiry. The verifier refuses expired, self-issued, modified, wrong-key or incomplete receipts.
+
+The offline CLI entrypoint is `jani mcp review-verify` and requires verified human identity, an explicit task, organization policy permission, trusted reviewer public keys (`--mcp-receipt-key REVIEWER_ID:PUBLIC_KEY_HEX`), expected-context JSON supplied via `--mcp-arguments`, and the signed receipt JSON via `--mcp-response`. The expected-context object contains `tenant`, `taskId`, `author`, `baseCommit`, `headCommit`, `policySha256`, `catalogSha256`, `reviewSha256`, `runtimeSha256`, and `regressionSha256`. All values must be derived independently from the retained run, not copied blindly from an untrusted agent's receipt.
+
+Signing is **never** performed by the Jani engine: private keys remain in an external KMS/HSM or other protected human approval boundary. A valid signature proves signer and bytes, not that the signed observations are truthful. The CLI audits accepted verification, does not commit any change, does not record anti-replay consumption, and cannot replace existing human-commit authorization. Production integrations must maintain a durable nonce/receipt replay register and insist on independently retained test evidence.
+
