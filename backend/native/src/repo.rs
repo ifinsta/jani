@@ -358,6 +358,36 @@ mod tests {
         assert!(deps.len() <= MAX_DEPENDENCIES);
     }
     #[test]
+    fn indexed_dependency_impact_and_stale_source_refusal() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "jani-impact-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/payments.rs"), "pub fn charge() {}\n").unwrap();
+        fs::write(
+            root.join("src/client.rs"),
+            "use crate::payments::charge;\n",
+        )
+        .unwrap();
+        let state_dir = root.join(".jani");
+        let mut state = State::open(&root, &state_dir, "tenant-a", "task-a").unwrap();
+        build(&mut state).unwrap();
+        let report = impact(&state, "src/payments.rs").unwrap();
+        assert!(report["affected"].as_array().unwrap().contains(&json!("src/client.rs")));
+        assert_eq!(report["indexFresh"], true);
+        assert_eq!(report["semanticCompleteness"], false);
+        fs::write(root.join("src/client.rs"), "changed but not indexed\n").unwrap();
+        assert!(impact(&state, "src/payments.rs").is_err());
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn symbols_are_deterministic() {
         assert_eq!(
             symbols("pub fn hello(){}\nstruct World {}\nfn hello(){}"),
