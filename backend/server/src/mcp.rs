@@ -14,7 +14,7 @@ use jani_mcp::{
 };
 use reqwest::header;
 use serde_json::{json, Value};
-use std::{fs, io::Read, path::Path, time::Duration};
+use std::{fs, io::{Read, Write}, path::Path, time::Duration};
 
 const MAX_JSON: u64 = 1_048_576;
 const MAX_ARGS: u64 = 65_536;
@@ -227,8 +227,8 @@ pub fn command(cfg: &Config) -> JResult<Value> {
 
 fn command_inner(cfg: &Config) -> JResult<Value> {
     let sub = cfg.sub.as_deref().ok_or("MCP subcommand required")?;
-    if sub == "review-verify" {
-        return verify_review_clearance(cfg);
+    if matches!(sub, "review-verify" | "review-accept") {
+        return verify_review_clearance(cfg, sub == "review-accept");
     }
     if !matches!(sub, "verify" | "authorize" | "call" | "validate-response") {
         return Err("CONTRACT_UNSUPPORTED_OPERATION".into());
@@ -406,7 +406,50 @@ fn command_inner(cfg: &Config) -> JResult<Value> {
 /// Offline, explicitly human-initiated verification; no network access,
 /// user-only commit or automatic approval. The trusted key specifications must
 /// come from the operator's protected Jani configuration, not an agent prompt.
-fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
+/// Accept each distinct signed clearance at most once, atomically, in the
+/// protected local state directory. No receipt may be accepted twice even if
+/// two independent agents race. A torn write blocks retries until supervised
+/// reconciliation rather than silently accepting a replay.
+fn consume_review_once(
+    state_dir: &Path,
+    tenant: &str,
+    task: &str,
+    nonce: &str,
+    digest: &str,
+) -> JResult<()> {
+    let target = state_dir.join("review-clearance");
+    for p in [state_dir, target.as_path()] {
+        if let Ok(meta) = fs::symlink_metadata(p) {
+            if meta.file_type().is_symlink() {
+                return Err("REVIEW_STATE_SYMLINK_DENIED".into());
+            }
+        }
+    }
+    fs::create_dir_all(&target).map_err(|_| "REVIEW_STATE_UNAVAILABLE")?;
+    let key = sha256_hex(format!("{tenant}\0{task}\0{nonce}").as_bytes());
+    let path = target.join(format!("{key}.json"));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| "REVIEW_REPLAY_OR_STATE_FAILURE")?;
+    let record = json!({
+        "schemaVersion":1,
+        "nonceSha256":key,
+        "tenant":tenant,
+        "taskId":task,
+        "clearanceDigest":digest,
+        "acceptedAt":now_unix()
+    });
+    file.write_all(&serde_json::to_vec(&record).map_err(|_| "REVIEW_RECORD_INVALID")?)
+        .map_err(|_| "REVIEW_STATE_WRITE_FAILED")?;
+    file.sync_all().map_err(|_| "REVIEW_STATE_SYNC_FAILED")?;
+    Ok(())
+}
+
+/// Verify is repeatable/read-only; accept additionally reserves the nonce
+/// exactly once and requires explicit organization control authorization.
+fn verify_review_clearance(cfg: &Config, accept: bool) -> JResult<Value> {
     let identity = identity::load(cfg)?;
     if !identity.verified || identity.subject_type != "human" {
         return Err("REVIEW_VERIFIED_HUMAN_REQUIRED".into());
@@ -451,10 +494,14 @@ fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
         invocation_id: new_id("review-verify"),
         tenant_id: identity.tenant.clone(),
         principal_id: identity.principal.clone(),
-        action: "mcp.review-clearance.verify".into(),
+        action: if accept {
+            "mcp.review-clearance.accept".into()
+        } else {
+            "mcp.review-clearance.verify".into()
+        },
         resource: format!("mcp:review:{task}"),
-        effect: Effect::Read,
-        risk: RiskTier::R1,
+        effect: if accept { Effect::Control } else { Effect::Read },
+        risk: if accept { RiskTier::R2 } else { RiskTier::R1 },
         arguments_digest: digest,
         idempotency_key: None,
     };
@@ -478,12 +525,12 @@ fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
             trusted_keys: &cfg.mcp_receipt_keys,
         },
     )?;
-    audit(
-        cfg,
-        "mcp.review-clearance.verify",
-        true,
-        "REVIEW_SIGNATURE_VERIFIED",
-    )?;
+    audit(cfg, "mcp.review-clearance.verify", true, "REVIEW_SIGNATURE_VERIFIED")?;
+    if accept {
+        consume_review_once(&cfg.state_dir, &receipt.tenant, &receipt.task_id,
+                            &receipt.nonce, &evidence_digest)?;
+        audit(cfg, "mcp.review-clearance.accept", true, "REVIEW_NONCE_CONSUMED")?;
+    }
     Ok(json!({
         "signatureVerified":true,
         "receiptDigest":evidence_digest,
@@ -491,7 +538,7 @@ fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
         "headCommit":receipt.head_commit,
         "tenant":identity.tenant,
         "finalActionPerformed":false,
-        "replayLedgerUpdated":false,
+        "replayLedgerUpdated":accept,
         "humanCommitRequired":true
     }))
 }
