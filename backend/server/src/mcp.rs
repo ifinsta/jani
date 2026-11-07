@@ -14,7 +14,12 @@ use jani_mcp::{
 };
 use reqwest::header;
 use serde_json::{json, Value};
-use std::{fs, io::{Read, Write}, path::Path, time::Duration};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::Path,
+    time::Duration,
+};
 
 const MAX_JSON: u64 = 1_048_576;
 const MAX_ARGS: u64 = 65_536;
@@ -500,7 +505,11 @@ fn verify_review_clearance(cfg: &Config, accept: bool) -> JResult<Value> {
             "mcp.review-clearance.verify".into()
         },
         resource: format!("mcp:review:{task}"),
-        effect: if accept { Effect::Control } else { Effect::Read },
+        effect: if accept {
+            Effect::Control
+        } else {
+            Effect::Read
+        },
         risk: if accept { RiskTier::R2 } else { RiskTier::R1 },
         arguments_digest: digest,
         idempotency_key: None,
@@ -525,11 +534,26 @@ fn verify_review_clearance(cfg: &Config, accept: bool) -> JResult<Value> {
             trusted_keys: &cfg.mcp_receipt_keys,
         },
     )?;
-    audit(cfg, "mcp.review-clearance.verify", true, "REVIEW_SIGNATURE_VERIFIED")?;
+    audit(
+        cfg,
+        "mcp.review-clearance.verify",
+        true,
+        "REVIEW_SIGNATURE_VERIFIED",
+    )?;
     if accept {
-        consume_review_once(&cfg.state_dir, &receipt.tenant, &receipt.task_id,
-                            &receipt.nonce, &evidence_digest)?;
-        audit(cfg, "mcp.review-clearance.accept", true, "REVIEW_NONCE_CONSUMED")?;
+        consume_review_once(
+            &cfg.state_dir,
+            &receipt.tenant,
+            &receipt.task_id,
+            &receipt.nonce,
+            &evidence_digest,
+        )?;
+        audit(
+            cfg,
+            "mcp.review-clearance.accept",
+            true,
+            "REVIEW_NONCE_CONSUMED",
+        )?;
     }
     Ok(json!({
         "signatureVerified":true,
