@@ -17,6 +17,7 @@ const MAX_QUERY_LEN: usize = 100;
 const MAX_PATH_LEN: usize = 180;
 const MAX_IMPACT_RESULTS: usize = 100;
 const MAX_TEST_CANDIDATES: usize = 120;
+const MAX_DEPENDENCIES: usize = 160;
 
 /// Repo-specific directories skipped on top of the shared `ignored_component`
 /// and `protected_component` baselines.
@@ -97,6 +98,38 @@ fn symbols(text: &str) -> Vec<String> {
     }
     found.into_iter().collect()
 }
+/// Conservative, bounded source-level dependency hints. These are not compiler-resolved
+/// edges: dynamic imports, macro expansion, generated code and external packages
+/// deliberately remain outside the guarantee.
+fn dependencies(text: &str) -> Vec<String> {
+    let patterns = [
+        r"(?m)^\s*(?:pub\s+)?(?:use|mod)\s+(?:(?:crate|self|super)::)?([A-Za-z_][A-Za-z_0-9:]*)",
+        r"(?m)^\s*(?:from|import)\s+([A-Za-z_][A-Za-z_0-9.]*)",
+        r#"(?m)\b(?:from\s*|require\s*\(\s*|import\s*\(\s*)['"](?:\./|\.\./)?([A-Za-z_][A-Za-z_0-9./-]*)"#,
+    ];
+    let mut out = BTreeSet::new();
+    for pattern in patterns {
+        let re = Regex::new(pattern).expect("constant dependency regex");
+        for capture in re.captures_iter(text) {
+            for token in capture[1].split([':', '.', '/', '-']) {
+                if token.len() > 1 && token.len() <= 80 {
+                    out.insert(token.to_ascii_lowercase());
+                }
+                if out.len() >= MAX_DEPENDENCIES {
+                    break;
+                }
+            }
+            if out.len() >= MAX_DEPENDENCIES {
+                break;
+            }
+        }
+        if out.len() >= MAX_DEPENDENCIES {
+            break;
+        }
+    }
+    out.into_iter().collect()
+}
+
 fn file_id(path: &str) -> String {
     format!("f-{}", &digest(path.as_bytes())[..32])
 }
@@ -124,17 +157,18 @@ pub fn build(s: &mut State) -> Result<Value, String> {
         let id = file_id(&name);
         seen.insert(id.clone());
         if let Some(old) = s.get("index", &id)? {
-            if old["sha256"].as_str() == Some(hash.as_str()) {
+            if old["sha256"].as_str() == Some(hash.as_str()) && old["dependencies"].is_array() {
                 unchanged += 1;
                 continue;
             }
         }
         let extracted = std::str::from_utf8(&bytes).map(symbols).unwrap_or_default();
+        let refs = std::str::from_utf8(&bytes).map(dependencies).unwrap_or_default();
         s.set(
             "index",
             &id,
             &json!({
-                "path":name,"sha256":hash,"bytes":bytes.len(),"symbols":extracted
+                "path":name,"sha256":hash,"bytes":bytes.len(),"symbols":extracted,"dependencies":refs
             }),
         )?;
         updated += 1;
@@ -181,7 +215,7 @@ pub fn search(s: &State, term: &str) -> Result<Value, String> {
         "sourceBodiesDisclosed":false}))
 }
 pub fn impact(s: &State, path: &str) -> Result<Value, String> {
-    if path.contains("..") || path.starts_with('/') || path.len() > MAX_PATH_LEN {
+    if path.contains("..") || path.starts_with('/') || path.contains('\\') || path.len() > MAX_PATH_LEN {
         return Err("invalid relative path".into());
     }
     let stem = Path::new(path)
@@ -192,34 +226,65 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
     if stem.len() < 2 {
         return Err("unable to derive module identifier".into());
     }
+    let records = s.list("index", MAX_INDEX_ENTRIES)?;
+    let source = records.iter()
+        .find(|(_, entry)| entry["path"].as_str() == Some(path))
+        .ok_or("target is not indexed; rebuild index before impact analysis")?;
+    if source.1["dependencies"].as_array().is_none() {
+        return Err("legacy index entry; rebuild index".into());
+    }
+    // Do not make safety claims from a snapshot whose bytes have since changed.
+    // This also blocks reviews against deleted or symlink-replaced files.
+    for (_, entry) in &records {
+        let name = entry["path"].as_str().ok_or("index path missing")?;
+        let meta = fs::symlink_metadata(s.root.join(name))
+            .map_err(|_| "index is stale; rebuild before impact analysis".to_string())?;
+        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_FILE_BYTES {
+            return Err("index is stale or unsafe; rebuild before impact analysis".into());
+        }
+        let current = digest(&fs::read(s.root.join(name))
+            .map_err(|_| "indexed file unavailable".to_string())?);
+        if entry["sha256"].as_str() != Some(current.as_str()) {
+            return Err("index is stale; rebuild before impact analysis".into());
+        }
+    }
     let mut affected = Vec::new();
     let mut tests = Vec::new();
-    for (_, entry) in s.list("index", MAX_INDEX_ENTRIES)? {
+    let mut evidence = Vec::new();
+    for (_, entry) in records {
         let name = entry["path"].as_str().unwrap_or("");
         if name == path {
             continue;
         }
         let lower = name.to_ascii_lowercase();
-        let deps = entry["symbols"]
-            .as_array()
-            .into_iter()
-            .flatten()
+        let refs = entry["dependencies"].as_array();
+        let dependency_match = refs.into_iter().flatten()
+            .any(|v| v.as_str() == Some(stem.as_str()));
+        let symbol_match = entry["symbols"].as_array().into_iter().flatten()
             .any(|v| v.as_str().unwrap_or("").eq_ignore_ascii_case(&stem));
-        if lower.contains(&stem) || deps {
+        let path_match = lower.contains(&stem);
+        if dependency_match || symbol_match || path_match {
             if lower.contains("test") {
-                tests.push(name.to_owned())
+                tests.push(name.to_owned());
             } else {
-                affected.push(name.to_owned())
+                affected.push(name.to_owned());
+            }
+            if evidence.len() < MAX_IMPACT_RESULTS {
+                evidence.push(json!({"path":name,
+                    "reason":if dependency_match {"import-or-module-token"}
+                             else if symbol_match {"symbol-name"} else {"path-name"},
+                    "sha256":entry["sha256"]}));
             }
         }
     }
     affected.truncate(MAX_IMPACT_RESULTS);
     tests.truncate(MAX_IMPACT_RESULTS);
-    Ok(
-        json!({"tool":"impact","source":path,"heuristic":"path-and-symbol only; not a complete dependency graph",
-       "affected":affected,"tests":tests,"requiresVerification":true}),
-    )
+    Ok(json!({"tool":"impact","source":path,
+        "heuristic":"bounded source-level import, module and symbol hints; not a compiler graph",
+        "affected":affected,"tests":tests,"evidence":evidence,
+        "indexFresh":true,"semanticCompleteness":false,"requiresVerification":true}))
 }
+
 pub fn workspace(s: &mut State, op: &str) -> Result<Value, String> {
     match op {
         "status"|"snapshot"=>{
@@ -269,6 +334,16 @@ pub fn verifier(s: &State, op: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dependencies_are_deterministic_and_bounded() {
+        let text = "use crate::payments::charge;\nmod receipt;\nfrom core.ledger import Entry\nimport os.path\nimport widget from './component.js';";
+        let deps = dependencies(text);
+        assert!(deps.contains(&"payments".to_string()));
+        assert!(deps.contains(&"receipt".to_string()));
+        assert!(deps.contains(&"ledger".to_string()));
+        assert!(deps.contains(&"component".to_string()));
+        assert!(deps.len() <= MAX_DEPENDENCIES);
+    }
     #[test]
     fn symbols_are_deterministic() {
         assert_eq!(
