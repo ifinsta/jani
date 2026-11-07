@@ -30,3 +30,15 @@ Every operation passes the governed native bridge or broker under tenant/task id
 
 ## Verification
 Test positive behavior, explicit refusal and each named fault through a real Jani execution. Synthetic input generation does not establish runtime pass status.
+
+## Cargo-resolved package graph import
+
+The read-only `index cargo-graph RELATIVE_METADATA_JSON` operation imports a **Cargo-resolved package-level dependency graph** into an inspection result without executing repository code. First produce metadata through the existing governed command/sandbox route:
+
+```bash
+cargo metadata --locked --offline --format-version 1 > .jani/cargo-metadata.json
+jani native index cargo-graph .jani/cargo-metadata.json --repo . --tenant TEAM --task TASK
+```
+
+The JSON must describe the same canonical workspace root, have Cargo metadata format version 1, complete workspace members and `resolve.nodes.deps`. The importer checks bounded size, references and duplicate IDs and emits a SHA-256 evidence digest. It **does not** prove that the metadata was generated against the current commit; that provenance must come from the governed command receipt. Cargo resolution is package-level, not compiler-resolved Rust function or callsite edges. The existing file/symbol dependency index remains heuristic.
+
