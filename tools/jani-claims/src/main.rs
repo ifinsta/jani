@@ -495,7 +495,10 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let file = root.join("report.json");
         fs::write(&file, b"{\r\n  \"a\": 1\r\n}\r\n").unwrap();
-        assert_eq!(read_claims_normalized(&file).unwrap(), b"{\n  \"a\": 1\n}\n");
+        assert_eq!(
+            read_claims_normalized(&file).unwrap(),
+            b"{\n  \"a\": 1\n}\n"
+        );
         fs::write(&file, b"{\r  \"a\": 1}\r").unwrap();
         assert_ne!(read_claims_normalized(&file).unwrap(), b"{\n  \"a\": 1}\n");
         fs::write(&file, [0xffu8]).unwrap();
