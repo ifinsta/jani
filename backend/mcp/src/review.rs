@@ -53,7 +53,8 @@ fn hex_digest(s: &str, bytes: usize) -> bool {
 fn identifier(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
 /// Domain-separate signed bytes from all other Jani MCP signatures.
@@ -71,8 +72,10 @@ pub fn verify(receipt: &Clearance, expected: &Expected<'_>) -> Result<String, St
     if receipt.version != VERSION {
         return Err("REVIEW_VERSION_UNSUPPORTED".into());
     }
-    if !identifier(&receipt.tenant) || !identifier(&receipt.task_id)
-        || !identifier(&receipt.author) || !identifier(&receipt.reviewer)
+    if !identifier(&receipt.tenant)
+        || !identifier(&receipt.task_id)
+        || !identifier(&receipt.author)
+        || !identifier(&receipt.reviewer)
         || receipt.author == receipt.reviewer
         || receipt.tenant != expected.tenant
         || receipt.task_id != expected.task_id
@@ -80,7 +83,8 @@ pub fn verify(receipt: &Clearance, expected: &Expected<'_>) -> Result<String, St
     {
         return Err("REVIEW_IDENTITY_OR_CONTEXT_MISMATCH".into());
     }
-    if !hex_digest(&receipt.base_commit, 20) || !hex_digest(&receipt.head_commit, 20)
+    if !hex_digest(&receipt.base_commit, 20)
+        || !hex_digest(&receipt.head_commit, 20)
         || receipt.base_commit == receipt.head_commit
         || receipt.base_commit != expected.base_commit
         || receipt.head_commit != expected.head_commit
@@ -94,11 +98,18 @@ pub fn verify(receipt: &Clearance, expected: &Expected<'_>) -> Result<String, St
         (&receipt.runtime_sha256, expected.runtime_sha256),
         (&receipt.regression_sha256, expected.regression_sha256),
     ];
-    if pairs.iter().any(|(actual, expected)| !hex_digest(actual, 32) || actual != expected) {
+    if pairs
+        .iter()
+        .any(|(actual, expected)| !hex_digest(actual, 32) || actual != expected)
+    {
         return Err("REVIEW_EVIDENCE_OR_POLICY_MISMATCH".into());
     }
-    if receipt.nonce.len() < 24 || receipt.nonce.len() > 128
-        || !receipt.nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    if receipt.nonce.len() < 24
+        || receipt.nonce.len() > 128
+        || !receipt
+            .nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         return Err("REVIEW_NONCE_INVALID".into());
     }
@@ -112,7 +123,10 @@ pub fn verify(receipt: &Clearance, expected: &Expected<'_>) -> Result<String, St
     if !receipt.review_accepted || !receipt.runtime_passed || !receipt.regression_passed {
         return Err("REVIEW_EVIDENCE_NOT_ACCEPTED".into());
     }
-    let sig = receipt.signature.as_ref().ok_or("REVIEW_SIGNATURE_MISSING")?;
+    let sig = receipt
+        .signature
+        .as_ref()
+        .ok_or("REVIEW_SIGNATURE_MISSING")?;
     if sig.key_id != receipt.reviewer {
         return Err("REVIEW_SIGNER_NOT_INDEPENDENT_REVIEWER".into());
     }
@@ -130,15 +144,24 @@ mod tests {
         let secret = SigningKey::from_bytes(&[0x39; 32]);
         let pubkey = hex::encode(secret.verifying_key().to_bytes());
         let mut r = Clearance {
-            version: VERSION.into(), tenant: "tenant-a".into(), task_id: "task-a".into(),
-            author: "author-a".into(), reviewer: "reviewer-b".into(),
-            base_commit: "a".repeat(40), head_commit: "b".repeat(40),
-            policy_sha256: "1".repeat(64), catalog_sha256: "2".repeat(64),
-            review_sha256: "3".repeat(64), runtime_sha256: "4".repeat(64),
+            version: VERSION.into(),
+            tenant: "tenant-a".into(),
+            task_id: "task-a".into(),
+            author: "author-a".into(),
+            reviewer: "reviewer-b".into(),
+            base_commit: "a".repeat(40),
+            head_commit: "b".repeat(40),
+            policy_sha256: "1".repeat(64),
+            catalog_sha256: "2".repeat(64),
+            review_sha256: "3".repeat(64),
+            runtime_sha256: "4".repeat(64),
             regression_sha256: "5".repeat(64),
             nonce: "unique-nonce-0123456789abcdef".into(),
-            issued_at: 100, expires_at: 200,
-            review_accepted: true, runtime_passed: true, regression_passed: true,
+            issued_at: 100,
+            expires_at: 200,
+            review_accepted: true,
+            runtime_passed: true,
+            regression_passed: true,
             signature: None,
         };
         let signature = secret.sign(&signing_bytes(&r).unwrap());
@@ -149,13 +172,23 @@ mod tests {
         (r, vec![format!("reviewer-b:{pubkey}")])
     }
     fn check(r: &Clearance, keys: &[String], now: u64) -> Result<String, String> {
-        verify(r, &Expected {
-            tenant: "tenant-a", task_id: "task-a", author: "author-a",
-            base_commit: &"a".repeat(40), head_commit: &"b".repeat(40),
-            policy_sha256: &"1".repeat(64), catalog_sha256: &"2".repeat(64),
-            review_sha256: &"3".repeat(64), runtime_sha256: &"4".repeat(64),
-            regression_sha256: &"5".repeat(64), now, trusted_keys: keys,
-        })
+        verify(
+            r,
+            &Expected {
+                tenant: "tenant-a",
+                task_id: "task-a",
+                author: "author-a",
+                base_commit: &"a".repeat(40),
+                head_commit: &"b".repeat(40),
+                policy_sha256: &"1".repeat(64),
+                catalog_sha256: &"2".repeat(64),
+                review_sha256: &"3".repeat(64),
+                runtime_sha256: &"4".repeat(64),
+                regression_sha256: &"5".repeat(64),
+                now,
+                trusted_keys: keys,
+            },
+        )
     }
     #[test]
     fn verifies_signed_independent_clearance_and_rejects_tampering() {
