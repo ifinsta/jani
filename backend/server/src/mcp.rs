@@ -413,19 +413,24 @@ fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
     }
     let task = cfg.task_id.as_deref().ok_or("REVIEW_TASK_REQUIRED")?;
     let expected = json_file(
-        cfg.mcp_input_path.as_deref().ok_or("REVIEW_EXPECTED_CONTEXT_REQUIRED")?,
+        cfg.mcp_input_path
+            .as_deref()
+            .ok_or("REVIEW_EXPECTED_CONTEXT_REQUIRED")?,
         MAX_ARGS,
     )?;
     let receipt_value = json_file(
-        cfg.mcp_response_path.as_deref().ok_or("REVIEW_RECEIPT_REQUIRED")?,
+        cfg.mcp_response_path
+            .as_deref()
+            .ok_or("REVIEW_RECEIPT_REQUIRED")?,
         MAX_JSON,
     )?;
     let receipt: jani_mcp::review::Clearance =
         serde_json::from_value(receipt_value).map_err(|_| "REVIEW_RECEIPT_MALFORMED")?;
     let required = |name: &str| -> JResult<&str> {
-        expected.get(name).and_then(Value::as_str).ok_or_else(|| {
-            format!("REVIEW_EXPECTED_{name}_REQUIRED")
-        })
+        expected
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("REVIEW_EXPECTED_{name}_REQUIRED"))
     };
     let expected_tenant = required("tenant")?;
     let expected_task = required("taskId")?;
@@ -437,7 +442,9 @@ fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
     }
     let engine = PolicyEngine::load(cfg)?;
     let digest = sha256_hex(
-        serde_json::to_string(&expected).map_err(|e| e.to_string())?.as_bytes(),
+        serde_json::to_string(&expected)
+            .map_err(|e| e.to_string())?
+            .as_bytes(),
     );
     let request = ActionRequest {
         task_id: task.into(),
@@ -471,7 +478,12 @@ fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
             trusted_keys: &cfg.mcp_receipt_keys,
         },
     )?;
-    audit(cfg, "mcp.review-clearance.verify", true, "REVIEW_SIGNATURE_VERIFIED")?;
+    audit(
+        cfg,
+        "mcp.review-clearance.verify",
+        true,
+        "REVIEW_SIGNATURE_VERIFIED",
+    )?;
     Ok(json!({
         "signatureVerified":true,
         "receiptDigest":evidence_digest,
