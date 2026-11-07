@@ -163,7 +163,9 @@ pub fn build(s: &mut State) -> Result<Value, String> {
             }
         }
         let extracted = std::str::from_utf8(&bytes).map(symbols).unwrap_or_default();
-        let refs = std::str::from_utf8(&bytes).map(dependencies).unwrap_or_default();
+        let refs = std::str::from_utf8(&bytes)
+            .map(dependencies)
+            .unwrap_or_default();
         s.set(
             "index",
             &id,
@@ -215,7 +217,11 @@ pub fn search(s: &State, term: &str) -> Result<Value, String> {
         "sourceBodiesDisclosed":false}))
 }
 pub fn impact(s: &State, path: &str) -> Result<Value, String> {
-    if path.contains("..") || path.starts_with('/') || path.contains('\\') || path.len() > MAX_PATH_LEN {
+    if path.contains("..")
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.len() > MAX_PATH_LEN
+    {
         return Err("invalid relative path".into());
     }
     let stem = Path::new(path)
@@ -227,7 +233,8 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
         return Err("unable to derive module identifier".into());
     }
     let records = s.list("index", MAX_INDEX_ENTRIES)?;
-    let source = records.iter()
+    let source = records
+        .iter()
         .find(|(_, entry)| entry["path"].as_str() == Some(path))
         .ok_or("target is not indexed; rebuild index before impact analysis")?;
     if source.1["dependencies"].as_array().is_none() {
@@ -242,8 +249,9 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
         if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_FILE_BYTES {
             return Err("index is stale or unsafe; rebuild before impact analysis".into());
         }
-        let current = digest(&fs::read(s.root.join(name))
-            .map_err(|_| "indexed file unavailable".to_string())?);
+        let current = digest(
+            &fs::read(s.root.join(name)).map_err(|_| "indexed file unavailable".to_string())?,
+        );
         if entry["sha256"].as_str() != Some(current.as_str()) {
             return Err("index is stale; rebuild before impact analysis".into());
         }
@@ -258,9 +266,14 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
         }
         let lower = name.to_ascii_lowercase();
         let refs = entry["dependencies"].as_array();
-        let dependency_match = refs.into_iter().flatten()
+        let dependency_match = refs
+            .into_iter()
+            .flatten()
             .any(|v| v.as_str() == Some(stem.as_str()));
-        let symbol_match = entry["symbols"].as_array().into_iter().flatten()
+        let symbol_match = entry["symbols"]
+            .as_array()
+            .into_iter()
+            .flatten()
             .any(|v| v.as_str().unwrap_or("").eq_ignore_ascii_case(&stem));
         let path_match = lower.contains(&stem);
         if dependency_match || symbol_match || path_match {
