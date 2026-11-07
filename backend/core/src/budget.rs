@@ -4,6 +4,9 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// State subdirectory holding one ledger file per task.
+pub const BUDGETS_DIR: &str = "budgets";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BudgetSnapshot {
@@ -45,7 +48,7 @@ impl BudgetLedger {
     pub fn new(state_dir: &Path, task_id: &str, limits: &EffectiveLimits) -> Result<Self, String> {
         let mut ledger = Self {
             task_id: task_id.into(),
-            dir: state_dir.join("budgets"),
+            dir: state_dir.join(BUDGETS_DIR),
             started_at: crate::types::now_unix(),
             max_tool_calls: limits.max_tool_calls,
             max_wall_seconds: limits.max_wall_seconds,
@@ -207,7 +210,7 @@ pub fn show(state_dir: &Path, task_id: &str) -> Result<Value, String> {
             }
         })
         .collect();
-    let path = state_dir.join("budgets").join(format!("{safe}.json"));
+    let path = state_dir.join(BUDGETS_DIR).join(format!("{safe}.json"));
     let text = fs::read_to_string(&path)
         .map_err(|e| format!("no budget ledger for task '{task_id}': {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("invalid budget ledger: {e}"))

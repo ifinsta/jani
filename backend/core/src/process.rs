@@ -84,8 +84,8 @@ pub fn execute_with(
         let out = secure_output(&out_path)?;
         let err = secure_output(&err_path)?;
         // Model credentials must never reach child processes, build scripts, or test code.
-        cmd.env_remove("JANI_API_KEY")
-            .env_remove("OPENAI_API_KEY")
+        cmd.env_remove(crate::env::API_KEY)
+            .env_remove(crate::env::OPENAI_API_KEY)
             .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))

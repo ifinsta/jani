@@ -19,17 +19,17 @@ pub fn receipt(state_dir: &Path, run_id: &str) -> Result<Value, String> {
     let mut denials = 0usize;
     let mut invocations = std::collections::BTreeSet::new();
     for event in &events {
-        if event.decision == "deny" {
+        if event.decision == crate::journal::decision::DENY {
             denials += 1;
         }
         if event.invocation_id != "run" && !event.invocation_id.is_empty() {
             invocations.insert(event.invocation_id.as_str());
         }
-        if event.action == "agent.run" {
+        if event.action == crate::tools::action::AGENT_RUN {
             model_status = match event.decision.as_str() {
-                "started" => "unknown_requires_reconciliation",
-                "completed" => "recorded_model_complete",
-                "failed" => "recorded_model_failed",
+                crate::journal::decision::STARTED => "unknown_requires_reconciliation",
+                crate::journal::decision::COMPLETED => "recorded_model_complete",
+                crate::journal::decision::FAILED => "recorded_model_failed",
                 _ => model_status,
             };
         }

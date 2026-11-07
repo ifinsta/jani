@@ -1,4 +1,5 @@
 use crate::config::{JResult, ModelChoice};
+use crate::tools::Tool;
 use crate::types::ModelProtocol;
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
@@ -9,24 +10,14 @@ const MAX_ATTEMPTS: u64 = 6;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_STREAM_BLOCKS: usize = 64;
 const RETRY_BASE: Duration = Duration::from_millis(250);
-const RETRY_CAP: Duration = Duration::from_secs(8);
-
-fn retry_base() -> Duration {
-    std::env::var("JANI_MODEL_RETRY_BASE_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(RETRY_BASE)
-}
-
-fn retry_delay(attempt: u64) -> Duration {
-    let factor = 1u64 << attempt.saturating_sub(1).min(6);
-    retry_base().saturating_mul(factor as u32).min(RETRY_CAP)
-}
 
 fn pause_before_retry(attempt: u64) {
-    std::thread::sleep(retry_delay(attempt));
+    let base = crate::net::retry_base(crate::env::MODEL_RETRY_BASE_MS, RETRY_BASE);
+    std::thread::sleep(crate::net::retry_delay(
+        base,
+        attempt,
+        crate::net::RETRY_CAP,
+    ));
 }
 
 #[derive(Debug)]
@@ -34,6 +25,29 @@ pub struct ModelReply {
     pub message: Value,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+}
+
+/// The OpenAI-shaped tool-call object every codec emits. Anthropic `tool_use`
+/// blocks and both stream assemblers must produce the identical structure so
+/// the reply fed back to the model is indistinguishable across providers.
+fn openai_tool_call(id: &str, name: &str, kind: &str, arguments: String) -> Value {
+    json!({
+        "id": id,
+        "type": kind,
+        "function": {"name": name, "arguments": arguments},
+    })
+}
+
+/// The OpenAI-shaped assistant message every codec emits; `tool_calls` appears
+/// only when calls exist, matching what providers send back.
+fn assistant_message(text: String, calls: Vec<Value>) -> Value {
+    let mut message = Map::new();
+    message.insert("role".into(), json!("assistant"));
+    message.insert("content".into(), json!(text));
+    if !calls.is_empty() {
+        message.insert("tool_calls".into(), Value::Array(calls));
+    }
+    Value::Object(message)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,9 +73,8 @@ impl ChatModel {
                 choice.model
             )
         })?;
-        let client = Client::builder()
-            .timeout(Duration::from_secs(180))
-            .connect_timeout(Duration::from_secs(20))
+        let client = crate::http::client_builder()
+            .timeout(crate::http::REQUEST_TIMEOUT)
             .build()
             .map_err(|e| e.to_string())?;
         let base = choice.api_base.trim_end_matches('/');
@@ -303,24 +316,17 @@ fn anthropic_reply(value: &Value) -> JResult<ModelReply> {
                     .and_then(Value::as_str)
                     .ok_or("tool_use block missing name")?;
                 let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
-                calls.push(json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": serde_json::to_string(&input).map_err(|e| e.to_string())?,
-                    },
-                }));
+                calls.push(openai_tool_call(
+                    id,
+                    name,
+                    "function",
+                    serde_json::to_string(&input).map_err(|e| e.to_string())?,
+                ));
             }
             _ => {}
         }
     }
-    let mut message = Map::new();
-    message.insert("role".into(), json!("assistant"));
-    message.insert("content".into(), json!(text));
-    if !calls.is_empty() {
-        message.insert("tool_calls".into(), Value::Array(calls));
-    }
+    let message = assistant_message(text, calls);
     let prompt_tokens = value
         .pointer("/usage/input_tokens")
         .and_then(Value::as_u64)
@@ -330,7 +336,7 @@ fn anthropic_reply(value: &Value) -> JResult<ModelReply> {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     Ok(ModelReply {
-        message: Value::Object(message),
+        message,
         prompt_tokens,
         completion_tokens,
     })
@@ -457,29 +463,25 @@ fn openai_stream<R: BufRead>(
     if !done {
         return Err("model stream ended before [DONE]; the reply is incomplete".into());
     }
-    let mut message = Map::new();
-    message.insert("role".into(), json!("assistant"));
-    message.insert("content".into(), json!(text));
     let mut assembled = Vec::new();
     for call in calls {
         if call.name.is_empty() {
             continue;
         }
         let id = call.id.ok_or("streamed tool call is missing its id")?;
-        assembled.push(json!({
-            "id": id,
-            "type": call.kind.unwrap_or_else(|| "function".into()),
-            "function": {
-                "name": call.name,
-                "arguments": if call.arguments.is_empty() { "{}".to_string() } else { call.arguments },
+        assembled.push(openai_tool_call(
+            &id,
+            &call.name,
+            &call.kind.unwrap_or_else(|| "function".into()),
+            if call.arguments.is_empty() {
+                "{}".to_string()
+            } else {
+                call.arguments
             },
-        }));
-    }
-    if !assembled.is_empty() {
-        message.insert("tool_calls".into(), Value::Array(assembled));
+        ));
     }
     Ok(ModelReply {
-        message: Value::Object(message),
+        message: assistant_message(text, assembled),
         prompt_tokens,
         completion_tokens,
     })
@@ -635,26 +637,18 @@ fn anthropic_stream<R: BufRead>(
                     serde_json::from_str(&block.partial_json)
                         .map_err(|e| format!("invalid streamed tool input: {e}"))?
                 };
-                calls.push(json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": serde_json::to_string(&input).map_err(|e| e.to_string())?,
-                    },
-                }));
+                calls.push(openai_tool_call(
+                    &id,
+                    &name,
+                    "function",
+                    serde_json::to_string(&input).map_err(|e| e.to_string())?,
+                ));
             }
             _ => {}
         }
     }
-    let mut message = Map::new();
-    message.insert("role".into(), json!("assistant"));
-    message.insert("content".into(), json!(text));
-    if !calls.is_empty() {
-        message.insert("tool_calls".into(), Value::Array(calls));
-    }
     Ok(ModelReply {
-        message: Value::Object(message),
+        message: assistant_message(text, calls),
         prompt_tokens,
         completion_tokens,
     })
@@ -789,30 +783,25 @@ fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-pub fn specs() -> Vec<Value> {
-    vec![
-        function(
-            "skill_read",
+fn spec_for(tool: Tool) -> (&'static str, Value) {
+    match tool {
+        Tool::SkillRead => (
             "Read a discovered SKILL.md for workflow guidance",
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}),
         ),
-        function(
-            "list",
+        Tool::List => (
             "List non-sensitive files in the assigned worktree",
             json!({"type":"object","properties":{"directory":{"type":"string","description":"relative directory or '.'"}},"required":["directory"],"additionalProperties":false}),
         ),
-        function(
-            "read",
+        Tool::Read => (
             "Read a UTF-8 source file from the assigned worktree",
             json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
         ),
-        function(
-            "write",
+        Tool::Write => (
             "Write one source file within the operator-approved edit scope",
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
         ),
-        function(
-            "native_tool",
+        Tool::NativeTool => (
             "Call one of Jani's 12 native indexing, context, planning, pruning, checkpoint, verification, impact, scheduling, workspace, evidence, optimization or simulation primitives. Never executes arbitrary tests or commits external effects.",
             json!({"type":"object","properties":{
                 "tool":{"type":"string"},
@@ -820,12 +809,21 @@ pub fn specs() -> Vec<Value> {
                 "args":{"type":"array","items":{"type":"string"}}
             },"required":["tool","operation","args"],"additionalProperties":false}),
         ),
-        function(
-            "command",
+        Tool::Command => (
             "Run an allowlisted test or git command permitted by the operator",
-            json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":300}},"required":["argv","timeout_secs"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":crate::exec::MAX_TIMEOUT_SECS}},"required":["argv","timeout_secs"],"additionalProperties":false}),
         ),
-    ]
+    }
+}
+
+pub fn specs() -> Vec<Value> {
+    Tool::ALL
+        .iter()
+        .map(|tool| {
+            let (description, parameters) = spec_for(*tool);
+            function(tool.name(), description, parameters)
+        })
+        .collect()
 }
 
 pub fn tool_schema(name: &str) -> Option<Value> {

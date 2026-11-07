@@ -1,5 +1,10 @@
 use crate::config::{Config, JResult};
 use crate::{process, types};
+use jani_core::contract::{
+    RELEASE_CHANNEL_SCHEMA as CHANNEL_SCHEMA, RELEASE_COMPONENT,
+    RELEASE_MANIFEST_SCHEMA as MANIFEST_SCHEMA, RELEASE_PACKAGE, RELEASE_TARGETS,
+    RELEASE_UPDATE_SCHEMA as UPDATE_SCHEMA,
+};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,12 +15,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-const CHANNEL_SCHEMA: &str = "jani.release-channel/v2";
-const MANIFEST_SCHEMA: &str = "jani.release/v2";
-const UPDATE_SCHEMA: &str = "jani.update/v1";
 const MAX_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const FETCH_ATTEMPTS: u64 = 4;
+const RETRY_BASE: Duration = Duration::from_millis(400);
+const RECEIPTS_DIR: &str = "updates";
 
 pub fn command(cfg: &Config) -> JResult<()> {
     match cfg.sub.as_deref() {
@@ -127,42 +131,21 @@ fn validate_source(raw: &str) -> JResult<String> {
     if authority.contains('@') {
         return Err("update source must not embed credentials".into());
     }
-    if scheme == "http" && !loopback_authority(authority) {
+    if scheme == "http" && !crate::net::is_loopback_authority(authority) {
         return Err("plain-http update sources are allowed only on localhost".into());
     }
     Ok(source.to_string())
 }
 
-fn loopback_authority(authority: &str) -> bool {
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        let Some((host, tail)) = rest.split_once(']') else {
-            return false;
-        };
-        if !(tail.is_empty() || tail.starts_with(':')) {
-            return false;
-        }
-        host
-    } else {
-        authority
-            .rsplit_once(':')
-            .map(|(host, _)| host)
-            .unwrap_or(authority)
-    };
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
-}
-
 fn host_platform() -> JResult<(&'static str, &'static str)> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => Ok(("windows", "x86_64-pc-windows-msvc")),
-        ("windows", "aarch64") => Ok(("windows", "aarch64-pc-windows-msvc")),
-        ("linux", "x86_64") => Ok(("linux", "x86_64-unknown-linux-gnu")),
-        ("linux", "aarch64") => Ok(("linux", "aarch64-unknown-linux-gnu")),
-        ("macos", "x86_64") => Ok(("macos", "x86_64-apple-darwin")),
-        ("macos", "aarch64") => Ok(("macos", "aarch64-apple-darwin")),
-        (os, arch) => Err(format!(
-            "no release channel mapping for {os}/{arch}; this updater cannot select an artifact"
-        )),
-    }
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    RELEASE_TARGETS
+        .iter()
+        .find(|(o, a, _, _)| *o == os && *a == arch)
+        .map(|(_, _, platform, target)| (*platform, *target))
+        .ok_or_else(|| {
+            format!("no release channel mapping for {os}/{arch}; this updater cannot select an artifact")
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,10 +207,8 @@ struct FetchError {
 
 impl Origin {
     fn new() -> JResult<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            .timeout(Duration::from_secs(180))
-            .redirect(reqwest::redirect::Policy::none())
+        let client = crate::http::client_builder()
+            .timeout(crate::http::REQUEST_TIMEOUT)
             .user_agent(concat!("jani-update/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| format!("cannot build update HTTP client: {e}"))?;
@@ -308,26 +289,15 @@ impl Origin {
     }
 }
 
-fn retry_base() -> Duration {
-    std::env::var("JANI_UPDATE_RETRY_BASE_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(Duration::from_millis(400))
-}
-
 fn retry_delay(attempt: u64) -> Duration {
-    let factor = 1u64 << attempt.saturating_sub(1).min(6);
-    retry_base()
-        .saturating_mul(factor as u32)
-        .min(Duration::from_secs(8))
+    let base = crate::net::retry_base(crate::env::UPDATE_RETRY_BASE_MS, RETRY_BASE);
+    crate::net::retry_delay(base, attempt, crate::net::RETRY_CAP)
 }
 
 fn fetch_release(source: &str) -> JResult<Release> {
     let (platform, target) = host_platform()?;
     let origin = Origin::new()?;
-    let channel_url = format!("{source}/agent/{platform}/latest.json");
+    let channel_url = format!("{source}/{RELEASE_COMPONENT}/{platform}/latest.json");
     let channel: Channel = origin.get_json(&channel_url)?;
     if channel.schema_version != CHANNEL_SCHEMA {
         return Err(format!(
@@ -335,16 +305,19 @@ fn fetch_release(source: &str) -> JResult<Release> {
             channel.schema_version
         ));
     }
-    if channel.kind != "agent" || channel.platform != platform {
+    if channel.kind != RELEASE_COMPONENT || channel.platform != platform {
         return Err(format!(
-            "update channel at {channel_url} is for {} {}; expected agent {platform}",
+            "update channel at {channel_url} is for {} {}; expected {RELEASE_COMPONENT} {platform}",
             channel.kind, channel.platform
         ));
     }
     if !safe_component(&channel.latest) {
         return Err("update channel latest version is not a safe path component".into());
     }
-    let manifest_url = format!("{source}/agent/{platform}/{}/manifest.json", channel.latest);
+    let manifest_url = format!(
+        "{source}/{RELEASE_COMPONENT}/{platform}/{}/manifest.json",
+        channel.latest
+    );
     let manifest: Manifest = origin.get_json(&manifest_url)?;
     validate_manifest(&manifest, platform, target, &channel.latest, &manifest_url)?;
     let artifact = manifest
@@ -378,15 +351,15 @@ fn validate_manifest(
             manifest.schema_version
         ));
     }
-    if manifest.kind != "agent" || manifest.platform != platform {
+    if manifest.kind != RELEASE_COMPONENT || manifest.platform != platform {
         return Err(format!(
-            "release manifest at {url} is for {} {}; expected agent {platform}",
+            "release manifest at {url} is for {} {}; expected {RELEASE_COMPONENT} {platform}",
             manifest.kind, manifest.platform
         ));
     }
-    if manifest.package != "jani" {
+    if manifest.package != RELEASE_PACKAGE {
         return Err(format!(
-            "release manifest at {url} packages '{}'; expected jani",
+            "release manifest at {url} packages '{}'; expected {RELEASE_PACKAGE}",
             manifest.package
         ));
     }
@@ -777,7 +750,7 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
 
     if needs_install {
         let url = format!(
-            "{source}/agent/{}/{}/{}",
+            "{source}/{RELEASE_COMPONENT}/{}/{}/{}",
             release.platform, release.tag, release.artifact.binary
         );
         let bytes = Origin::new()?.get(&url, release.artifact.size_bytes)?;
@@ -1024,7 +997,7 @@ fn artifact_json(artifact: &Artifact) -> Value {
 }
 
 fn write_receipt(cfg: &Config, report: &Value) -> Option<(Option<String>, Option<String>)> {
-    let dir = cfg.state_dir.join("updates");
+    let dir = cfg.state_dir.join(RECEIPTS_DIR);
     if let Err(error) = fs::create_dir_all(&dir) {
         return Some((
             None,
@@ -1063,9 +1036,9 @@ mod tests {
     fn manifest() -> Manifest {
         Manifest {
             schema_version: MANIFEST_SCHEMA.into(),
-            kind: "agent".into(),
+            kind: RELEASE_COMPONENT.into(),
             platform: "windows".into(),
-            package: "jani".into(),
+            package: RELEASE_PACKAGE.into(),
             version: "0.2.0".into(),
             tag: "v0.2.0".into(),
             commit: "0123456789abcdef0123456789abcdef01234567".into(),

@@ -4,10 +4,11 @@ use crate::config::Config;
 use crate::data::{redact_json, Governance};
 use crate::exec;
 use crate::identity::VerifiedIdentity;
-use crate::journal::{EventInput, Journal};
+use crate::journal::{decision as journal_decision, reason, EventInput, Journal};
 use crate::permissions::{Request as PermissionRequest, Verdict as PermissionVerdict};
 use crate::policy::{action_profile, contract_allows_action, contract_allows_write, PolicyEngine};
 use crate::skills::Catalog;
+use crate::tools::{action, Tool};
 use crate::types::{
     canonical_resource, json_digest, new_id, sha256_hex, ActionRequest, Classification,
     Constraints, Decision, Effect, NetworkPolicy, PolicyDecision, RiskTier, SandboxProfile,
@@ -39,6 +40,9 @@ struct Call {
     risk: RiskTier,
     resource: String,
 }
+
+/// Bounded `args` array accepted by the `native_tool` call.
+const MAX_NATIVE_ARGS: usize = 5;
 
 fn get_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value
@@ -73,60 +77,57 @@ fn safe_label(name: &str) -> Result<(), String> {
 }
 
 impl<'a> Broker<'a> {
-    fn call_for(&self, tool: &str, args: &Value) -> Result<Call, String> {
+    fn call_for(&self, tool: Tool, args: &Value) -> Result<Call, String> {
         match tool {
-            "skill_read" => {
+            Tool::SkillRead => {
                 let name = get_str(args, "name")?;
                 safe_label(name)?;
                 Ok(Call {
-                    action: "skill.read",
+                    action: action::SKILL_READ,
                     effect: Effect::Read,
                     risk: RiskTier::R0,
                     resource: format!("skill:{name}"),
                 })
             }
-            "list" => {
+            Tool::List => {
                 let directory = args.get("directory").and_then(Value::as_str).unwrap_or(".");
                 Ok(Call {
-                    action: "repo.list",
+                    action: action::REPO_LIST,
                     effect: Effect::Read,
                     risk: RiskTier::R0,
                     resource: canonical_resource("repo", directory)?,
                 })
             }
-            "read" => Ok(Call {
-                action: "repo.read",
+            Tool::Read => Ok(Call {
+                action: action::REPO_READ,
                 effect: Effect::Read,
                 risk: RiskTier::R0,
                 resource: canonical_resource("repo", get_str(args, "path")?)?,
             }),
-            "write" => {
+            Tool::Write => {
                 get_str(args, "content")?;
                 Ok(Call {
-                    action: "repo.write",
+                    action: action::REPO_WRITE,
                     effect: Effect::LocalWrite,
                     risk: RiskTier::R2,
                     resource: canonical_resource("repo", get_str(args, "path")?)?,
                 })
             }
-            "native_tool" => {
+            Tool::NativeTool => {
                 let native = get_str(args, "tool")?;
                 let operation = get_str(args, "operation")?;
                 if !jani_native::TOOLS.contains(&native) {
                     return Err("unknown native capability".into());
                 }
-                if operation == "verify" && native == "planner"
-                    || operation == "rollback" && native == "workspace"
-                    || operation == "run" && native == "verifier"
-                {
+                if jani_native::privileged(native, operation) {
                     return Err("native privileged action is not available to the model".into());
                 }
                 let is_mutation = jani_native::mutation(native, operation);
                 Ok(Call {
                     action: if is_mutation {
-                        "native.control"
+                        action::NATIVE_CONTROL
                     } else {
-                        "native.read"
+                        action::NATIVE_READ
                     },
                     effect: if is_mutation {
                         Effect::Control
@@ -144,40 +145,39 @@ impl<'a> Broker<'a> {
                     ),
                 })
             }
-            "command" => {
+            Tool::Command => {
                 let argv = get_argv(args)?;
                 let program = argv.first().ok_or("empty executable")?;
                 safe_label(program)?;
-                let (effect, risk) = action_profile("command.exec");
+                let (effect, risk) = action_profile(action::COMMAND_EXEC);
                 Ok(Call {
-                    action: "command.exec",
+                    action: action::COMMAND_EXEC,
                     effect,
                     risk,
                     resource: format!("command:{program}"),
                 })
             }
-            other => Err(format!("unknown tool: {other}")),
         }
     }
 
     fn permission_request<'v>(
         &self,
-        tool: &str,
+        tool: Tool,
         args: &'v Value,
     ) -> Result<Option<PermissionRequest<'v>>, String> {
         match tool {
-            "read" => Ok(Some(PermissionRequest::Read {
+            Tool::Read => Ok(Some(PermissionRequest::Read {
                 path: get_str(args, "path")?,
                 directory: false,
             })),
-            "list" => Ok(Some(PermissionRequest::Read {
+            Tool::List => Ok(Some(PermissionRequest::Read {
                 path: args.get("directory").and_then(Value::as_str).unwrap_or("."),
                 directory: true,
             })),
-            "write" => Ok(Some(PermissionRequest::Write {
+            Tool::Write => Ok(Some(PermissionRequest::Write {
                 path: get_str(args, "path")?,
             })),
-            "command" => Ok(Some(PermissionRequest::Command {
+            Tool::Command => Ok(Some(PermissionRequest::Command {
                 line: get_argv(args)?.join(" "),
             })),
             _ => Ok(None),
@@ -226,7 +226,7 @@ impl<'a> Broker<'a> {
         let audit = self.audit(
             invocation_id,
             call,
-            "deny",
+            journal_decision::DENY,
             &decision.reason_code,
             Classification::Internal,
             None,
@@ -256,7 +256,7 @@ impl<'a> Broker<'a> {
         let audit = self.audit(
             invocation_id,
             &call,
-            "deny",
+            journal_decision::DENY,
             reason_code,
             Classification::Internal,
             None,
@@ -322,11 +322,7 @@ impl<'a> Broker<'a> {
     }
 
     pub fn invoke(&mut self, invocation_id: &str, tool: &str, args: &Value) -> ToolResult {
-        let known = matches!(
-            tool,
-            "skill_read" | "list" | "read" | "write" | "command" | "native_tool"
-        );
-        if !known {
+        let Some(tool) = Tool::from_name(tool) else {
             return self.reject(
                 invocation_id,
                 "tool.unknown",
@@ -334,14 +330,14 @@ impl<'a> Broker<'a> {
                 "unknown_tool",
                 format!("unknown tool: {tool}"),
             );
-        }
-        if let Some(schema) = crate::model::tool_schema(tool) {
+        };
+        if let Some(schema) = crate::model::tool_schema(tool.name()) {
             if let Err(error) = crate::schema::validate(args, &schema) {
                 return self.reject(
                     invocation_id,
-                    "tool.invalid_arguments",
-                    format!("tool:{tool}"),
-                    "invalid_tool_arguments",
+                    action::TOOL_INVALID_ARGUMENTS,
+                    format!("tool:{}", tool.name()),
+                    reason::INVALID_TOOL_ARGUMENTS,
                     format!("invalid tool arguments: {error}"),
                 );
             }
@@ -351,9 +347,9 @@ impl<'a> Broker<'a> {
             Err(error) => {
                 return self.reject(
                     invocation_id,
-                    "tool.invalid_arguments",
-                    format!("tool:{tool}"),
-                    "invalid_tool_request",
+                    action::TOOL_INVALID_ARGUMENTS,
+                    format!("tool:{}", tool.name()),
+                    reason::INVALID_TOOL_REQUEST,
                     error,
                 );
             }
@@ -375,7 +371,7 @@ impl<'a> Broker<'a> {
                 "work contract does not grant this capability".into(),
             );
         }
-        if call.action == "repo.write" {
+        if call.action == action::REPO_WRITE {
             let path = call
                 .resource
                 .strip_prefix("repo:")
@@ -512,15 +508,15 @@ impl<'a> Broker<'a> {
                             let _ = self.audit(
                                 invocation_id,
                                 &call,
-                                "approval_required",
-                                "approval_required",
+                                journal_decision::APPROVAL_REQUIRED,
+                                journal_decision::APPROVAL_REQUIRED,
                                 Classification::Internal,
                                 Some(&approval_id),
                                 None,
                             );
                             return ToolResult {
                                 invocation_id: invocation_id.into(),
-                                status: "approval_required".into(),
+                                status: crate::types::tool_status::APPROVAL_REQUIRED.into(),
                                 effect: call.effect,
                                 data: Some(json!({
                                     "approvalId": approval_id,
@@ -562,8 +558,8 @@ impl<'a> Broker<'a> {
             let audit = self.audit(
                 invocation_id,
                 &call,
-                "deny",
-                "budget_exhausted",
+                journal_decision::DENY,
+                reason::BUDGET_EXHAUSTED,
                 Classification::Internal,
                 approval_id.as_deref(),
                 None,
@@ -577,7 +573,7 @@ impl<'a> Broker<'a> {
         if let Err(error) = self.audit(
             invocation_id,
             &call,
-            "permit",
+            journal_decision::PERMIT,
             &decision.reason_code,
             Classification::Internal,
             approval_id.as_deref(),
@@ -598,15 +594,15 @@ impl<'a> Broker<'a> {
                 let _ = self.audit(
                     invocation_id,
                     &call,
-                    "failed",
-                    "execution_failed",
+                    journal_decision::FAILED,
+                    reason::EXECUTION_FAILED,
                     Classification::Internal,
                     approval_id.as_deref(),
                     None,
                 );
                 return ToolResult {
                     invocation_id: invocation_id.into(),
-                    status: "error".into(),
+                    status: crate::types::tool_status::ERROR.into(),
                     effect: call.effect,
                     data: None,
                     error: Some(error),
@@ -647,15 +643,15 @@ impl<'a> Broker<'a> {
                 let _ = self.audit(
                     invocation_id,
                     &call,
-                    "failed",
-                    "contract_data_classification_denied",
+                    journal_decision::FAILED,
+                    reason::CONTRACT_DATA_CLASSIFICATION_DENIED,
                     classified.effective,
                     approval_id.as_deref(),
                     receipt.as_ref().map(|r| r.sandbox_id.as_str()),
                 );
                 return ToolResult {
                     invocation_id: invocation_id.into(),
-                    status: "denied".into(),
+                    status: crate::types::tool_status::DENIED.into(),
                     effect: call.effect,
                     data: None,
                     error: Some(format!(
@@ -677,14 +673,14 @@ impl<'a> Broker<'a> {
                 invocation_id,
                 &call,
                 if error.is_some() {
-                    "failed"
+                    journal_decision::FAILED
                 } else {
-                    "executed"
+                    journal_decision::EXECUTED
                 },
                 if error.is_some() {
-                    "tool_reported_error"
+                    reason::TOOL_REPORTED_ERROR
                 } else {
-                    "ok"
+                    reason::OK
                 },
                 classified.effective,
                 approval_id.as_deref(),
@@ -695,9 +691,9 @@ impl<'a> Broker<'a> {
         ToolResult {
             invocation_id: invocation_id.into(),
             status: if error.is_some() {
-                "error".into()
+                crate::types::tool_status::ERROR.into()
             } else {
-                "ok".into()
+                crate::types::tool_status::OK.into()
             },
             effect: call.effect,
             data: Some(data),
@@ -721,26 +717,26 @@ impl<'a> Broker<'a> {
 
     fn execute(
         &mut self,
-        tool: &str,
+        tool: Tool,
         args: &Value,
         decision: &PolicyDecision,
     ) -> Result<(Value, Option<crate::types::SandboxReceipt>, Option<String>), String> {
         let workspace = Workspace { cfg: self.cfg };
         match tool {
-            "skill_read" => {
+            Tool::SkillRead => {
                 let name = get_str(args, "name")?;
                 let body = self.catalog.read(name)?;
                 Ok((json!({"skill": name, "contents": body}), None, None))
             }
-            "list" => {
+            Tool::List => {
                 let directory = args.get("directory").and_then(Value::as_str).unwrap_or(".");
                 Ok((json!({"files": workspace.list(directory)?}), None, None))
             }
-            "read" => {
+            Tool::Read => {
                 let path = get_str(args, "path")?;
                 Ok((json!({"contents": workspace.read(path)?}), None, None))
             }
-            "write" => {
+            Tool::Write => {
                 let path = get_str(args, "path")?;
                 let content = get_str(args, "content")?;
                 Ok((
@@ -749,14 +745,14 @@ impl<'a> Broker<'a> {
                     None,
                 ))
             }
-            "native_tool" => {
+            Tool::NativeTool => {
                 let name = get_str(args, "tool")?;
                 let operation = get_str(args, "operation")?;
                 let extra = args
                     .get("args")
                     .and_then(Value::as_array)
                     .ok_or("native args must be an array")?;
-                if extra.len() > 5 {
+                if extra.len() > MAX_NATIVE_ARGS {
                     return Err("native argument count exceeds limit".into());
                 }
                 let mut parts = vec![operation.to_string()];
@@ -767,10 +763,7 @@ impl<'a> Broker<'a> {
                             .to_owned(),
                     );
                 }
-                if name == "planner" && operation == "verify"
-                    || name == "workspace" && operation == "rollback"
-                    || name == "verifier" && operation == "run"
-                {
+                if jani_native::privileged(name, operation) {
                     return Err(
                         "native tool cannot perform user-only or ungoverned operations".into(),
                     );
@@ -786,7 +779,7 @@ impl<'a> Broker<'a> {
                 )?;
                 Ok((data, None, None))
             }
-            "command" => {
+            Tool::Command => {
                 let argv = get_argv(args)?;
                 let timeout = args
                     .get("timeout_secs")
@@ -808,7 +801,6 @@ impl<'a> Broker<'a> {
                     exec::run_confined(self.cfg, &argv, timeout, profile, network)?;
                 Ok((value, Some(receipt), None))
             }
-            _ => Err("unknown tool".into()),
         }
     }
 }

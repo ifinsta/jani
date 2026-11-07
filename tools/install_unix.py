@@ -12,8 +12,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-TYPES = {'agent': 'jani', 'client': 'jani-probe', 'gateway': 'jani-gateway'}
+CONTRACT_PATH = Path(__file__).resolve().parents[1] / 'contract' / 'releases.json'
+CONTRACT = json.loads(CONTRACT_PATH.read_text('utf-8'))
+if CONTRACT.get('schemaVersion') != 'jani.release-contract/v1':
+    raise SystemExit(f'unsupported release contract: {CONTRACT_PATH}')
+TYPES = CONTRACT['types']
+SCHEMAS = CONTRACT['schemas']
+TARGETS = CONTRACT['targets']
 SEMVER = re.compile(r'^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.+-]+)?$')
+SUPPORTED = ('macos', 'linux')  # Windows hosts use install.ps1.
 
 
 def native_target():
@@ -23,22 +30,31 @@ def native_target():
     if not cpu:
         raise ValueError('unsupported CPU; provide --target explicitly')
     if system == 'darwin':
-        return 'macos', f'{cpu}-apple-darwin'
-    if system == 'linux':
+        kind = 'macos'
+    elif system == 'linux':
         if not platform.libc_ver()[0]:
             raise ValueError('cannot identify libc; pass --target for a verified target')
-        return 'linux', f'{cpu}-unknown-linux-gnu'
-    raise ValueError('this installer only supports macOS and Linux; use install.ps1 on Windows')
+        kind = 'linux'
+    else:
+        raise ValueError('this installer only supports macOS and Linux; use install.ps1 on Windows')
+    target = TARGETS.get(f'{kind}-{cpu}')
+    if not target:
+        raise ValueError('no verified release target for this host; pass --target explicitly')
+    return kind, target
+
+
+def target_platform(target):
+    return next((p for p, pattern in CONTRACT['platforms'].items() if re.search(pattern, target)), None)
 
 
 def verify(root: Path, kind: str, target: str, version: str | None):
-    system = 'macos' if 'darwin' in target else 'linux' if 'linux' in target else None
-    if not system or kind not in TYPES:
+    system = target_platform(target)
+    if system not in SUPPORTED or kind not in TYPES:
         raise ValueError('unsupported component or host target')
     directory = root / 'releases' / kind / system
     if version is None:
         pointer = json.loads((directory / 'latest.json').read_text())
-        if pointer != {'schemaVersion':'jani.release-channel/v2','type':kind,'platform':system,'latest':pointer.get('latest')}:
+        if pointer != {'schemaVersion':SCHEMAS['channel'],'type':kind,'platform':system,'latest':pointer.get('latest')}:
             raise ValueError('release channel mismatch')
         version = pointer['latest']
     if not version.startswith('v'):
@@ -47,7 +63,7 @@ def verify(root: Path, kind: str, target: str, version: str | None):
         raise ValueError('invalid version')
     folder = directory / version
     m = json.loads((folder / 'manifest.json').read_text())
-    if m['schemaVersion'] != 'jani.release/v2' or m['type'] != kind or m['platform'] != system or m['tag'] != version or m['package'] != TYPES[kind]:
+    if m['schemaVersion'] != SCHEMAS['manifest'] or m['type'] != kind or m['platform'] != system or m['tag'] != version or m['package'] != TYPES[kind]:
         raise ValueError('manifest identity mismatch')
     artifact = next((a for a in m['artifacts'] if a['target'] == target), None)
     if not artifact:

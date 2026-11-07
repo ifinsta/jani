@@ -394,16 +394,17 @@ impl PolicyEngine {
                 if !cfg.allow_write && request.effect == Effect::LocalWrite {
                     return deny("operator_write_denied", "file editing is not enabled");
                 }
-                if request.action.starts_with("repo.write") && !cfg.allow_write {
+                if request.action.starts_with(crate::tools::action::REPO_WRITE) && !cfg.allow_write
+                {
                     return deny("operator_write_denied", "file editing is not enabled");
                 }
             }
             _ => {}
         }
-        if request.action == "command.exec" && !cfg.allow_exec {
+        if request.action == crate::tools::action::COMMAND_EXEC && !cfg.allow_exec {
             return deny("operator_exec_denied", "command execution is not enabled");
         }
-        if request.action.starts_with("repo.write") {
+        if request.action.starts_with(crate::tools::action::REPO_WRITE) {
             let path = request
                 .resource
                 .strip_prefix("repo:")
@@ -655,13 +656,16 @@ pub fn contract_allows_write(contract: Option<&WorkContract>, path: &str) -> boo
 
 /// Action taxonomy used by the broker and `jani policy check`.
 pub fn action_profile(action: &str) -> (Effect, RiskTier) {
-    if action.starts_with("repo.write") || action.starts_with("plugin.write") {
+    use crate::tools::action as names;
+    if action.starts_with(names::REPO_WRITE) || action.starts_with(names::PLUGIN_WRITE) {
         (Effect::LocalWrite, RiskTier::R2)
-    } else if action == "command.exec" {
+    } else if action == names::COMMAND_EXEC {
         (Effect::Control, RiskTier::R2)
-    } else if action.starts_with("external.") || action.starts_with("connector.") {
+    } else if action.starts_with(names::EXTERNAL_PREFIX)
+        || action.starts_with(names::CONNECTOR_PREFIX)
+    {
         (Effect::ExternalWrite, RiskTier::R3)
-    } else if action == "model.invoke" {
+    } else if action == names::MODEL_INVOKE {
         (Effect::ModelInvoke, RiskTier::R1)
     } else {
         (Effect::Read, RiskTier::R0)

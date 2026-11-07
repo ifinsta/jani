@@ -76,11 +76,7 @@ pub struct Comparison {
 // Only report stable, non-sensitive code-like identifiers; no prompts, paths,
 // arguments, model messages, resource digests or tool results are included.
 fn safe(value: &str) -> String {
-    if value.len() > 96
-        || !value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    {
+    if !jani_core::types::valid_id(value, 96) {
         return "redacted_identifier".into();
     }
     value.to_string()
@@ -117,15 +113,19 @@ fn is_denied(event: &AuditEvent) -> bool {
 }
 
 fn terminal(events: &[&AuditEvent]) -> Option<&'static str> {
+    use jani_core::journal::decision;
     events
         .iter()
         .rev()
-        .find(|e| e.action == "agent.run" && matches!(e.decision.as_str(), "completed" | "failed"))
+        .find(|e| {
+            e.action == jani_core::tools::action::AGENT_RUN
+                && matches!(e.decision.as_str(), decision::COMPLETED | decision::FAILED)
+        })
         .map(|e| {
-            if e.decision == "completed" {
-                "completed"
+            if e.decision == decision::COMPLETED {
+                decision::COMPLETED
             } else {
-                "failed"
+                decision::FAILED
             }
         })
 }
@@ -165,13 +165,17 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
         let evidence: Vec<String> = relevant
             .iter()
             .rev()
-            .filter(|e| e.action == "agent.run" && e.decision == "failed")
+            .filter(|e| {
+                e.action == jani_core::tools::action::AGENT_RUN
+                    && e.decision == jani_core::journal::decision::FAILED
+            })
             .take(1)
             .map(|e| e.event_id.clone())
             .collect();
-        let step_limit = relevant
-            .iter()
-            .any(|e| e.action == "agent.run" && e.reason_code == "step_limit");
+        let step_limit = relevant.iter().any(|e| {
+            e.action == jani_core::tools::action::AGENT_RUN
+                && e.reason_code == jani_core::journal::reason::STEP_LIMIT
+        });
         let code = if step_limit {
             "step_budget_exhausted"
         } else {
@@ -200,7 +204,7 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
     // should trigger a redundant-denial warning.
     let mut denials: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for e in &relevant {
-        if e.action != "agent.run" && is_denied(e) {
+        if e.action != jani_core::tools::action::AGENT_RUN && is_denied(e) {
             denials
                 .entry((safe(&e.action), safe(&e.reason_code)))
                 .or_default()
@@ -215,14 +219,14 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
             loops.into_iter().flat_map(|v| v.into_iter().take(3)).take(12).collect()));
     }
     let wrote = relevant.iter().any(|e| {
-        e.action.starts_with("repo.write")
+        e.action.starts_with(jani_core::tools::action::REPO_WRITE)
             && matches!(
                 e.decision.as_str(),
                 "permit" | "permitted" | "completed" | "succeeded"
             )
     });
     let tested = relevant.iter().any(|e| {
-        e.action == "command.exec"
+        e.action == jani_core::tools::action::COMMAND_EXEC
             && matches!(
                 e.decision.as_str(),
                 "permit" | "permitted" | "completed" | "succeeded"
@@ -232,7 +236,7 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
         findings.push(finding(run_id, "verification_evidence_gap", "low",
             "A repository write is recorded without a permitted command.exec event in this run.",
             "Check whether tests were executed through another audited channel; collect verification evidence before claiming the change is tested.",
-            relevant.iter().filter(|e| e.action.starts_with("repo.write"))
+            relevant.iter().filter(|e| e.action.starts_with(jani_core::tools::action::REPO_WRITE))
                 .take(2).map(|e| e.event_id.clone()).collect()));
     }
     let timeline_truncated = relevant.len() > MAX_TIMELINE;

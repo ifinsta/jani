@@ -357,8 +357,7 @@ fn toolchain_caches() -> Vec<PathBuf> {
             found.push(PathBuf::from(value));
         }
     }
-    if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
-        let home = PathBuf::from(home);
+    if let Some(home) = crate::config::home_dir() {
         for name in [".cargo", ".rustup", ".cache/go-build"] {
             found.push(home.join(name));
         }

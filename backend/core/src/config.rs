@@ -8,6 +8,55 @@ use std::path::{Path, PathBuf};
 
 pub type JResult<T> = Result<T, String>;
 
+/// Values shared by `baseline`, the environment fallback in `apply_env` and
+/// the `--help` text so a default only ever changes in one place.
+pub mod defaults {
+    pub const MODEL: &str = "gpt-5";
+    pub const API_BASE: &str = "https://api.openai.com/v1";
+    pub const MAX_OUTPUT_TOKENS: usize = 4096;
+    pub const MAX_STEPS: usize = 20;
+    pub const TENANT: &str = "local";
+    pub const PRINCIPAL: &str = "local-operator";
+    pub const PURPOSE: &str = "SOFTWARE_DEV";
+    pub const PROVIDER_REGION: &str = "local";
+    pub const PROVIDER_CLASS: &str = "openai-compatible";
+    pub const MCP_AGENT: &str = "jani";
+    pub const UPDATE_INTERVAL_SECONDS: u64 = 300;
+    pub const STATE_DIR_NAME: &str = ".jani";
+    pub const SETTINGS_FILE_NAME: &str = "settings.json";
+}
+
+/// Operator-facing caps for update watcher flags.
+pub const MAX_UPDATE_INTERVAL_SECONDS: u64 = 86_400;
+pub const MAX_UPDATE_CYCLES: u64 = 1_000_000;
+
+/// Home directory: USERPROFILE first on Windows, HOME first elsewhere.
+pub fn home_dir() -> Option<PathBuf> {
+    let (primary, fallback) = if cfg!(windows) {
+        ("USERPROFILE", "HOME")
+    } else {
+        ("HOME", "USERPROFILE")
+    };
+    env::var_os(primary)
+        .or_else(|| env::var_os(fallback))
+        .map(PathBuf::from)
+}
+
+/// Directory components never traversed or indexed during repository scans.
+/// Includes the state directory by name so a renamed state root stays skipped.
+/// Callers may layer their own exclusions on top of this shared baseline.
+pub const IGNORED_COMPONENTS: &[&str] = &[
+    ".git",
+    defaults::STATE_DIR_NAME,
+    "target",
+    "node_modules",
+    "__pycache__",
+];
+
+pub fn ignored_component(component: &str) -> bool {
+    IGNORED_COMPONENTS.contains(&component)
+}
+
 /// A model the running session may switch to. Profiles resolved from settings
 /// carry their own transport and credential binding; the key is never rendered.
 #[derive(Clone)]
@@ -151,8 +200,10 @@ fn split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn help() -> &'static str {
-    r#"Jani — Rust-native, skill-aware AI coding agent
+pub fn help() -> String {
+    use crate::env;
+    format!(
+        r#"Jani — Rust-native, skill-aware AI coding agent
 
 USAGE:
   jani                              Interactive terminal (stdin must be a terminal)
@@ -195,12 +246,12 @@ OPTIONS:
   --mode MODE             local-unmanaged (default) or enterprise
   --tenant ID             Requested tenant; enterprise derives it from --identity
   --principal ID          Requested principal; enterprise derives it from --identity
-  --purpose PURPOSE       Data purpose (default SOFTWARE_DEV)
+  --purpose PURPOSE       Data purpose (default {purpose})
   --contract FILE         JSON work contract (can only restrict, never grant)
   --policy FILE           Signed organization policy bundle (required in enterprise)
   --policy-key KEY        Trusted policy/manifest key, ID:HEX or HEX; repeatable
   --identity FILE         Signed identity assertion (required for enterprise runs)
-  --state-dir PATH        Journal, approvals and receipts (default .jani)
+  --state-dir PATH        Journal, approvals and receipts (default {state_dir})
   --sandbox MODE          off | auto | bwrap | windows-job (default off locally, auto in enterprise)
   --sandbox-net POLICY    deny | loopback | host (default deny)
   --plugin-dir PATH       Trusted, administrator-approved plugin manifest directory
@@ -210,7 +261,7 @@ OPTIONS:
   --mcp-contract-key KEY  Trusted contract signer's Ed25519 public key
   --mcp-delegation-key K  Trusted authorization signer's public key
   --mcp-receipt-key KEY   Trusted MCP response signer public key
-  --mcp-agent ID          Delegated agent identity label (default jani)
+  --mcp-agent ID          Delegated agent identity label (default {mcp_agent})
   --mcp-arguments FILE    Tool arguments JSON (must include exact resource)
   --mcp-response FILE     MCP response JSON for offline receipt validation
   --mcp-token-file FILE   OAuth access token file for HTTP call (not shown in logs)
@@ -219,12 +270,12 @@ OPTIONS:
   --provider-class C      Provider trust class label
   --model MODEL           Model ID (JANI_MODEL)
   --api-base URL          API base (JANI_API_BASE)
-  --protocol P            openai or anthropic (auto-detected from API host)
-  --max-output-tokens N   Provider output ceiling (default 4096, 1..200000)
-  --settings FILE         Settings JSON (default .jani/settings.json, then ~/.jani/settings.json; JANI_SETTINGS)
+  --protocol P            {protocols} (auto-detected from API host)
+  --max-output-tokens N   Provider output ceiling (default {max_tokens}, 1..{max_tokens_ceiling})
+  --settings FILE         Settings JSON (default {state_dir}/{settings_file}, then ~/{state_dir}/{settings_file}; {e_settings})
   --model-profile NAME    Model profile from settings (default top-level model)
   --repo PATH             Assigned Git worktree; defaults to current directory
-  --max-steps N           Maximum model turns (default 20, ceiling 80)
+  --max-steps N           Maximum model turns (default {max_steps}, ceiling {max_steps_ceiling})
   --allow-write           Enable gated file editing
   --write-path PATH       Approved relative edit scope; repeat as necessary
   --allow-exec            Enable allowlisted test/git commands
@@ -236,34 +287,35 @@ COMMAND OPTIONS:
   --run RUN_ID            Journal run to verify or inspect
   --task TASK_ID          Task to show in `budget show`
   --approve / --reject    Decision for `approvals decide`
-  --source URL            Update origin serving the releases/ tree (JANI_UPDATE_SOURCE)
+  --role ROLE           Approver role recorded by `approvals decide` (e.g. approver)
+  --source URL            Update origin serving the releases/ tree ({e_update_source})
   --to PATH               Binary to replace in addition to this executable; repeatable
   --force                 Install even when the channel is not newer
-  --interval SECONDS      Watch poll interval (default 300)
+  --interval SECONDS      Watch poll interval (default {interval})
   --cycles N              Watch cycles before exit; 0 means forever (default)
 
 ENVIRONMENT:
-  JANI_API_KEY or OPENAI_API_KEY    AI provider credential
-  JANI_API_BASE                     https://api.openai.com/v1 by default
-  JANI_MODEL or OPENAI_MODEL        Model ID (default gpt-5)
-  JANI_PROTOCOL                     openai or anthropic
-  JANI_MAX_OUTPUT_TOKENS            Provider output ceiling
-  JANI_WRITE_PATHS                  Comma-separated relative edit scope
-  JANI_EXEC_PROGRAMS                Optional extra test runners
-  JANI_SKILL_DIRS                   Extra skill directories, path-list separated
-  JANI_MODE, JANI_TENANT, JANI_PRINCIPAL, JANI_PURPOSE
-  JANI_POLICY, JANI_POLICY_KEYS, JANI_IDENTITY, JANI_CONTRACT
-  JANI_STATE_DIR, JANI_SANDBOX, JANI_SANDBOX_NET
-  JANI_PLUGIN_DIR, JANI_PLUGIN_KEYS, JANI_PROVIDER_REGION, JANI_PROVIDER_CLASS
-  JANI_SETTINGS            Alternate settings file
-  JANI_USER_SETTINGS       Override the user-wide settings path
-  JANI_UPDATE_SOURCE       HTTPS (or loopback HTTP) origin for `jani update`
+  {e_api_key} or {e_openai_api_key}  AI provider credential
+  {e_api_base}              API base URL (default {api_base})
+  {e_model} or {e_openai_model}      Model ID (default {model})
+  {e_protocol}              {protocols}
+  {e_max_output_tokens}     Provider output ceiling
+  {e_write_paths}           Comma-separated relative edit scope
+  {e_exec_programs}         Optional extra test runners
+  {e_skill_dirs}            Extra skill directories, path-list separated
+  {e_mode}, {e_tenant}, {e_principal}, {e_purpose}
+  {e_policy}, {e_policy_keys}, {e_identity}, {e_contract}
+  {e_state_dir}, {e_sandbox}, {e_sandbox_net}
+  {e_plugin_dir}, {e_plugin_keys}, {e_provider_region}, {e_provider_class}
+  {e_settings}            Alternate settings file
+  {e_user_settings}       Override the user-wide settings path
+  {e_update_source}       HTTPS (or loopback HTTP) origin for `jani update`
 
 SETTINGS:
-  Jani loads settings from --settings / JANI_SETTINGS when given, otherwise
-  <worktree>/.jani/settings.json when present, otherwise the user-wide
-  ~/.jani/settings.json (%USERPROFILE%\.jani\settings.json on Windows;
-  JANI_USER_SETTINGS overrides that path). Only the first file found is used,
+  Jani loads settings from --settings / {e_settings} when given, otherwise
+  <worktree>/{state_dir}/{settings_file} when present, otherwise the user-wide
+  ~/{state_dir}/{settings_file} (%USERPROFILE%\{state_dir}\{settings_file} on Windows;
+  {e_user_settings} overrides that path). Only the first file found is used,
   with no merging. It supplies a top-level model selector (a profile name or
   model ID), named model profiles, maxSteps and Claude-style permissions. A
   profile may set model, apiBase, protocol, maxOutputTokens, apiKeyEnv or an
@@ -278,7 +330,48 @@ SETTINGS:
 Skills are advisory instructions, not an executable security policy.
 Tool flags are enforced in Rust. Execution is NOT an OS sandbox unless a
 verified backend is selected and attested.
-"#
+"#,
+        api_base = defaults::API_BASE,
+        model = defaults::MODEL,
+        purpose = defaults::PURPOSE,
+        mcp_agent = defaults::MCP_AGENT,
+        max_tokens = defaults::MAX_OUTPUT_TOKENS,
+        max_steps = defaults::MAX_STEPS,
+        interval = defaults::UPDATE_INTERVAL_SECONDS,
+        state_dir = defaults::STATE_DIR_NAME,
+        settings_file = defaults::SETTINGS_FILE_NAME,
+        max_tokens_ceiling = crate::settings::MAX_OUTPUT_TOKENS,
+        max_steps_ceiling = crate::settings::MAX_STEPS,
+        protocols = crate::types::ModelProtocol::ALL_NAMES.join(", "),
+        e_api_key = env::API_KEY,
+        e_openai_api_key = env::OPENAI_API_KEY,
+        e_api_base = env::API_BASE,
+        e_model = env::MODEL,
+        e_openai_model = env::OPENAI_MODEL,
+        e_protocol = env::PROTOCOL,
+        e_max_output_tokens = env::MAX_OUTPUT_TOKENS,
+        e_write_paths = env::WRITE_PATHS,
+        e_exec_programs = env::EXEC_PROGRAMS,
+        e_skill_dirs = env::SKILL_DIRS,
+        e_mode = env::MODE,
+        e_tenant = env::TENANT,
+        e_principal = env::PRINCIPAL,
+        e_purpose = env::PURPOSE,
+        e_policy = env::POLICY,
+        e_policy_keys = env::POLICY_KEYS,
+        e_identity = env::IDENTITY,
+        e_contract = env::CONTRACT,
+        e_state_dir = env::STATE_DIR,
+        e_sandbox = env::SANDBOX,
+        e_sandbox_net = env::SANDBOX_NET,
+        e_plugin_dir = env::PLUGIN_DIR,
+        e_plugin_keys = env::PLUGIN_KEYS,
+        e_provider_region = env::PROVIDER_REGION,
+        e_provider_class = env::PROVIDER_CLASS,
+        e_settings = env::SETTINGS,
+        e_user_settings = env::USER_SETTINGS,
+        e_update_source = env::UPDATE_SOURCE,
+    )
 }
 
 #[derive(Default)]
@@ -305,9 +398,12 @@ fn resolve_credential(
     if profile_selected && inline_key.is_some() {
         return (inline_key.map(str::to_string), "settings (inline)".into());
     }
-    if let Some((name, value)) = env_nonempty("JANI_API_KEY")
-        .map(|value| ("JANI_API_KEY", value))
-        .or_else(|| env_nonempty("OPENAI_API_KEY").map(|value| ("OPENAI_API_KEY", value)))
+    if let Some((name, value)) = env_nonempty(crate::env::API_KEY)
+        .map(|value| (crate::env::API_KEY, value))
+        .or_else(|| {
+            env_nonempty(crate::env::OPENAI_API_KEY)
+                .map(|value| (crate::env::OPENAI_API_KEY, value))
+        })
     {
         return (Some(value), format!("env {name}"));
     }
@@ -320,16 +416,21 @@ fn resolve_credential(
 /// The same rule startup applies to `apiBase`, reused when a session switches to
 /// a settings profile at runtime.
 pub fn validate_api_base(api_base: &str) -> JResult<()> {
-    if !api_base.starts_with("https://")
-        && !api_base.starts_with("http://localhost:")
-        && !api_base.starts_with("http://127.0.0.1:")
-    {
-        return Err("API base must be HTTPS or an explicit localhost URL".into());
-    }
     if api_base.contains('?') || api_base.contains('#') {
         return Err("API base must not contain query or fragment".into());
     }
-    Ok(())
+    if api_base.starts_with("https://") {
+        return Ok(());
+    }
+    // Plain HTTP is only ever allowed for an explicit loopback endpoint.
+    let authority = crate::net::url_authority(api_base);
+    if api_base.starts_with("http://")
+        && crate::net::is_loopback_authority(authority)
+        && crate::net::authority_has_port(authority)
+    {
+        return Ok(());
+    }
+    Err("API base must be HTTPS or an explicit localhost URL".into())
 }
 
 impl Config {
@@ -357,34 +458,34 @@ impl Config {
             sub: None,
             positional: Vec::new(),
             prompt: None,
-            model: "gpt-5".into(),
-            api_base: "https://api.openai.com/v1".into(),
+            model: defaults::MODEL.into(),
+            api_base: defaults::API_BASE.into(),
             api_key: None,
             api_key_source: "no credential configured".into(),
             protocol: ModelProtocol::OpenAi,
             protocol_explicit: false,
-            max_output_tokens: 4096,
+            max_output_tokens: defaults::MAX_OUTPUT_TOKENS,
             model_profile: None,
             model_choices: Vec::new(),
             settings_path: None,
             settings_profile: None,
             settings_warnings: Vec::new(),
             permissions: None,
-            max_steps: 20,
+            max_steps: defaults::MAX_STEPS,
             root: root.clone(),
             allow_write: false,
             allow_exec: false,
             write_paths: Vec::new(),
             exec_programs: Vec::new(),
             mode: RuntimeMode::LocalUnmanaged,
-            tenant: "local".into(),
-            principal: "local-operator".into(),
-            purpose: "SOFTWARE_DEV".into(),
+            tenant: defaults::TENANT.into(),
+            principal: defaults::PRINCIPAL.into(),
+            purpose: defaults::PURPOSE.into(),
             contract_path: None,
             policy_path: None,
             policy_keys: Vec::new(),
             identity_path: None,
-            state_dir: root.join(".jani"),
+            state_dir: root.join(defaults::STATE_DIR_NAME),
             sandbox_mode: SandboxMode::Off,
             sandbox_explicit: false,
             sandbox_net: NetworkPolicy::Deny,
@@ -395,13 +496,13 @@ impl Config {
             mcp_input_path: None,
             mcp_response_path: None,
             mcp_token_path: None,
-            mcp_agent: "jani".into(),
+            mcp_agent: defaults::MCP_AGENT.into(),
             mcp_contract_keys: Vec::new(),
             mcp_delegation_keys: Vec::new(),
             mcp_receipt_keys: Vec::new(),
             approval_ids: Vec::new(),
-            provider_region: "local".into(),
-            provider_class: "openai-compatible".into(),
+            provider_region: defaults::PROVIDER_REGION.into(),
+            provider_class: defaults::PROVIDER_CLASS.into(),
             action: None,
             resource: None,
             task_id: None,
@@ -409,10 +510,10 @@ impl Config {
             approve: false,
             reject: false,
             role: None,
-            update_source: env_nonempty("JANI_UPDATE_SOURCE"),
+            update_source: env_nonempty(crate::env::UPDATE_SOURCE),
             update_targets: Vec::new(),
             update_force: false,
-            update_interval_seconds: 300,
+            update_interval_seconds: defaults::UPDATE_INTERVAL_SECONDS,
             update_cycles: 0,
         }
     }
@@ -565,7 +666,7 @@ impl Config {
         let explicit = cfg
             .settings_path
             .clone()
-            .or_else(|| env_nonempty("JANI_SETTINGS").map(PathBuf::from));
+            .or_else(|| env_nonempty(crate::env::SETTINGS).map(PathBuf::from));
         Self::resolve_settings(&cfg.root, explicit, Self::user_settings_path())
     }
 
@@ -593,7 +694,12 @@ impl Config {
                 path
             }
         });
-        for path in std::iter::once(root.join(".jani").join("settings.json")).chain(user) {
+        for path in std::iter::once(
+            root.join(defaults::STATE_DIR_NAME)
+                .join(defaults::SETTINGS_FILE_NAME),
+        )
+        .chain(user)
+        {
             if path.exists() {
                 let settings = Settings::load(&path)?;
                 return Ok(Some((path, settings)));
@@ -603,35 +709,43 @@ impl Config {
     }
 
     fn user_settings_path() -> Option<PathBuf> {
-        if let Some(path) = env_nonempty("JANI_USER_SETTINGS").map(PathBuf::from) {
+        if let Some(path) = env_nonempty(crate::env::USER_SETTINGS).map(PathBuf::from) {
             return Some(path);
         }
-        let home = if cfg!(windows) {
-            env::var_os("USERPROFILE").or_else(|| env::var_os("HOME"))
-        } else {
-            env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"))
-        }?;
-        Some(PathBuf::from(home).join(".jani").join("settings.json"))
+        Some(
+            home_dir()?
+                .join(defaults::STATE_DIR_NAME)
+                .join(defaults::SETTINGS_FILE_NAME),
+        )
     }
 
     fn apply_env(cfg: &mut Config, credential: &CredentialBinding) -> JResult<()> {
-        if let Some(value) = env_nonempty("JANI_MODEL").or_else(|| env_nonempty("OPENAI_MODEL")) {
+        if let Some(value) =
+            env_nonempty(crate::env::MODEL).or_else(|| env_nonempty(crate::env::OPENAI_MODEL))
+        {
             cfg.model = value;
         }
-        if let Some(value) = env_nonempty("JANI_API_BASE") {
+        if let Some(value) = env_nonempty(crate::env::API_BASE) {
             cfg.api_base = value;
         }
-        if let Some(value) = env_nonempty("JANI_PROTOCOL") {
+        if let Some(value) = env_nonempty(crate::env::PROTOCOL) {
             cfg.protocol = ModelProtocol::parse(&value)
-                .ok_or_else(|| format!("unknown JANI_PROTOCOL: {value}"))?;
+                .ok_or_else(|| format!("unknown {}: {value}", crate::env::PROTOCOL))?;
             cfg.protocol_explicit = true;
         }
-        if let Some(value) = env_nonempty("JANI_MAX_OUTPUT_TOKENS") {
-            cfg.max_output_tokens = value
-                .parse()
-                .map_err(|_| "JANI_MAX_OUTPUT_TOKENS must be a positive integer".to_string())?;
-            if !(1..=200_000).contains(&cfg.max_output_tokens) {
-                return Err("JANI_MAX_OUTPUT_TOKENS must be 1..200000".into());
+        if let Some(value) = env_nonempty(crate::env::MAX_OUTPUT_TOKENS) {
+            cfg.max_output_tokens = value.parse().map_err(|_| {
+                format!(
+                    "{} must be a positive integer",
+                    crate::env::MAX_OUTPUT_TOKENS
+                )
+            })?;
+            if !(1..=crate::settings::MAX_OUTPUT_TOKENS).contains(&cfg.max_output_tokens) {
+                return Err(format!(
+                    "{} must be 1..{}",
+                    crate::env::MAX_OUTPUT_TOKENS,
+                    crate::settings::MAX_OUTPUT_TOKENS
+                ));
             }
         }
 
@@ -643,47 +757,48 @@ impl Config {
         cfg.api_key = key;
         cfg.api_key_source = source;
 
-        cfg.mode = match env_nonempty("JANI_MODE") {
-            Some(value) => {
-                RuntimeMode::parse(&value).ok_or_else(|| format!("unknown JANI_MODE: {value}"))?
-            }
+        cfg.mode = match env_nonempty(crate::env::MODE) {
+            Some(value) => RuntimeMode::parse(&value)
+                .ok_or_else(|| format!("unknown {}: {value}", crate::env::MODE))?,
             None => RuntimeMode::LocalUnmanaged,
         };
-        cfg.tenant = env_nonempty("JANI_TENANT").unwrap_or_else(|| "local".into());
-        cfg.principal = env_nonempty("JANI_PRINCIPAL").unwrap_or_else(|| "local-operator".into());
-        cfg.purpose = env_nonempty("JANI_PURPOSE").unwrap_or_else(|| "SOFTWARE_DEV".into());
-        cfg.policy_path = env_nonempty("JANI_POLICY").map(PathBuf::from);
-        cfg.policy_keys = env_nonempty("JANI_POLICY_KEYS")
+        cfg.tenant = env_nonempty(crate::env::TENANT).unwrap_or_else(|| defaults::TENANT.into());
+        cfg.principal =
+            env_nonempty(crate::env::PRINCIPAL).unwrap_or_else(|| defaults::PRINCIPAL.into());
+        cfg.purpose = env_nonempty(crate::env::PURPOSE).unwrap_or_else(|| defaults::PURPOSE.into());
+        cfg.policy_path = env_nonempty(crate::env::POLICY).map(PathBuf::from);
+        cfg.policy_keys = env_nonempty(crate::env::POLICY_KEYS)
             .map(|v| split_list(&v))
             .unwrap_or_default();
-        cfg.identity_path = env_nonempty("JANI_IDENTITY").map(PathBuf::from);
-        cfg.contract_path = env_nonempty("JANI_CONTRACT").map(PathBuf::from);
-        cfg.state_dir = env_nonempty("JANI_STATE_DIR")
+        cfg.identity_path = env_nonempty(crate::env::IDENTITY).map(PathBuf::from);
+        cfg.contract_path = env_nonempty(crate::env::CONTRACT).map(PathBuf::from);
+        cfg.state_dir = env_nonempty(crate::env::STATE_DIR)
             .map(PathBuf::from)
-            .unwrap_or_else(|| cfg.root.join(".jani"));
-        cfg.sandbox_mode = match env_nonempty("JANI_SANDBOX") {
+            .unwrap_or_else(|| cfg.root.join(defaults::STATE_DIR_NAME));
+        let sandbox_env = env_nonempty(crate::env::SANDBOX);
+        cfg.sandbox_explicit = sandbox_env.is_some();
+        cfg.sandbox_mode = match sandbox_env {
             Some(value) => SandboxMode::parse(&value)
-                .ok_or_else(|| format!("unknown JANI_SANDBOX: {value}"))?,
+                .ok_or_else(|| format!("unknown {}: {value}", crate::env::SANDBOX))?,
             None => SandboxMode::Off,
         };
-        cfg.sandbox_explicit = env_nonempty("JANI_SANDBOX").is_some();
-        cfg.sandbox_net = match env_nonempty("JANI_SANDBOX_NET") {
+        cfg.sandbox_net = match env_nonempty(crate::env::SANDBOX_NET) {
             Some(value) => NetworkPolicy::parse(&value)
-                .ok_or_else(|| format!("unknown JANI_SANDBOX_NET: {value}"))?,
+                .ok_or_else(|| format!("unknown {}: {value}", crate::env::SANDBOX_NET))?,
             None => NetworkPolicy::Deny,
         };
-        cfg.plugin_dir = env_nonempty("JANI_PLUGIN_DIR").map(PathBuf::from);
-        cfg.plugin_keys = env_nonempty("JANI_PLUGIN_KEYS")
+        cfg.plugin_dir = env_nonempty(crate::env::PLUGIN_DIR).map(PathBuf::from);
+        cfg.plugin_keys = env_nonempty(crate::env::PLUGIN_KEYS)
             .map(|v| split_list(&v))
             .unwrap_or_default();
-        cfg.provider_region =
-            env_nonempty("JANI_PROVIDER_REGION").unwrap_or_else(|| "local".into());
-        cfg.provider_class =
-            env_nonempty("JANI_PROVIDER_CLASS").unwrap_or_else(|| "openai-compatible".into());
-        if let Some(paths) = env_nonempty("JANI_WRITE_PATHS") {
+        cfg.provider_region = env_nonempty(crate::env::PROVIDER_REGION)
+            .unwrap_or_else(|| defaults::PROVIDER_REGION.into());
+        cfg.provider_class = env_nonempty(crate::env::PROVIDER_CLASS)
+            .unwrap_or_else(|| defaults::PROVIDER_CLASS.into());
+        if let Some(paths) = env_nonempty(crate::env::WRITE_PATHS) {
             cfg.write_paths = paths.split(',').map(PathBuf::from).collect();
         }
-        if let Some(programs) = env_nonempty("JANI_EXEC_PROGRAMS") {
+        if let Some(programs) = env_nonempty(crate::env::EXEC_PROGRAMS) {
             cfg.exec_programs = split_list(&programs);
         }
         Ok(())
@@ -828,8 +943,11 @@ impl Config {
                     cfg.max_output_tokens = take_value(args, &mut i, a)?.parse().map_err(|_| {
                         "--max-output-tokens must be a positive integer".to_string()
                     })?;
-                    if !(1..=200_000).contains(&cfg.max_output_tokens) {
-                        return Err("--max-output-tokens must be 1..200000".into());
+                    if !(1..=crate::settings::MAX_OUTPUT_TOKENS).contains(&cfg.max_output_tokens) {
+                        return Err(format!(
+                            "--max-output-tokens must be 1..{}",
+                            crate::settings::MAX_OUTPUT_TOKENS
+                        ));
                     }
                 }
                 "--settings" => {
@@ -841,8 +959,11 @@ impl Config {
                     cfg.max_steps = take_value(args, &mut i, a)?
                         .parse()
                         .map_err(|_| "--max-steps must be a positive integer".to_string())?;
-                    if !(1..=80).contains(&cfg.max_steps) {
-                        return Err("--max-steps must be 1..80".into());
+                    if !(1..=crate::settings::MAX_STEPS).contains(&cfg.max_steps) {
+                        return Err(format!(
+                            "--max-steps must be 1..{}",
+                            crate::settings::MAX_STEPS
+                        ));
                     }
                 }
                 "--allow-write" => cfg.allow_write = true,
@@ -867,16 +988,18 @@ impl Config {
                     cfg.update_interval_seconds = take_value(args, &mut i, a)?
                         .parse()
                         .map_err(|_| "--interval must be a positive integer".to_string())?;
-                    if !(1..=86_400).contains(&cfg.update_interval_seconds) {
-                        return Err("--interval must be 1..86400".into());
+                    if !(1..=MAX_UPDATE_INTERVAL_SECONDS).contains(&cfg.update_interval_seconds) {
+                        return Err(format!(
+                            "--interval must be 1..{MAX_UPDATE_INTERVAL_SECONDS}"
+                        ));
                     }
                 }
                 "--cycles" => {
                     cfg.update_cycles = take_value(args, &mut i, a)?
                         .parse()
                         .map_err(|_| "--cycles must be a non-negative integer".to_string())?;
-                    if cfg.update_cycles > 1_000_000 {
-                        return Err("--cycles must be 0..1000000".into());
+                    if cfg.update_cycles > MAX_UPDATE_CYCLES {
+                        return Err(format!("--cycles must be 0..{MAX_UPDATE_CYCLES}"));
                     }
                 }
                 other if other.starts_with('-') => {
@@ -1421,5 +1544,80 @@ mod tests {
         isolate();
         let expected = std::env::var("JANI_USER_SETTINGS").unwrap();
         assert_eq!(Config::user_settings_path(), Some(PathBuf::from(expected)));
+    }
+
+    /// `--help` and the flag parser cannot drift in either direction: every
+    /// match arm the parser accepts must be documented, and every `--flag`
+    /// the OPTIONS text promises must be a real arm.
+    #[test]
+    fn help_and_parser_flag_sets_match() {
+        let source = include_str!("config.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let arms: std::collections::BTreeSet<&str> = source
+            .match_indices("\"--")
+            .filter_map(|(at, _)| {
+                let rest = &source[at + 1..];
+                let end = rest.find('"')?;
+                rest[end + 1..]
+                    .trim_start()
+                    .starts_with("=>")
+                    .then(|| &rest[..end])
+            })
+            .collect();
+        assert!(arms.len() >= 40, "expected to find the flag arms: {arms:?}");
+
+        let text = help();
+        for flag in &arms {
+            assert!(
+                text.contains(flag),
+                "parser accepts {flag} but --help omits it"
+            );
+        }
+        let options = text.split("OPTIONS:").nth(1).unwrap();
+        for token in options.split_whitespace().filter(|t| t.starts_with("--")) {
+            let flag = token.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+            if flag == "--" || flag.len() < 3 {
+                continue;
+            }
+            assert!(
+                arms.contains(flag),
+                "--help documents {flag} the parser rejects"
+            );
+        }
+    }
+
+    /// Every `jani <subcommand>` line in USAGE is a real dispatch arm in
+    /// backend/server/src/main.rs — the binary's docs and its router stay
+    /// pinned to the same surface.
+    #[test]
+    fn help_usage_lines_match_dispatch() {
+        let source = include_str!("../../server/src/main.rs");
+        let text = help();
+        let usage = text
+            .split("USAGE:")
+            .nth(1)
+            .and_then(|rest| rest.split("Jani has no").next())
+            .expect("usage section");
+        let mut checked = 0;
+        for line in usage.lines().map(str::trim) {
+            let Some(rest) = line.strip_prefix("jani ") else {
+                continue;
+            };
+            if rest.starts_with(char::is_whitespace) {
+                continue; // the bare `jani` interactive-terminal line
+            }
+            let sub = rest.split_whitespace().next().unwrap_or("");
+            if sub.is_empty() || sub.starts_with("--") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                source.contains(&format!("\"{sub}\"")),
+                "help lists `jani {sub}` but the binary does not dispatch it"
+            );
+        }
+        assert!(checked >= 25, "usage parsing found only {checked} commands");
     }
 }

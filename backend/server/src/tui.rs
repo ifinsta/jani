@@ -1,6 +1,6 @@
 use crate::agent::{Agent, TurnEvent};
 use crate::config::{Config, JResult, ModelChoice};
-use crate::repl::{execute_command, Command, Flow, COMMANDS, COMMAND_NAMES};
+use crate::repl::{command_names, execute_command, Command, Flow, COMMANDS};
 use crate::skills::{Catalog, Skill};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
@@ -41,6 +41,10 @@ const SELECT: Color = Color::Rgb(30, 36, 44);
 const MIN_WIDTH: u16 = 40;
 const MIN_HEIGHT: u16 = 10;
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
+/// The `/model` command opens the profile picker rather than dispatching like
+/// other slash commands; its prefix is kept in one place for both writers
+/// (prefill) and readers (strip_prefix).
+const MODEL_PREFIX: &str = "/model ";
 const STARTER_TASKS: [(&str, &str); 4] = [
     ("Inspect repository", "Map modules and dependencies. Read only; do not edit files or execute commands."),
     ("Plan architecture work", "Propose phased implementation and acceptance criteria. Do not edit files or execute commands."),
@@ -291,12 +295,12 @@ fn palette_run(state: &mut State, agent: &mut Agent<'_>, catalog: &Catalog) {
             run_command(state, agent, catalog, line);
         }
         PaletteAction::Models => {
-            state.editor.text = "/model ".into();
+            state.editor.text = MODEL_PREFIX.into();
             state.editor.cursor = state.editor.text.len();
             state.palette = Some(Palette::models());
         }
         PaletteAction::Select(target) => {
-            state.editor.text = format!("/model {target}");
+            state.editor.text = format!("{MODEL_PREFIX}{target}");
             state.editor.cursor = state.editor.text.len();
             let line = state.editor.take();
             state.follow = true;
@@ -487,7 +491,7 @@ fn palette_complete(state: &mut State) {
                 _ => return,
             };
             state.palette = None;
-            state.editor.text = format!("/model {target} ");
+            state.editor.text = format!("{MODEL_PREFIX}{target} ");
             state.editor.cursor = state.editor.text.len();
         }
     }
@@ -521,7 +525,7 @@ fn editor_only_key(state: &mut State, key: KeyEvent) {
             }
         }
         KeyCode::Tab => {
-            editor.complete(&COMMAND_NAMES);
+            editor.complete(&command_names());
         }
         KeyCode::Esc => editor.clear(),
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => editor.home(),
@@ -668,7 +672,7 @@ impl Palette {
                 Some(body)
             }
             PaletteMode::Models => {
-                let body = editor.text.strip_prefix("/model ")?;
+                let body = editor.text.strip_prefix(MODEL_PREFIX)?;
                 if body.contains(char::is_whitespace) {
                     return None;
                 }
@@ -810,7 +814,7 @@ impl State {
         if self.editor.text == "/" {
             return Some(Palette::default());
         }
-        let rest = self.editor.text.strip_prefix("/model ")?;
+        let rest = self.editor.text.strip_prefix(MODEL_PREFIX)?;
         if rest.contains(char::is_whitespace) {
             return None;
         }
@@ -2508,8 +2512,8 @@ fn short_path(path: &std::path::Path, max: usize) -> String {
     if let Some(stripped) = text.strip_prefix(r"\\?\") {
         text = stripped.to_string();
     }
-    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        if let Some(rest) = text.strip_prefix(&home) {
+    if let Some(home) = crate::config::home_dir() {
+        if let Some(rest) = text.strip_prefix(&home.to_string_lossy().to_string()) {
             text = format!("~{rest}");
         }
     }
@@ -3277,7 +3281,7 @@ mod tests {
     fn editor_completes_commands() {
         let mut editor = Editor::default();
         editor.insert_str("/sta");
-        editor.complete(&COMMAND_NAMES);
+        editor.complete(&command_names());
         assert_eq!(editor.text, "/status ");
         assert_eq!(editor.cursor, editor.text.len());
     }

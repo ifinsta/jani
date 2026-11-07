@@ -7,27 +7,39 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The index table can never hold more entries than the walk allows; the same
+/// bound applies when listing it back.
+pub(crate) const MAX_INDEX_ENTRIES: usize = 15_000;
+const MAX_FILE_BYTES: u64 = 1_000_000;
+const MAX_SYMBOLS: usize = 120;
+const MAX_SEARCH_RESULTS: usize = 40;
+const MAX_QUERY_LEN: usize = 100;
+const MAX_PATH_LEN: usize = 180;
+const MAX_IMPACT_RESULTS: usize = 100;
+const MAX_TEST_CANDIDATES: usize = 120;
+
+/// Repo-specific directories skipped on top of the shared `ignored_component`
+/// and `protected_component` baselines.
+const EXCLUDED_COMPONENTS: &[&str] = &["claims", "generated"];
+
 fn allowed(path: &Path) -> bool {
     let parts: Vec<String> = path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .collect();
     !parts.iter().any(|c| {
-        matches!(
-            c.as_str(),
-            ".git"
-                | ".jani"
-                | "target"
-                | "node_modules"
-                | ".env"
-                | "claims"
-                | "generated"
-                | "__pycache__"
-        ) || jani_core::config::protected_component(c)
+        jani_core::config::ignored_component(c)
+            || EXCLUDED_COMPONENTS.contains(&c.as_str())
+            || jani_core::config::protected_component(c)
     })
 }
-fn visit(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
-    if found.len() > 15000 {
+fn visit(
+    root: &Path,
+    dir: &Path,
+    found: &mut Vec<PathBuf>,
+    skip: Option<&Path>,
+) -> Result<(), String> {
+    if found.len() > MAX_INDEX_ENTRIES {
         return Err("index file limit exceeded".into());
     }
     let mut entries = fs::read_dir(root.join(dir))
@@ -37,7 +49,7 @@ fn visit(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let relative = dir.join(entry.file_name());
-        if !allowed(&relative) {
+        if skip == Some(relative.as_path()) || !allowed(&relative) {
             continue;
         }
         let kind = entry.file_type().map_err(|e| e.to_string())?;
@@ -45,7 +57,7 @@ fn visit(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String
             continue;
         }
         if kind.is_dir() {
-            visit(root, &relative, found)?;
+            visit(root, &relative, found, skip)?;
         } else if kind.is_file()
             && matches!(
                 relative.extension().and_then(|x| x.to_str()).unwrap_or(""),
@@ -68,7 +80,7 @@ fn visit(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String
         {
             found.push(relative);
         }
-        if found.len() > 15000 {
+        if found.len() > MAX_INDEX_ENTRIES {
             return Err("index file limit exceeded".into());
         }
     }
@@ -79,7 +91,7 @@ fn symbols(text: &str) -> Vec<String> {
     let mut found = BTreeSet::new();
     for cap in re.captures_iter(text) {
         found.insert(cap[1].to_string());
-        if found.len() >= 120 {
+        if found.len() >= MAX_SYMBOLS {
             break;
         }
     }
@@ -90,8 +102,10 @@ fn file_id(path: &str) -> String {
 }
 pub fn build(s: &mut State) -> Result<Value, String> {
     let mut found = Vec::new();
-    visit(&s.root, Path::new(""), &mut found)?;
-    let prev = s.list("index", 20000)?;
+    // Skip the state directory wherever it lives, not only when it is .jani.
+    let skip = s.state_dir.strip_prefix(&s.root).ok();
+    visit(&s.root, Path::new(""), &mut found, skip)?;
+    let prev = s.list("index", MAX_INDEX_ENTRIES)?;
     let mut seen = BTreeSet::new();
     let mut updated = 0;
     let mut unchanged = 0;
@@ -99,11 +113,11 @@ pub fn build(s: &mut State) -> Result<Value, String> {
         let name = relative.to_string_lossy().replace('\\', "/");
         let path = s.root.join(&relative);
         let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 1_000_000 {
+        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_FILE_BYTES {
             continue;
         }
         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-        if bytes.len() > 1_000_000 {
+        if bytes.len() as u64 > MAX_FILE_BYTES {
             continue;
         }
         let hash = digest(&bytes);
@@ -137,12 +151,12 @@ pub fn build(s: &mut State) -> Result<Value, String> {
     )
 }
 pub fn search(s: &State, term: &str) -> Result<Value, String> {
-    if term.is_empty() || term.len() > 100 {
+    if term.is_empty() || term.len() > MAX_QUERY_LEN {
         return Err("index search term must be 1..100 chars".into());
     }
     let query = term.to_ascii_lowercase();
     let mut matches = Vec::new();
-    for (_, record) in s.list("index", 15000)? {
+    for (_, record) in s.list("index", MAX_INDEX_ENTRIES)? {
         let path = record["path"].as_str().unwrap_or("");
         let names = record["symbols"].as_array().cloned().unwrap_or_default();
         let path_match = path.to_ascii_lowercase().contains(&query);
@@ -163,11 +177,11 @@ pub fn search(s: &State, term: &str) -> Result<Value, String> {
     });
     let total = matches.len();
     Ok(json!({"query":term,"totalMatches":total,
-        "results":matches.into_iter().take(40).map(|(_,r)|r).collect::<Vec<_>>(),
+        "results":matches.into_iter().take(MAX_SEARCH_RESULTS).map(|(_,r)|r).collect::<Vec<_>>(),
         "sourceBodiesDisclosed":false}))
 }
 pub fn impact(s: &State, path: &str) -> Result<Value, String> {
-    if path.contains("..") || path.starts_with('/') || path.len() > 180 {
+    if path.contains("..") || path.starts_with('/') || path.len() > MAX_PATH_LEN {
         return Err("invalid relative path".into());
     }
     let stem = Path::new(path)
@@ -180,7 +194,7 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
     }
     let mut affected = Vec::new();
     let mut tests = Vec::new();
-    for (_, entry) in s.list("index", 15000)? {
+    for (_, entry) in s.list("index", MAX_INDEX_ENTRIES)? {
         let name = entry["path"].as_str().unwrap_or("");
         if name == path {
             continue;
@@ -199,8 +213,8 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
             }
         }
     }
-    affected.truncate(100);
-    tests.truncate(100);
+    affected.truncate(MAX_IMPACT_RESULTS);
+    tests.truncate(MAX_IMPACT_RESULTS);
     Ok(
         json!({"tool":"impact","source":path,"heuristic":"path-and-symbol only; not a complete dependency graph",
        "affected":affected,"tests":tests,"requiresVerification":true}),
@@ -210,13 +224,13 @@ pub fn workspace(s: &mut State, op: &str) -> Result<Value, String> {
     match op {
         "status"|"snapshot"=>{
             let mut changed=Vec::new();let mut missing=Vec::new();
-            for (_,entry) in s.list("index",15000)?{
+            for (_,entry) in s.list("index",MAX_INDEX_ENTRIES)?{
                 let name=entry["path"].as_str().unwrap_or("");
                 let full=s.root.join(name);
                 if !full.is_file(){missing.push(name.to_owned());continue;}
                 let meta=fs::symlink_metadata(&full).map_err(|e|e.to_string())?;
                 if meta.file_type().is_symlink(){missing.push(name.to_owned());continue;}
-                if meta.len()>1_000_000 {changed.push(name.to_owned());continue;}
+                if meta.len()>MAX_FILE_BYTES {changed.push(name.to_owned());continue;}
                 if digest(&fs::read(full).map_err(|e|e.to_string())?)!=entry["sha256"].as_str().unwrap_or(""){
                     changed.push(name.to_owned());
                 }
@@ -238,12 +252,12 @@ pub fn workspace(s: &mut State, op: &str) -> Result<Value, String> {
 pub fn verifier(s: &State, op: &str) -> Result<Value, String> {
     match op {
         "select"=>{
-            let rows=s.list("index",15000)?;
+            let rows=s.list("index",MAX_INDEX_ENTRIES)?;
             let mut tests=rows.iter().filter_map(|(_,r)|{
                 let path=r["path"].as_str()?;
                 if path.contains("test")||path.ends_with("_spec.rs") {Some(path.to_owned())}else{None}
             }).collect::<Vec<_>>();
-            tests.sort();tests.truncate(120);
+            tests.sort();tests.truncate(MAX_TEST_CANDIDATES);
             Ok(json!({"tool":"verifier","suggestedArgv":["cargo","test","--workspace","--all-targets"],
                 "candidateTests":tests,"executed":false,
                 "executionRoute":"existing governed command only"}))

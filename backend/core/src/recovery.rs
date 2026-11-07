@@ -28,17 +28,19 @@ pub fn status(state_dir: &Path) -> Result<Value, String> {
         let snapshot = grouped.entry(key).or_default();
         snapshot.event_count += 1;
         snapshot.last_timestamp = snapshot.last_timestamp.max(event.timestamp);
-        if event.decision == "deny" {
+        if event.decision == journal::decision::DENY {
             snapshot.denied += 1;
         }
-        if event.action == "agent.run" {
-            if event.decision == "started" {
+        if event.action == crate::tools::action::AGENT_RUN {
+            if event.decision == journal::decision::STARTED {
                 // A reused run identifier must not inherit an earlier completion.
                 snapshot.started = true;
                 snapshot.last_decision.clear();
                 snapshot.reason.clear();
             }
-            if event.decision == "completed" || event.decision == "failed" {
+            if event.decision == journal::decision::COMPLETED
+                || event.decision == journal::decision::FAILED
+            {
                 snapshot.last_decision = event.decision;
                 snapshot.reason = event.reason_code;
             }
@@ -52,8 +54,8 @@ pub fn status(state_dir: &Path) -> Result<Value, String> {
             continue;
         }
         let outcome = match snapshot.last_decision.as_str() {
-            "completed" => "recorded_model_complete",
-            "failed" => "recorded_model_failed",
+            journal::decision::COMPLETED => "recorded_model_complete",
+            journal::decision::FAILED => "recorded_model_failed",
             _ => {
                 uncertain += 1;
                 "unknown_requires_reconciliation"

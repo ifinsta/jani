@@ -42,6 +42,21 @@ pub fn mutation(tool: &str, operation: &str) -> bool {
             | ("evidence", "record")
     )
 }
+
+/// Operations reserved for operators and the governed broker: they either
+/// execute outside the recorded evidence loop (`planner verify`,
+/// `verifier run`) or rewind workspace state (`workspace rollback`). The
+/// broker denies them to the model; this predicate is its single definition.
+pub fn privileged(tool: &str, operation: &str) -> bool {
+    matches!(
+        (tool, operation),
+        ("planner", "verify") | ("workspace", "rollback") | ("verifier", "run")
+    )
+}
+
+/// Deterministic default for `simulator run` when no seed is supplied; a fixed
+/// value so replayed simulator output is comparable across runs.
+const SIMULATOR_DEFAULT_SEED: u64 = 20261025;
 pub fn run(
     root: &Path,
     state_dir: &Path,
@@ -89,7 +104,7 @@ pub fn run(
                     .map(|x| x.parse::<u64>())
                     .transpose()
                     .map_err(|_| "simulator seed must be an integer")?
-                    .unwrap_or(20261025);
+                    .unwrap_or(SIMULATOR_DEFAULT_SEED);
                 plans::simulator(&s, seed)
             }
             _ => Err("simulator commands: run [SEED]".into()),

@@ -80,12 +80,7 @@ fn key(tenant: &str, id: &str) -> String {
 }
 
 fn identifier(name: &str, value: &str) -> JResult<()> {
-    if value.is_empty()
-        || value.len() > 96
-        || !value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    {
+    if !crate::types::valid_id(value, 96) {
         return Err(format!(
             "{name} must contain 1..96 ASCII letters, digits, '.', '-' or '_'"
         ));

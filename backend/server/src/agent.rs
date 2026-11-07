@@ -5,15 +5,16 @@ use crate::config::{self, Config, JResult, ModelChoice};
 use crate::data::Governance;
 use crate::gateway::ModelGateway;
 use crate::identity::{self, VerifiedIdentity};
-use crate::journal::{self, EventInput, Journal};
+use crate::journal::{self, decision, reason, EventInput, Journal};
 use crate::model::{specs, ModelDelta};
 use crate::plugins::PluginRegistry;
 use crate::policy::{contract_matches_identity, effective_limits, PolicyEngine};
 use crate::process::truncate;
 use crate::skills::Catalog;
+use crate::tools::Tool;
 use crate::types::{
-    new_id, now_unix, sha256_hex, ApprovalStatus, Classification, NetworkPolicy, SandboxProfile,
-    WorkContract,
+    new_id, now_unix, sha256_hex, ApprovalStatus, Classification, Effect, NetworkPolicy,
+    SandboxProfile, ToolResult, WorkContract,
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -103,12 +104,12 @@ pub enum TurnEvent {
 
 fn tool_activity(name: &str, params: &Value) -> String {
     let field = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
-    match name {
-        "read" => format!("reading {}", field("path")),
-        "write" => format!("writing {}", field("path")),
-        "list" => format!("listing {}", field("directory")),
-        "skill_read" => format!("reading skill {}", field("name")),
-        "command" => {
+    match Tool::from_name(name) {
+        Some(Tool::Read) => format!("reading {}", field("path")),
+        Some(Tool::Write) => format!("writing {}", field("path")),
+        Some(Tool::List) => format!("listing {}", field("directory")),
+        Some(Tool::SkillRead) => format!("reading skill {}", field("name")),
+        Some(Tool::Command) => {
             let argv = params
                 .get("argv")
                 .and_then(Value::as_array)
@@ -126,14 +127,14 @@ fn tool_activity(name: &str, params: &Value) -> String {
                 format!("running {argv}")
             }
         }
-        "native_tool" => {
+        Some(Tool::NativeTool) => {
             let tool = field("tool");
             match field("operation") {
                 "" => format!("calling native {tool}"),
                 operation => format!("calling native {tool}.{operation}"),
             }
         }
-        other => format!("calling {other}"),
+        _ => format!("calling {name}"),
     }
 }
 
@@ -143,7 +144,7 @@ fn ensure_active(
     journal: &mut Journal,
 ) -> JResult<()> {
     if cancelled.is_some_and(|token| token.load(Ordering::SeqCst)) {
-        meta.record(journal, "failed", "cancelled_by_operator")?;
+        meta.record(journal, decision::FAILED, reason::CANCELLED_BY_OPERATOR)?;
         return Err(
             "turn cancelled at an execution boundary; earlier file or external effects may remain"
                 .into(),
@@ -169,11 +170,11 @@ impl RunMeta<'_> {
                 invocation_id: "run",
                 actor_id: &self.identity.principal,
                 worker_id: &self.identity.principal,
-                action: "agent.run",
+                action: crate::tools::action::AGENT_RUN,
                 resource_digest: &sha256_hex(self.prompt.as_bytes()),
                 decision,
                 reason_code: reason,
-                policy_revision: "runtime",
+                policy_revision: journal::RUNTIME_REVISION,
                 approval_id: None,
                 sandbox_receipt_id: None,
                 data_classification: Classification::Internal,
@@ -331,11 +332,11 @@ Discovered skill names: {skills}"#,
                 invocation_id: "model",
                 actor_id: &self.identity.principal,
                 worker_id: &self.identity.principal,
-                action: "agent.model",
+                action: crate::tools::action::AGENT_MODEL,
                 resource_digest: &digest,
-                decision: "allowed",
-                reason_code: "model_switched",
-                policy_revision: "runtime",
+                decision: decision::ALLOWED,
+                reason_code: reason::MODEL_SWITCHED,
+                policy_revision: journal::RUNTIME_REVISION,
                 approval_id: None,
                 sandbox_receipt_id: None,
                 data_classification: Classification::Internal,
@@ -394,7 +395,7 @@ Discovered skill names: {skills}"#,
             .push(json!({"role": "user", "content": prompt}));
         trim_messages(&mut self.messages, MAX_HISTORY_BYTES);
 
-        run_meta.record(&mut self.journal, "started", "run_started")?;
+        run_meta.record(&mut self.journal, decision::STARTED, reason::RUN_STARTED)?;
         ensure_active(cancelled, &run_meta, &mut self.journal)?;
         if announce {
             eprintln!(
@@ -440,8 +441,11 @@ Discovered skill names: {skills}"#,
             let assistant = match assistant {
                 Ok(message) => message,
                 Err(error) => {
-                    let _ =
-                        run_meta.record(&mut self.journal, "failed", "model_or_governance_failure");
+                    let _ = run_meta.record(
+                        &mut self.journal,
+                        decision::FAILED,
+                        reason::MODEL_OR_GOVERNANCE_FAILURE,
+                    );
                     return Err(error);
                 }
             };
@@ -459,11 +463,12 @@ Discovered skill names: {skills}"#,
                     .unwrap_or("")
                     .trim();
                 if body.is_empty() {
-                    let _ = run_meta.record(&mut self.journal, "failed", "empty_answer");
+                    let _ =
+                        run_meta.record(&mut self.journal, decision::FAILED, reason::EMPTY_ANSWER);
                     return Err("model ended without an answer or tool call".into());
                 }
                 let inspected = self.governance.inspect_model_output(body, "final-answer")?;
-                run_meta.record(&mut self.journal, "completed", "final_answer")?;
+                run_meta.record(&mut self.journal, decision::COMPLETED, reason::FINAL_ANSWER)?;
                 return Ok(inspected);
             }
             for call in calls {
@@ -518,15 +523,19 @@ Discovered skill names: {skills}"#,
                         let result = broker.invoke(&invocation_id, name, &params);
                         json!(result)
                     }
-                    Err(error) => {
-                        json!({"status":"denied","error":format!("invalid tool arguments: {error}")})
-                    }
+                    Err(error) => json!(ToolResult::denied(
+                        &new_id("inv"),
+                        Effect::Read,
+                        "no-decision",
+                        format!("invalid tool arguments: {error}")
+                    )),
                 };
                 if let Some(sink) = events.as_mut() {
                     sink(TurnEvent::ToolFinished {
                         name: name.to_string(),
                         activity,
-                        ok: response.get("status").and_then(Value::as_str) == Some("ok"),
+                        ok: response.get("status").and_then(Value::as_str)
+                            == Some(crate::types::tool_status::OK),
                         duration_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX))
                             as u64,
                     });
@@ -539,7 +548,7 @@ Discovered skill names: {skills}"#,
             }
         }
 
-        let _ = run_meta.record(&mut self.journal, "failed", "step_limit");
+        let _ = run_meta.record(&mut self.journal, decision::FAILED, reason::STEP_LIMIT);
         Err(format!(
             "model stopped after {} turns without a final answer",
             cfg.max_steps

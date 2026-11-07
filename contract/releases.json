@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "jani.release-contract/v1",
+  "schemas": {
+    "channel": "jani.release-channel/v2",
+    "manifest": "jani.release/v2",
+    "update": "jani.update/v1",
+    "legacyChannel": "jani.release-channel/v1",
+    "legacyManifest": "jani.release/v1"
+  },
+  "component": "agent",
+  "types": {
+    "agent": "jani",
+    "client": "jani-probe",
+    "gateway": "jani-gateway"
+  },
+  "platforms": {
+    "windows": "windows",
+    "macos": "apple-darwin|darwin",
+    "linux": "linux"
+  },
+  "targets": {
+    "windows-x86_64": "x86_64-pc-windows-msvc",
+    "windows-aarch64": "aarch64-pc-windows-msvc",
+    "linux-x86_64": "x86_64-unknown-linux-gnu",
+    "linux-aarch64": "aarch64-unknown-linux-gnu",
+    "macos-x86_64": "x86_64-apple-darwin",
+    "macos-aarch64": "aarch64-apple-darwin"
+  }
+}

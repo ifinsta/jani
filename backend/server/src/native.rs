@@ -91,7 +91,7 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         &identity.principal,
         &action,
         op,
-        "started",
+        journal::decision::STARTED,
         &digest,
     )?;
     let value = jani_native::run(
@@ -109,7 +109,7 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         &identity.principal,
         &action,
         op,
-        "completed",
+        journal::decision::COMPLETED,
         &digest,
     )?;
     Ok(value)

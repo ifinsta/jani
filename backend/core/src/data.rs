@@ -4,6 +4,13 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::OnceLock;
 
+/// PEM block delimiters shared by `secret_rules` and the streaming output
+/// inspector (`gateway::pem_hold_start`), which must never release a chunk
+/// that splits a private-key block.
+pub const PEM_BEGIN: &str = "-----BEGIN ";
+pub const PEM_END: &str = "-----END ";
+pub const PEM_PRIVATE_KEY_TAIL: &str = "PRIVATE KEY-----";
+
 struct SecretRule {
     pattern: Regex,
     replacement: &'static str,
@@ -12,11 +19,16 @@ struct SecretRule {
 fn secret_rules() -> &'static Vec<SecretRule> {
     static RULES: OnceLock<Vec<SecretRule>> = OnceLock::new();
     RULES.get_or_init(|| {
-        let specs: &[(&str, &str)] = &[
-            (
-                r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
-                "[REDACTED:PRIVATE_KEY]",
+        let pem = (
+            format!(
+                r"(?s){0}[A-Z0-9 ]*{1}.*?{2}[A-Z0-9 ]*{1}",
+                regex::escape(PEM_BEGIN),
+                PEM_PRIVATE_KEY_TAIL,
+                regex::escape(PEM_END)
             ),
+            "[REDACTED:PRIVATE_KEY]",
+        );
+        let specs: &[(&str, &str)] = &[
             (r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED:AWS_KEY]"),
             (r"\bgh[pousr]_[A-Za-z0-9]{20,}\b", "[REDACTED:GITHUB_TOKEN]"),
             (
@@ -36,13 +48,15 @@ fn secret_rules() -> &'static Vec<SecretRule> {
                 "$1=[REDACTED]",
             ),
         ];
-        specs
-            .iter()
-            .map(|(pattern, replacement)| SecretRule {
-                pattern: Regex::new(pattern).expect("valid secret regex"),
-                replacement,
-            })
-            .collect()
+        let mut rules = vec![SecretRule {
+            pattern: Regex::new(&pem.0).expect("valid secret regex"),
+            replacement: pem.1,
+        }];
+        rules.extend(specs.iter().map(|(pattern, replacement)| SecretRule {
+            pattern: Regex::new(pattern).expect("valid secret regex"),
+            replacement,
+        }));
+        rules
     })
 }
 

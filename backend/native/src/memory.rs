@@ -4,6 +4,17 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
 
+const MAX_PINS: usize = 500;
+const MAX_CONTEXT_ROWS: usize = 10_000;
+const MAX_EVIDENCE_ROWS: usize = 500;
+const MAX_ASSEMBLED_ITEMS: usize = 100;
+const MAX_EVIDENCE_BYTES: u64 = 2_000_000;
+const MAX_JOURNAL_BYTES: u64 = 16_000_000;
+const MAX_RECOMMENDATIONS: usize = 100;
+const MIN_TOKEN_BUDGET: usize = 256;
+const MAX_TOKEN_BUDGET: usize = 32_000;
+const DEFAULT_TOKEN_BUDGET: usize = 4000;
+
 pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String> {
     match op {
         "pin" => {
@@ -11,7 +22,7 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
                 .first()
                 .ok_or("context pin requires indexed source path")?;
             let indexed = s
-                .list("index", 15000)?
+                .list("index", repo::MAX_INDEX_ENTRIES)?
                 .into_iter()
                 .any(|(_, v)| v["path"].as_str() == Some(path));
             if !indexed {
@@ -28,14 +39,14 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
             let tokens = args
                 .get(1)
                 .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(4000);
-            if !(256..=32_000).contains(&tokens) {
+                .unwrap_or(DEFAULT_TOKEN_BUDGET);
+            if !(MIN_TOKEN_BUDGET..=MAX_TOKEN_BUDGET).contains(&tokens) {
                 return Err("context budget 256..32000 tokens".into());
             }
             let mut assembled = Vec::new();
             let mut used = 0usize;
             let mut candidates = Vec::new();
-            for (_, r) in s.list("pin", 500)? {
+            for (_, r) in s.list("pin", MAX_PINS)? {
                 candidates.push((true, r["path"].as_str().unwrap_or("").to_owned()));
             }
             let results = repo::search(s, query)?;
@@ -47,7 +58,7 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
             candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
             candidates.dedup_by(|a, b| a.1 == b.1);
             let indexed = s
-                .list("index", 15000)?
+                .list("index", repo::MAX_INDEX_ENTRIES)?
                 .into_iter()
                 .filter_map(|(_, v)| v["path"].as_str().map(|p| (p.to_owned(), v.clone())))
                 .collect::<std::collections::BTreeMap<_, _>>();
@@ -65,7 +76,7 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
                     used += cost;
                     assembled.push(json!({"path":path,"pinned":pinned,
                         "sha256":metadata["sha256"],"symbols":metadata["symbols"],"estimatedTokens":cost}));
-                    if assembled.len() >= 100 {
+                    if assembled.len() >= MAX_ASSEMBLED_ITEMS {
                         break;
                     }
                 }
@@ -82,7 +93,7 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
     }
 }
 pub fn pruner(s: &mut State, op: &str) -> Result<Value, String> {
-    let contexts = s.list("context", 10000)?;
+    let contexts = s.list("context", MAX_CONTEXT_ROWS)?;
     let candidates = contexts
         .iter()
         .filter(|(id, _)| id != "last_pack")
@@ -124,7 +135,7 @@ pub fn evidence(s: &mut State, op: &str, args: &[String]) -> Result<Value, Strin
             }
             let full = s.root.join(rel);
             let meta = fs::symlink_metadata(&full).map_err(|e| e.to_string())?;
-            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 2_000_000 {
+            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_EVIDENCE_BYTES {
                 return Err("untrusted evidence path".into());
             }
             if s.get("evidence", id)?.is_some() {
@@ -136,7 +147,7 @@ pub fn evidence(s: &mut State, op: &str, args: &[String]) -> Result<Value, Strin
             s.set("evidence", id, &entry)?;
             Ok(entry)
         }
-        "list" => Ok(json!({"evidence":s.list("evidence",500)?
+        "list" => Ok(json!({"evidence":s.list("evidence",MAX_EVIDENCE_ROWS)?
             .into_iter().map(|(_,v)|v).collect::<Vec<_>>()})),
         "check" => {
             let id = args.first().ok_or("evidence check requires ID")?;
@@ -163,7 +174,7 @@ pub fn optimizer(s: &State) -> Result<Value, String> {
         "noAuditEvidence":true,"autoApplied":false}));
     }
     let state = journal.parent().ok_or("invalid journal path")?;
-    if fs::metadata(&journal).map_err(|e| e.to_string())?.len() > 16_000_000 {
+    if fs::metadata(&journal).map_err(|e| e.to_string())?.len() > MAX_JOURNAL_BYTES {
         return Err("optimizer journal exceeds 16MiB analysis window".into());
     }
     let verified = jani_core::journal::verify(state)?;
@@ -177,7 +188,7 @@ pub fn optimizer(s: &State) -> Result<Value, String> {
         "recommendations":report.runs.into_iter()
            .flat_map(|r|r.findings.into_iter()
                .map(move |f|json!({"run":r.run_id,"code":f.code,"suggestion":f.recommendation,"evidence":f.evidence})))
-           .take(100).collect::<Vec<_>>(),
+           .take(MAX_RECOMMENDATIONS).collect::<Vec<_>>(),
         "autoApplied":false,"evidenceOnly":true}))
 }
 #[cfg(test)]

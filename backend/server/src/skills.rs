@@ -3,12 +3,23 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const MAX_SKILLS: usize = 64;
+const MAX_DEPTH: usize = 2;
+const MAX_SKILL_BYTES: u64 = 256_000;
+const SKILL_FILE: &str = "SKILL.md";
+
 #[derive(Clone, Debug)]
 pub struct Skill {
     pub name: String,
     pub description: String,
     pub file: PathBuf,
 }
+
+/// Skill search locations relative to the user home or repository root. Both
+/// agent convention directories and the legacy plain `skills/` dir are probed.
+const AGENTS_SKILLS_DIR: &str = ".agents/skills";
+const CLAUDE_SKILLS_DIR: &str = ".claude/skills";
+const PLAIN_SKILLS_DIR: &str = "skills";
 
 #[derive(Default)]
 pub struct Catalog {
@@ -42,13 +53,13 @@ impl Catalog {
         // User-level skills win over repository copies so an untrusted checkout cannot
         // shadow a skill the operator installed deliberately.
         let mut dirs = Vec::new();
-        if let Ok(home) = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
-            dirs.push(PathBuf::from(home).join(".agents/skills"));
+        if let Some(home) = crate::config::home_dir() {
+            dirs.push(home.join(AGENTS_SKILLS_DIR));
         }
-        dirs.push(cfg.root.join(".agents/skills"));
-        dirs.push(cfg.root.join(".claude/skills"));
-        dirs.push(cfg.root.join("skills"));
-        if let Some(extra) = std::env::var_os("JANI_SKILL_DIRS") {
+        dirs.push(cfg.root.join(AGENTS_SKILLS_DIR));
+        dirs.push(cfg.root.join(CLAUDE_SKILLS_DIR));
+        dirs.push(cfg.root.join(PLAIN_SKILLS_DIR));
+        if let Some(extra) = std::env::var_os(crate::env::SKILL_DIRS) {
             dirs.extend(std::env::split_paths(&extra));
         }
         let mut items = Self::default();
@@ -58,10 +69,10 @@ impl Catalog {
             }
             let mut queue = VecDeque::from([(dir, 0usize)]);
             while let Some((path, depth)) = queue.pop_front() {
-                if items.skills.len() >= 64 {
+                if items.skills.len() >= MAX_SKILLS {
                     break;
                 }
-                if depth > 2 {
+                if depth > MAX_DEPTH {
                     continue;
                 }
                 let canonical = match path.canonicalize() {
@@ -84,13 +95,13 @@ impl Catalog {
                     if kind.is_symlink() {
                         continue;
                     }
-                    if kind.is_dir() && depth < 2 {
+                    if kind.is_dir() && depth < MAX_DEPTH {
                         queue.push_back((p, depth + 1));
                     } else if kind.is_file()
-                        && p.file_name().and_then(|n| n.to_str()) == Some("SKILL.md")
+                        && p.file_name().and_then(|n| n.to_str()) == Some(SKILL_FILE)
                     {
                         let md = match fs::metadata(&p) {
-                            Ok(m) if m.len() <= 256_000 => m,
+                            Ok(m) if m.len() <= MAX_SKILL_BYTES => m,
                             _ => continue,
                         };
                         let _ = md;
@@ -141,7 +152,7 @@ impl Catalog {
             .get(name)
             .ok_or_else(|| format!("unknown skill '{name}'; use listed skill names"))?;
         let meta = fs::metadata(&skill.file).map_err(|e| e.to_string())?;
-        if meta.len() > 256_000 {
+        if meta.len() > MAX_SKILL_BYTES {
             return Err("skill too large".into());
         }
         let text = fs::read_to_string(&skill.file).map_err(|e| e.to_string())?;

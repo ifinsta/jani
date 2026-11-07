@@ -12,11 +12,15 @@ pub struct State {
     pub task: String,
 }
 
+/// On-disk layout under the configured state directory.
+pub const DIR_NAME: &str = "native";
+pub const DB_NAME: &str = "native.sqlite3";
+/// Object-store busy window; shorter than the attention store's because a
+/// stalled native call is a retry the broker can re-issue.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(3000);
+
 fn valid_id(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 100
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    jani_core::types::valid_id(s, 100)
 }
 
 impl State {
@@ -28,7 +32,7 @@ impl State {
         if !root.is_dir() {
             return Err("native root is not a directory".into());
         }
-        let directory = state_dir.join("native");
+        let directory = state_dir.join(DIR_NAME);
         for path in [state_dir, directory.as_path()] {
             if let Ok(meta) = fs::symlink_metadata(path) {
                 if meta.file_type().is_symlink() {
@@ -37,15 +41,14 @@ impl State {
             }
         }
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        let file = directory.join("native.sqlite3");
+        let file = directory.join(DB_NAME);
         if let Ok(meta) = fs::symlink_metadata(&file) {
             if meta.file_type().is_symlink() {
                 return Err("symlinked native database refused".into());
             }
         }
         let conn = Connection::open(&file).map_err(|e| e.to_string())?;
-        conn.busy_timeout(std::time::Duration::from_millis(3000))
-            .map_err(|e| e.to_string())?;
+        conn.busy_timeout(BUSY_TIMEOUT).map_err(|e| e.to_string())?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=FULL;

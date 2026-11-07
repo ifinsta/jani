@@ -34,6 +34,16 @@ pub fn now_unix() -> u64 {
         .as_secs()
 }
 
+/// Shared identifier shape: 1..=max_len ASCII alphanumerics plus '.', '_' or
+/// '-'. Used by every component that accepts tenant, run or tool identifiers.
+pub fn valid_id(value: &str, max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// Canonical resource strings use forward slashes and reject traversal.
 pub fn canonical_resource(kind: &str, path: &str) -> Result<String, String> {
     let normalized = path.replace('\\', "/");
@@ -299,6 +309,15 @@ pub enum ModelProtocol {
 }
 
 impl ModelProtocol {
+    /// Every spelling `parse` accepts; also the contract for external schema
+    /// documents such as docs/schemas/settings.schema.json.
+    pub const ALL_NAMES: &'static [&'static str] = &[
+        "openai",
+        "openai-compatible",
+        "anthropic",
+        "anthropic-messages",
+    ];
+
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "openai" | "openai-compatible" => Some(Self::OpenAi),
@@ -308,12 +327,7 @@ impl ModelProtocol {
     }
 
     pub fn detect(api_base: &str) -> Self {
-        let host = api_base
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .unwrap_or("");
+        let host = crate::net::authority_host(crate::net::url_authority(api_base));
         if host.eq_ignore_ascii_case("api.anthropic.com") {
             Self::Anthropic
         } else {
@@ -393,6 +407,15 @@ pub struct SandboxReceipt {
     pub termination_reason: Option<String>,
 }
 
+/// Canonical `ToolResult.status` values; the agent matches `"ok"` on the wire
+/// and the broker writes them, so the vocabulary lives beside the type.
+pub mod tool_status {
+    pub const OK: &str = "ok";
+    pub const DENIED: &str = "denied";
+    pub const ERROR: &str = "error";
+    pub const APPROVAL_REQUIRED: &str = "approval_required";
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolResult {
@@ -421,7 +444,7 @@ impl ToolResult {
     ) -> Self {
         Self {
             invocation_id: invocation_id.to_string(),
-            status: "denied".into(),
+            status: tool_status::DENIED.into(),
             effect,
             data: None,
             error: Some(reason.into()),

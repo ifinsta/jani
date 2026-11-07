@@ -29,6 +29,11 @@ struct Claim {
     #[serde(default)]
     statement: String,
 }
+const MAX_DOCUMENTS: usize = 2000;
+const MAX_DOC_BYTES: u64 = 1_000_000;
+const MAX_EVIDENCE_BYTES: u64 = 2_000_000;
+const MAX_NEEDLE_BYTES: usize = 250;
+
 fn id(s: &str) -> String {
     let mut h = 0xcbf29ce484222325_u64;
     for b in s.bytes() {
@@ -54,16 +59,13 @@ fn files(root: &Path, at: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
         let name = e.file_name().to_string_lossy().into_owned();
         let p = at.join(&name);
         if t.is_dir() {
-            if !matches!(
-                name.as_str(),
-                ".git" | "target" | "claims" | ".jani" | "node_modules"
-            ) {
+            if !jani_core::config::ignored_component(&name) && name != "claims" {
                 files(root, &p, out)?;
             }
         } else if p.extension().is_some_and(|s| s == "md") {
             out.push(p);
         }
-        if out.len() > 2000 {
+        if out.len() > MAX_DOCUMENTS {
             return Err("too many Markdown documents".into());
         }
     }
@@ -105,11 +107,11 @@ fn claim_test(root: &Path, c: &Claim) -> Result<(), String> {
     }
     if !matches!(c.kind.as_str(), "source_contains" | "source_absent")
         || c.needle.is_empty()
-        || c.needle.len() > 250
+        || c.needle.len() > MAX_NEEDLE_BYTES
     {
         return Err("unsupported or empty evidence assertion".into());
     }
-    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 2_000_000 {
+    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > MAX_EVIDENCE_BYTES {
         return Err("oversized evidence".into());
     }
     let exists = fs::read_to_string(path)
@@ -128,7 +130,7 @@ fn scan_doc(
     passed: &mut usize,
 ) -> Result<(), String> {
     let path = root.join(doc);
-    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 1_000_000 {
+    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > MAX_DOC_BYTES {
         return Err("oversized Markdown".into());
     }
     let txt = fs::read_to_string(path).map_err(|e| e.to_string())?;

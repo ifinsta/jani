@@ -113,7 +113,7 @@ fn persist(
     rate_per_min: i64,
 ) -> Result<(u16, Value)> {
     let mut conn = Connection::open(db)?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.execute_batch("PRAGMA synchronous=FULL")?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let old: Option<String> = tx
@@ -379,11 +379,28 @@ fn read_registry(path: &str) -> Result<Registry> {
     }
     Ok(registry)
 }
+const DEFAULT_BIND: &str = "127.0.0.1:8443";
+const DEFAULT_RATE_PER_MIN: i64 = 120;
+const MAX_RATE_PER_MIN: i64 = 10_000;
+const DEFAULT_RETAIN_DAYS: i64 = 7;
+const MAX_RETAIN_DAYS: i64 = 90;
+const MAX_CONNECTIONS: usize = 64;
+const PURGE_INTERVAL_SECS: i64 = 3600;
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Write-path lock wait; cleanup gets a much shorter window since a skipped
+/// purge is retried on the next interval.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const CLEANUP_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
+
 fn required(args: &[String], name: &str) -> Result<String> {
-    args.windows(2)
+    optional(args, name)?.ok_or_else(|| format!("missing {name}").into())
+}
+
+fn optional(args: &[String], name: &str) -> Result<Option<String>> {
+    Ok(args
+        .windows(2)
         .find(|pair| pair[0] == name)
-        .map(|pair| pair[1].clone())
-        .ok_or_else(|| format!("missing {name}").into())
+        .map(|pair| pair[1].clone()))
 }
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -398,34 +415,27 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if args.iter().any(|a| a == "--help") {
-        println!("jani-gateway --ca CA.pem --cert gateway.crt --key gateway.key --registry devices.json --db gateway.sqlite [--bind 127.0.0.1:8443] [--allow-remote] [--rate-per-minute 120] [--retain-days 7]\njani-gateway inspect --db gateway.sqlite --tenant TENANT");
+        println!("jani-gateway --ca CA.pem --cert gateway.crt --key gateway.key --registry devices.json --db gateway.sqlite [--bind {DEFAULT_BIND}] [--allow-remote] [--rate-per-minute {DEFAULT_RATE_PER_MIN}] [--retain-days {DEFAULT_RETAIN_DAYS}]\njani-gateway inspect --db gateway.sqlite --tenant TENANT");
         return Ok(());
     }
-    let bind: SocketAddr = args
-        .windows(2)
-        .find(|a| a[0] == "--bind")
-        .map(|a| a[1].clone())
-        .unwrap_or("127.0.0.1:8443".into())
+    let bind: SocketAddr = optional(&args, "--bind")?
+        .unwrap_or_else(|| DEFAULT_BIND.into())
         .parse()?;
     if !bind.ip().is_loopback() && !args.iter().any(|a| a == "--allow-remote") {
         return Err("non-loopback listening requires --allow-remote".into());
     }
-    let rate_per_min: i64 = args
-        .windows(2)
-        .find(|a| a[0] == "--rate-per-minute")
-        .map(|a| a[1].parse())
+    let rate_per_min: i64 = optional(&args, "--rate-per-minute")?
+        .map(|value| value.parse())
         .transpose()?
-        .unwrap_or(120);
-    if !(1..=10_000).contains(&rate_per_min) {
+        .unwrap_or(DEFAULT_RATE_PER_MIN);
+    if !(1..=MAX_RATE_PER_MIN).contains(&rate_per_min) {
         return Err("rate-per-minute out of range".into());
     }
-    let retain_days: i64 = args
-        .windows(2)
-        .find(|a| a[0] == "--retain-days")
-        .map(|a| a[1].parse())
+    let retain_days: i64 = optional(&args, "--retain-days")?
+        .map(|value| value.parse())
         .transpose()?
-        .unwrap_or(7);
-    if !(1..=90).contains(&retain_days) {
+        .unwrap_or(DEFAULT_RETAIN_DAYS);
+    if !(1..=MAX_RETAIN_DAYS).contains(&retain_days) {
         return Err("retain-days out of range".into());
     }
     let db = required(&args, "--db")?;
@@ -452,7 +462,7 @@ fn run() -> Result<()> {
     let last_purge = Arc::new(AtomicI64::new(store::epoch()));
     for incoming in listener.incoming() {
         let Ok(mut tcp) = incoming else { continue };
-        if active.fetch_add(1, Ordering::SeqCst) >= 64 {
+        if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             active.fetch_sub(1, Ordering::SeqCst);
             continue;
         }
@@ -463,8 +473,8 @@ fn run() -> Result<()> {
         let last_purge = last_purge.clone();
         std::thread::spawn(move || {
             let _guard = Guard(active);
-            let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
-            let _ = tcp.set_write_timeout(Some(Duration::from_secs(10)));
+            let _ = tcp.set_read_timeout(Some(IO_TIMEOUT));
+            let _ = tcp.set_write_timeout(Some(IO_TIMEOUT));
             let Ok(mut conn) = ServerConnection::new(tls) else {
                 return;
             };
@@ -478,13 +488,13 @@ fn run() -> Result<()> {
             // Retention cleanup is best-effort and never blocks ACK commit.
             let now = store::epoch();
             let last = last_purge.load(Ordering::Relaxed);
-            if now.saturating_sub(last) >= 3600
+            if now.saturating_sub(last) >= PURGE_INTERVAL_SECS
                 && last_purge
                     .compare_exchange(last, now, Ordering::SeqCst, Ordering::Relaxed)
                     .is_ok()
             {
                 if let Ok(conn) = Connection::open(&db) {
-                    let _ = conn.busy_timeout(Duration::from_millis(100));
+                    let _ = conn.busy_timeout(CLEANUP_BUSY_TIMEOUT);
                     let _ = store::purge(&conn, retain_days);
                 }
             }

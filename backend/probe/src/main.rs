@@ -3,7 +3,10 @@
 //! Intentionally NO command, policy-update, self-update or shell execution interface.
 #[cfg(target_os = "linux")]
 mod journal;
-use jani_jsmt::{create_envelope, identity_ok, Ack, Coverage, Log, Metric, VERSION};
+use jani_jsmt::{
+    create_envelope, identity_ok, Ack, Coverage, Log, Metric, MAX_COVERAGE, MAX_LOGS,
+    MAX_LOG_CHARS, VERSION,
+};
 use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::{Certificate, Identity, Url};
@@ -17,12 +20,85 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const MAX_QUEUE: i64 = 1000;
 const MAX_SPOOL_BYTES: i64 = 64 * 1024 * 1024;
-const MAX_LINES: usize = 200;
+const MAX_LINES: usize = MAX_LOGS;
+const MAX_CAPTURE_BYTES: usize = 128 * 1024;
+const MAX_SERVICES: usize = 240;
+const FLUSH_BATCH: i64 = 32;
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+const WATCH_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(target_os = "linux")]
+const SUBPROCESS_DEADLINE: Duration = Duration::from_secs(3);
+#[cfg(target_os = "linux")]
+const SUBPROCESS_POLL: Duration = Duration::from_millis(25);
+
+/// First existing regular file among candidates (absolute tool paths only).
+#[cfg(target_os = "linux")]
+fn which(candidates: &[&'static str]) -> Option<std::path::PathBuf> {
+    candidates
+        .iter()
+        .map(Path::new)
+        .find(|path| path.is_file())
+        .map(|path| path.to_path_buf())
+}
+
+/// Spawn a subprocess and capture stdout with a hard deadline and a byte cap.
+/// Kills on timeout; stderr and stdin are closed to the child.
+#[cfg(target_os = "linux")]
+fn run_captured(
+    bin: &Path,
+    args: &[&str],
+    deadline: Duration,
+    cap: usize,
+) -> std::io::Result<Vec<u8>> {
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let Some(mut pipe) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other("no output pipe"));
+    };
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read = pipe.take(cap as u64 + 1).read_to_end(&mut bytes);
+        (read, bytes)
+    });
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if started.elapsed() >= deadline {
+            break None;
+        }
+        std::thread::sleep(SUBPROCESS_POLL);
+    };
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let (read, bytes) = reader
+        .join()
+        .map_err(|_| std::io::Error::other("output reader panicked"))?;
+    read?;
+    if !status.is_some_and(|s| s.success()) || bytes.len() > cap {
+        return Err(std::io::Error::other(
+            "command timed out, failed or produced oversized output",
+        ));
+    }
+    Ok(bytes)
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -193,11 +269,19 @@ fn linux_metrics(out: &mut Observations) {
         }
     }
 }
+fn scrub_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)(authorization\s*[:=]\s*bearer\s+|(?:{})\s*[:=]\s*)([^\s,;]+)",
+            jani_jsmt::SECRET_KEYS.join("|")
+        ))
+        .expect("secret-key regex")
+    })
+}
 fn scrub(line: &str) -> String {
     // Minimal recognized-secret redaction, not sufficient to certify comprehensive DLP.
-    let regex=Regex::new(r"(?i)(authorization\s*[:=]\s*bearer\s+|(?:password|api[_-]?key|token|secret)\s*[:=]\s*)([^\s,;]+)")
-        .expect("constant regex");
-    regex
+    scrub_regex()
         .replace_all(line, |caps: &regex::Captures<'_>| {
             format!("{}[REDACTED]", &caps[1])
         })
@@ -370,7 +454,7 @@ fn collect(
             if out.logs.len() >= MAX_LINES {
                 return Err("log batch exceeds 200; cursors unchanged".into());
             }
-            truncated |= line.chars().count() > 4096;
+            truncated |= line.chars().count() > MAX_LOG_CHARS;
             let mut attrs = BTreeMap::new();
             attrs.insert("jani.log.source".into(), source.chars().take(100).collect());
             out.logs.push(Log {
@@ -383,7 +467,7 @@ fn collect(
         }
         let invalid_utf8 = std::str::from_utf8(complete).is_err();
         let partial = rotated_or_truncated
-            || (bytes_read == 128 * 1024 && (begin + bytes_read as u64) < metadata.len())
+            || (bytes_read == MAX_CAPTURE_BYTES && (begin + bytes_read as u64) < metadata.len())
             || truncated
             || invalid_utf8
             || (finished == 0 && bytes_read > 0);
@@ -416,64 +500,21 @@ fn collect(
 }
 #[cfg(target_os = "linux")]
 fn safe_systemd_inventory() -> std::io::Result<String> {
-    use std::process::{Command, Stdio};
-    use std::time::Instant;
-    let executable = if Path::new("/usr/bin/systemctl").exists() {
-        "/usr/bin/systemctl"
-    } else if Path::new("/bin/systemctl").exists() {
-        "/bin/systemctl"
-    } else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "systemctl missing",
-        ));
-    };
-    let mut child = Command::new(executable)
-        .args([
+    let bin = which(&["/usr/bin/systemctl", "/bin/systemctl"])
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "systemctl missing"))?;
+    let bytes = run_captured(
+        &bin,
+        &[
             "list-units",
             "--type=service",
             "--all",
             "--no-legend",
             "--no-pager",
             "--plain",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(std::io::Error::other("no inventory pipe"));
-    };
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let result = stdout.take(128 * 1024 + 1).read_to_end(&mut buf);
-        (result, buf)
-    });
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
-        }
-        if started.elapsed() >= Duration::from_secs(3) {
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    };
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    let (read_result, bytes) = reader
-        .join()
-        .map_err(|_| std::io::Error::other("inventory read panic"))?;
-    read_result?;
-    if status.is_none() || bytes.len() > 128 * 1024 || !status.is_some_and(|s| s.success()) {
-        return Err(std::io::Error::other(
-            "systemd inventory timeout, error or oversized output",
-        ));
-    }
+        ],
+        SUBPROCESS_DEADLINE,
+        MAX_CAPTURE_BYTES,
+    )?;
     String::from_utf8(bytes).map_err(|_| std::io::Error::other("systemd inventory invalid UTF8"))
 }
 #[cfg(target_os = "linux")]
@@ -492,7 +533,7 @@ fn discover_gap(out: &mut Observations, sources: &[Source]) {
         }
     };
     let names: Vec<&str> = stdout.lines().collect();
-    let max_available = 256usize.saturating_sub(out.coverage.len() + 1);
+    let max_available = MAX_COVERAGE.saturating_sub(out.coverage.len() + 1);
     if names.len() > max_available {
         out.coverage.push(coverage(
             "host-discovery",
@@ -502,7 +543,7 @@ fn discover_gap(out: &mut Observations, sources: &[Source]) {
         ));
     }
     for line in names.into_iter().take(max_available) {
-        if out.coverage.len() >= 256 {
+        if out.coverage.len() >= MAX_COVERAGE {
             break;
         }
         let name = line
@@ -523,7 +564,7 @@ fn discover_gap(out: &mut Observations, sources: &[Source]) {
 }
 #[cfg(not(target_os = "linux"))]
 fn discover_gap(out: &mut Observations, _sources: &[Source]) {
-    if out.coverage.len() < 256 {
+    if out.coverage.len() < MAX_COVERAGE {
         out.coverage.push(coverage(
             "host-discovery",
             "os-adapter",
@@ -681,11 +722,13 @@ fn client(ca: &str, cert: &str, key: &str) -> Result<Client> {
         .tls_built_in_root_certs(false)
         .add_root_certificate(root)
         .identity(id)
-        .timeout(Duration::from_secs(10))
+        .timeout(HTTP_TIMEOUT)
         .build()?)
 }
 fn flush(conn: &mut Connection, http: &Client, origin: &str) -> Result<usize> {
-    let mut stmt = conn.prepare("SELECT seq,payload,hash FROM pending ORDER BY seq LIMIT 32")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT seq,payload,hash FROM pending ORDER BY seq LIMIT {FLUSH_BATCH}"
+    ))?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, i64>(0)?,
@@ -766,7 +809,7 @@ fn run() -> Result<()> {
     let spool = required(&args, "--spool")?;
     let config: SourceFile =
         serde_json::from_str(&fs::read_to_string(required(&args, "--sources")?)?)?;
-    if config.services.len() > 240 {
+    if config.services.len() > MAX_SERVICES {
         return Err("too many explicitly configured services".into());
     }
     let http = client(
@@ -802,7 +845,7 @@ fn run() -> Result<()> {
         if !watch {
             break;
         }
-        std::thread::sleep(Duration::from_secs(30));
+        std::thread::sleep(WATCH_INTERVAL);
     }
     Ok(())
 }

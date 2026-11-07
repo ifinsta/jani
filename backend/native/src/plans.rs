@@ -4,11 +4,12 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
+const MAX_PLAN_NODES: usize = 128;
+const MAX_NODE_DEPS: usize = 64;
+const MAX_ACCEPTANCE_CHARS: usize = 400;
+
 fn ident(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 96
-        && s.bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+    jani_core::types::valid_id(s, 96)
 }
 fn nodes(plan: &Value) -> Result<&Vec<Value>, String> {
     plan.get("nodes")
@@ -24,7 +25,7 @@ fn node_id(v: &Value) -> Result<&str, String> {
 }
 pub fn validate(plan: &Value) -> Result<(), String> {
     let items = nodes(plan)?;
-    if items.is_empty() || items.len() > 128 {
+    if items.is_empty() || items.len() > MAX_PLAN_NODES {
         return Err("plan must have 1..128 nodes".into());
     }
     let mut seen = BTreeSet::new();
@@ -34,11 +35,11 @@ pub fn validate(plan: &Value) -> Result<(), String> {
             return Err("duplicate task node".into());
         }
         let deps = node["deps"].as_array().ok_or("node missing deps array")?;
-        if deps.len() > 64 || deps.iter().any(|d| !d.is_string()) {
+        if deps.len() > MAX_NODE_DEPS || deps.iter().any(|d| !d.is_string()) {
             return Err("invalid task dependencies".into());
         }
         if node["acceptance"].as_str().unwrap_or("").trim().is_empty()
-            || node["acceptance"].as_str().unwrap_or("").len() > 400
+            || node["acceptance"].as_str().unwrap_or("").len() > MAX_ACCEPTANCE_CHARS
         {
             return Err("node acceptance criteria required".into());
         }

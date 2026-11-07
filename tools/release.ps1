@@ -2,7 +2,6 @@
 param(
     [string]$Version,
     [string]$Target,
-    [ValidateSet('agent', 'client', 'gateway')]
     [string]$Type = 'agent',
     [switch]$AllowDirty,
     [switch]$Replace
@@ -16,6 +15,16 @@ function Fail([string]$Message) {
     throw "release: $Message"
 }
 
+$contractPath = Join-Path $root 'contract\releases.json'
+$contract = Get-Content -Raw -LiteralPath $contractPath | ConvertFrom-Json
+if ($contract.schemaVersion -ne 'jani.release-contract/v1') {
+    Fail "unsupported release contract: $contractPath"
+}
+if ($Type -notin @($contract.types.PSObject.Properties.Name)) {
+    Fail "unsupported release type '$Type'"
+}
+$packageName = [string]$contract.types.$Type
+
 function Get-HostTarget {
     $rustc = Get-Command rustc -ErrorAction SilentlyContinue
     if ($rustc) {
@@ -26,21 +35,17 @@ function Get-HostTarget {
     }
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
         if ([Environment]::Is64BitOperatingSystem) {
-            return 'x86_64-pc-windows-msvc'
+            return [string]$contract.targets.'windows-x86_64'
         }
         return 'i686-pc-windows-msvc'
     }
     Fail 'cannot determine the host target; pass -Target (for example x86_64-unknown-linux-gnu)'
 }
 
-$packages = @{ agent = 'jani'; client = 'jani-probe'; gateway = 'jani-gateway' }
-$binaryNames = @{ agent = 'jani'; client = 'jani-probe'; gateway = 'jani-gateway' }
-$packageName = $packages[$Type]
-
 function Get-Platform([string]$TargetName) {
-    if ($TargetName -match 'windows') { return 'windows' }
-    if ($TargetName -match '(apple-darwin|darwin)') { return 'macos' }
-    if ($TargetName -match 'linux') { return 'linux' }
+    foreach ($property in $contract.platforms.PSObject.Properties) {
+        if ($TargetName -match $property.Value) { return $property.Name }
+    }
     Fail "unsupported release platform '$TargetName'"
 }
 
@@ -101,7 +106,7 @@ if ($LASTEXITCODE -ne 0) {
     Fail 'cargo build failed'
 }
 
-$exeName = if ($Target -like '*windows*') { "$($binaryNames[$Type]).exe" } else { [string]$binaryNames[$Type] }
+$exeName = if ($Target -like '*windows*') { "$packageName.exe" } else { $packageName }
 $builtPath = Join-Path (Join-Path ([string]$metadata.target_directory) 'release') $exeName
 if (-not (Test-Path -LiteralPath $builtPath)) {
     Fail "missing built binary: $builtPath"
@@ -113,13 +118,13 @@ $releaseDir = Join-Path (Join-Path (Join-Path (Join-Path $root 'releases') $Type
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
 $extension = if ($Target -like '*windows*') { '.exe' } else { '' }
-$binaryName = "$($binaryNames[$Type])-$Version-$Target$extension"
+$binaryName = "$packageName-$Version-$Target$extension"
 $binaryPath = Join-Path $releaseDir $binaryName
 $manifestPath = Join-Path $releaseDir 'manifest.json'
 # Check immutable version/commit/target rules before overwriting published binary.
 if (Test-Path -LiteralPath $manifestPath) {
     $previous = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-    if ($previous.schemaVersion -ne 'jani.release/v2' -or $previous.version -ne $Version -or
+    if ($previous.schemaVersion -ne $contract.schemas.manifest -or $previous.version -ne $Version -or
         $previous.type -ne $Type -or $previous.platform -ne $platform) {
         Fail 'existing release manifest conflicts with requested component/platform/version'
     }
@@ -147,7 +152,7 @@ $builtAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 
 if (Test-Path -LiteralPath $manifestPath) {
     $existing = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-    if ($existing.schemaVersion -ne 'jani.release/v2' -or $existing.type -ne $Type -or $existing.platform -ne $platform) {
+    if ($existing.schemaVersion -ne $contract.schemas.manifest -or $existing.type -ne $Type -or $existing.platform -ne $platform) {
         Fail "unsupported existing manifest schema in $manifestPath"
     }
     if ([string]$existing.version -ne $Version) {
@@ -176,7 +181,7 @@ $artifacts += [ordered]@{
 }
 
 $manifest = [ordered]@{
-    schemaVersion = 'jani.release/v2'
+    schemaVersion = $contract.schemas.manifest
     type = $Type
     platform = $platform
     package = $packageName
@@ -190,7 +195,7 @@ $manifest = [ordered]@{
 [IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 6) + "`n"), $utf8)
 
 $latest = [ordered]@{
-    schemaVersion = 'jani.release-channel/v2'
+    schemaVersion = $contract.schemas.channel
     type = $Type
     platform = $platform
     latest = $tag

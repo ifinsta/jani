@@ -2,10 +2,6 @@
 //! No shell execution, no privileged actions, and no unbounded pipe reads.
 use jani_jsmt::{Coverage, Log};
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 pub struct Capture {
     pub logs: Vec<Log>,
@@ -21,62 +17,21 @@ fn covered(service: &str, source: &str, status: &str, reason: &str) -> Coverage 
     }
 }
 fn run(unit: &str, previous: Option<&str>) -> std::io::Result<Vec<u8>> {
-    let bin = if Path::new("/usr/bin/journalctl").is_file() {
-        "/usr/bin/journalctl"
-    } else if Path::new("/bin/journalctl").is_file() {
-        "/bin/journalctl"
-    } else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "journalctl unavailable",
-        ));
-    };
-    let mut command = Command::new(bin);
-    command.args(["--unit", unit, "--output=json", "--no-pager", "--quiet"]);
-    if let Some(previous) = previous {
-        command.arg(format!("--after-cursor={previous}"));
-    } else {
-        command.arg("--lines=100");
+    let bin = super::which(&["/usr/bin/journalctl", "/bin/journalctl"]).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "journalctl unavailable")
+    })?;
+    let after = previous.map(|cursor| format!("--after-cursor={cursor}"));
+    let mut args: Vec<&str> = vec!["--unit", unit, "--output=json", "--no-pager", "--quiet"];
+    match &after {
+        Some(flag) => args.push(flag.as_str()),
+        None => args.push("--lines=100"),
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let Some(mut pipe) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(std::io::Error::other("no journal pipe"));
-    };
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let read = pipe.take(128 * 1024 + 1).read_to_end(&mut bytes);
-        (read, bytes)
-    });
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
-        }
-        if started.elapsed() > Duration::from_secs(3) {
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    };
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    let (read, bytes) = reader
-        .join()
-        .map_err(|_| std::io::Error::other("journal reader panicked"))?;
-    read?;
-    if status.is_none() || !status.is_some_and(|s| s.success()) || bytes.len() > 128 * 1024 {
-        return Err(std::io::Error::other(
-            "journal command unavailable, failed or oversized",
-        ));
-    }
-    Ok(bytes)
+    super::run_captured(
+        &bin,
+        &args,
+        super::SUBPROCESS_DEADLINE,
+        super::MAX_CAPTURE_BYTES,
+    )
 }
 fn normalized(
     value: &serde_json::Value,

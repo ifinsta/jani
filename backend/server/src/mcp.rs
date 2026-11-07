@@ -12,12 +12,16 @@ use crate::types::{
 use jani_mcp::{
     authorize, verify_response, Context, Delegation, McpContract, Mode, MCP_VERSION, PROTOCOL,
 };
-use reqwest::{blocking::Client, header, redirect::Policy};
+use reqwest::header;
 use serde_json::{json, Value};
 use std::{fs, io::Read, path::Path, time::Duration};
 
 const MAX_JSON: u64 = 1_048_576;
 const MAX_ARGS: u64 = 65_536;
+const MAX_TOKEN_BYTES: u64 = 8192;
+const AUDIT_RUN_ID: &str = "mcp-gateway";
+const AUDIT_POLICY_REVISION: &str = "mcp-governance-v1";
+const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn read_file(path: &Path, limit: u64) -> JResult<String> {
     let meta = fs::symlink_metadata(path).map_err(|e| format!("MCP_FILE_UNAVAILABLE: {e}"))?;
@@ -38,16 +42,20 @@ fn audit(cfg: &Config, action: &str, allowed: bool, code: &str) -> JResult<()> {
     let d = sha256_hex(format!("{action}:{code}").as_bytes());
     journal.record(EventInput {
         tenant_id: &cfg.tenant,
-        task_id: cfg.task_id.as_deref().unwrap_or("mcp-gateway"),
-        run_id: "mcp-gateway",
-        invocation_id: "mcp-gateway",
+        task_id: cfg.task_id.as_deref().unwrap_or(AUDIT_RUN_ID),
+        run_id: AUDIT_RUN_ID,
+        invocation_id: AUDIT_RUN_ID,
         actor_id: &cfg.principal,
         worker_id: &cfg.mcp_agent,
         action,
         resource_digest: &d,
-        decision: if allowed { "permit" } else { "deny" },
+        decision: if allowed {
+            crate::journal::decision::PERMIT
+        } else {
+            crate::journal::decision::DENY
+        },
         reason_code: code,
-        policy_revision: "mcp-governance-v1",
+        policy_revision: AUDIT_POLICY_REVISION,
         approval_id: None,
         sandbox_receipt_id: None,
         data_classification: Classification::Internal,
@@ -57,7 +65,7 @@ fn audit(cfg: &Config, action: &str, allowed: bool, code: &str) -> JResult<()> {
 
 fn token_file(path: &Path) -> JResult<String> {
     let meta = fs::symlink_metadata(path).map_err(|_| "MCP_TOKEN_UNAVAILABLE".to_string())?;
-    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 8192 {
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_TOKEN_BYTES {
         return Err("MCP_TOKEN_UNSAFE".into());
     }
     #[cfg(unix)]
@@ -67,7 +75,7 @@ fn token_file(path: &Path) -> JResult<String> {
             return Err("MCP_TOKEN_FILE_PERMISSIONS_MUST_BE_0600".into());
         }
     }
-    let token = read_file(path, 8192)?;
+    let token = read_file(path, MAX_TOKEN_BYTES)?;
     let token = token.trim();
     if token.is_empty() || token.chars().any(char::is_whitespace) {
         return Err("MCP_TOKEN_INVALID".into());
@@ -111,9 +119,8 @@ pub fn send(
 ) -> JResult<Value> {
     // Never use caller-selected endpoints or cross-host redirects.
     // No automatic retries: a timeout after prepare is ambiguous.
-    let client = Client::builder()
-        .redirect(Policy::none())
-        .timeout(Duration::from_secs(30))
+    let client = crate::http::client_builder()
+        .timeout(RPC_TIMEOUT)
         .build()
         .map_err(|_| "MCP_HTTP_CLIENT_UNAVAILABLE")?;
     let rpc_id = json!(new_id("mcp-rpc"));

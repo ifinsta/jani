@@ -7,8 +7,13 @@ import re
 import sys
 from pathlib import Path
 
-TYPES = {'agent': 'jani', 'client': 'jani-probe', 'gateway': 'jani-gateway'}
-PLATFORMS = ('windows', 'macos', 'linux')
+CONTRACT_PATH = Path(__file__).resolve().parents[1] / 'contract' / 'releases.json'
+CONTRACT = json.loads(CONTRACT_PATH.read_text('utf-8'))
+if CONTRACT.get('schemaVersion') != 'jani.release-contract/v1':
+    raise SystemExit(f'unsupported release contract: {CONTRACT_PATH}')
+TYPES = CONTRACT['types']
+PLATFORMS = tuple(CONTRACT['platforms'])
+SCHEMAS = CONTRACT['schemas']
 VERSION = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.+-]+)?$')
 HEX = re.compile(r'^[0-9a-f]{64}$')
 COMMIT = re.compile(r'^[0-9a-f]{40}$')
@@ -16,6 +21,10 @@ COMMIT = re.compile(r'^[0-9a-f]{40}$')
 
 def safe_name(name):
     return isinstance(name, str) and name not in {'.', '..'} and bool(re.fullmatch(r'[A-Za-z0-9._+-]+', name)) and '..' not in name
+
+
+def target_platform(target):
+    return next((p for p, pattern in CONTRACT['platforms'].items() if re.search(pattern, target)), 'unknown')
 
 
 def digest(path):
@@ -53,7 +62,7 @@ def check(root: Path):
                 manifest_path = d / 'manifest.json'
                 try:
                     m = json.loads(manifest_path.read_text('utf-8'))
-                    if m['schemaVersion'] != 'jani.release/v2' or m['type'] != typ or m['platform'] != platform:
+                    if m['schemaVersion'] != SCHEMAS['manifest'] or m['type'] != typ or m['platform'] != platform:
                         raise ValueError('type/platform/schema mismatch')
                     if m['version'] != d.name[1:] or m['tag'] != d.name:
                         raise ValueError('version mismatch')
@@ -64,7 +73,7 @@ def check(root: Path):
                     targets = set()
                     for a in m['artifacts']:
                         target, name = a['target'], a['binary']
-                        if not isinstance(target, str) or platform not in (('windows' if 'windows' in target else 'macos' if 'darwin' in target else 'linux' if 'linux' in target else 'unknown'),):
+                        if not isinstance(target, str) or target_platform(target) != platform:
                             raise ValueError('target does not match platform')
                         if not safe_name(name) or not name.startswith(f'{binary}-{m["version"]}-{target}'):
                             raise ValueError('unsafe or mismatched artifact name')
@@ -86,7 +95,7 @@ def check(root: Path):
             if channel_file.exists():
                 try:
                     c = json.loads(channel_file.read_text('utf-8'))
-                    if c != {'schemaVersion': 'jani.release-channel/v2', 'type': typ, 'platform': platform, 'latest': c.get('latest')}:
+                    if c != {'schemaVersion': SCHEMAS['channel'], 'type': typ, 'platform': platform, 'latest': c.get('latest')}:
                         raise ValueError('invalid typed channel')
                     if c['latest'] not in found or not VERSION.fullmatch(c['latest']):
                         raise ValueError('latest points to an invalid/unpublished release')
@@ -97,7 +106,7 @@ def check(root: Path):
     if legacy.exists():
         try:
             c = json.loads(legacy.read_text('utf-8'))
-            if c['schemaVersion'] != 'jani.release-channel/v1' or not VERSION.fullmatch(c['latest']) or not (base / c['latest'] / 'manifest.json').is_file():
+            if c['schemaVersion'] != SCHEMAS['legacyChannel'] or not VERSION.fullmatch(c['latest']) or not (base / c['latest'] / 'manifest.json').is_file():
                 raise ValueError('broken legacy release pointer')
         except (OSError, ValueError, TypeError, KeyError) as e:
             errors.append(f'{legacy}: {e}')

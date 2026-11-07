@@ -3,7 +3,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now() -> u64 {
@@ -13,13 +13,21 @@ fn now() -> u64 {
         .as_secs()
 }
 
+/// On-disk layout under the configured state directory.
+pub const DIR_NAME: &str = "mirror";
+pub const DB_NAME: &str = "improvements.sqlite3";
+
+pub fn db_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(DIR_NAME).join(DB_NAME)
+}
+
 pub struct MirrorRegister {
     conn: Connection,
 }
 
 impl MirrorRegister {
     pub fn open(state_dir: &Path) -> Result<Self, String> {
-        let root = state_dir.join("mirror");
+        let root = state_dir.join(DIR_NAME);
         for path in [state_dir, root.as_path()] {
             if let Ok(metadata) = fs::symlink_metadata(path) {
                 if metadata.file_type().is_symlink() {
@@ -28,20 +36,16 @@ impl MirrorRegister {
             }
         }
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        let db_path = root.join("improvements.sqlite3");
+        let db_path = root.join(DB_NAME);
         if let Ok(metadata) = fs::symlink_metadata(&db_path) {
             if metadata.file_type().is_symlink() {
                 return Err("symlinked Mirror database refused".into());
             }
         }
         let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(|e| e.to_string())?;
+        crate::harden(&conn)?;
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=FULL;
-             PRAGMA foreign_keys=ON;
-             CREATE TABLE IF NOT EXISTS mirror_findings (
+            "CREATE TABLE IF NOT EXISTS mirror_findings (
                 id TEXT NOT NULL,
                 tenant TEXT NOT NULL,
                 run_id TEXT NOT NULL,

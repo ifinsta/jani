@@ -1,12 +1,13 @@
 pub use jani_core::{
-    approvals, budget, config, crypto, data, evidence, identity, journal, permissions, policy,
-    process, recovery, schema, types,
+    approvals, budget, config, crypto, data, env, evidence, identity, journal, net, permissions,
+    policy, process, recovery, schema, tools, types,
 };
 mod agent;
 mod attention;
 mod broker;
 mod exec;
 mod gateway;
+mod http;
 mod mcp;
 mod mirror;
 mod model;

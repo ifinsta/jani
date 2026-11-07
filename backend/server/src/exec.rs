@@ -6,6 +6,9 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
 
+/// Cap shared with the model-facing `command` tool schema in `model.rs`.
+pub const MAX_TIMEOUT_SECS: u64 = 300;
+
 // Allowlisted execution: command validation and direct execution share the same
 // scope and executable rules. Enforcement lives here because a SKILL.md is advisory.
 #[cfg(test)]
@@ -13,8 +16,10 @@ pub fn run(cfg: &Config, argv: &[String], timeout: u64) -> JResult<Value> {
     if !cfg.allow_exec {
         return Err("command execution disabled; --allow-exec required".into());
     }
-    if !(1..=300).contains(&timeout) {
-        return Err("command timeout must be 1..300 seconds".into());
+    if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
+        return Err(format!(
+            "command timeout must be 1..={MAX_TIMEOUT_SECS} seconds"
+        ));
     }
     validate(argv, cfg)?;
     if argv.first().map(String::as_str) == Some("git")
@@ -48,8 +53,10 @@ pub fn run_confined(
     if !cfg.allow_exec {
         return Err("command execution disabled; --allow-exec required".into());
     }
-    if !(1..=300).contains(&timeout) {
-        return Err("command timeout must be 1..300 seconds".into());
+    if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
+        return Err(format!(
+            "command timeout must be 1..={MAX_TIMEOUT_SECS} seconds"
+        ));
     }
     validate(argv, cfg)?;
     if argv.first().map(String::as_str) == Some("git")

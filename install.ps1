@@ -2,7 +2,6 @@
 param(
     [string]$Version,
     [string]$Target,
-    [ValidateSet('agent', 'client', 'gateway')]
     [string]$Type = 'agent',
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Jani\bin'),
     [switch]$AddToPath,
@@ -18,6 +17,15 @@ function Fail([string]$Message) {
     throw "install: $Message"
 }
 
+$contractPath = Join-Path $root 'contract\releases.json'
+$contract = Get-Content -Raw -LiteralPath $contractPath | ConvertFrom-Json
+if ($contract.schemaVersion -ne 'jani.release-contract/v1') {
+    Fail "unsupported release contract: $contractPath"
+}
+if ($Type -notin @($contract.types.PSObject.Properties.Name)) {
+    Fail "unsupported release type '$Type'"
+}
+
 function Get-HostTarget {
     $rustc = Get-Command rustc -ErrorAction SilentlyContinue
     if ($rustc) {
@@ -28,7 +36,7 @@ function Get-HostTarget {
     }
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
         if ([Environment]::Is64BitOperatingSystem) {
-            return 'x86_64-pc-windows-msvc'
+            return [string]$contract.targets.'windows-x86_64'
         }
         return 'i686-pc-windows-msvc'
     }
@@ -36,12 +44,11 @@ function Get-HostTarget {
 }
 
 function Get-Platform([string]$TargetName) {
-    if ($TargetName -match 'windows') { return 'windows' }
-    if ($TargetName -match '(apple-darwin|darwin)') { return 'macos' }
-    if ($TargetName -match 'linux') { return 'linux' }
+    foreach ($property in $contract.platforms.PSObject.Properties) {
+        if ($TargetName -match $property.Value) { return $property.Name }
+    }
     Fail "unsupported release platform '$TargetName'"
 }
-$binaryNames = @{ agent = 'jani'; client = 'jani-probe'; gateway = 'jani-gateway' }
 
 if ($AddToPath -and $NoPath) {
     Fail '-AddToPath and -NoPath cannot be used together'
@@ -72,7 +79,7 @@ $legacy = $false
 if (-not $Version) {
     if (Test-Path -LiteralPath $channelPath) {
         $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
-        if ($channel.schemaVersion -ne 'jani.release-channel/v2' -or
+        if ($channel.schemaVersion -ne $contract.schemas.channel -or
             $channel.type -ne $Type -or $channel.platform -ne $platform -or
             [string]$channel.latest -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+') {
             Fail "invalid typed release channel: $channelPath"
@@ -84,7 +91,7 @@ if (-not $Version) {
             Fail 'no matching release channel; build the component from source'
         }
         $channel = Get-Content -Raw -LiteralPath $latestPath | ConvertFrom-Json
-        if ($channel.schemaVersion -ne 'jani.release-channel/v1') {
+        if ($channel.schemaVersion -ne $contract.schemas.legacyChannel) {
             Fail 'unsupported legacy release channel'
         }
         $Version = [string]$channel.latest
@@ -116,10 +123,10 @@ if (-not (Test-Path -LiteralPath $manifestPath)) {
 }
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 if ($legacy) {
-    if ($manifest.schemaVersion -ne 'jani.release/v1') {
+    if ($manifest.schemaVersion -ne $contract.schemas.legacyManifest) {
         Fail 'unsupported legacy release manifest'
     }
-} elseif ($manifest.schemaVersion -ne 'jani.release/v2' -or
+} elseif ($manifest.schemaVersion -ne $contract.schemas.manifest -or
           $manifest.type -ne $Type -or $manifest.platform -ne $platform) {
     Fail "release manifest does not match $Type/$platform"
 }
@@ -148,7 +155,8 @@ if ($actual -ne ([string]$artifact.sha256).ToLowerInvariant()) {
     Fail "checksum mismatch for $binaryPath; refusing to install"
 }
 
-$exeName = if ($Target -like '*windows*') { "$($binaryNames[$Type]).exe" } else { [string]$binaryNames[$Type] }
+$binaryName = [string]$contract.types.$Type
+$exeName = if ($Target -like '*windows*') { "$binaryName.exe" } else { $binaryName }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $destination = Join-Path $InstallDir $exeName
 Copy-Item -LiteralPath $binaryPath -Destination $destination -Force

@@ -10,6 +10,7 @@ pub const MAX_BODY: usize = 262_144;
 pub const MAX_METRICS: usize = 256;
 pub const MAX_LOGS: usize = 200;
 pub const MAX_COVERAGE: usize = 256;
+pub const MAX_LOG_CHARS: usize = 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,7 +114,7 @@ pub fn validate(body: &[u8]) -> Result<(Envelope, Vec<u8>, String), String> {
                 log.severity_text.as_str(),
                 "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL"
             )
-            || log.body.chars().count() > 4096
+            || log.body.chars().count() > MAX_LOG_CHARS
             || !redacted(&log.body)
             || log.resource.len() != 1
             || !log.resource.get("service.name").is_some_and(|s| {
@@ -152,23 +153,30 @@ pub fn labels_ok(v: &BTreeMap<String, String>) -> bool {
         && v.iter()
             .all(|(k, val)| !k.is_empty() && k.len() <= 100 && val.len() <= 100)
 }
+/// Key names that introduce a secret value in `key=value` / `key: value`
+/// telemetry text. Shared with the probe's log scrubber so the producer-side
+/// redaction and the ingest-side validation recognize the same vocabulary.
+pub const SECRET_KEYS: &[&str] = &[
+    "password", "token", "secret", "api_key", "apikey", "api-key",
+];
+
+fn secret_markers() -> &'static [String] {
+    static MARKERS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    MARKERS.get_or_init(|| {
+        SECRET_KEYS
+            .iter()
+            .flat_map(|key| [format!("{key}="), format!("{key}:")])
+            .chain(["authorization: bearer ", "authorization=bearer "].map(str::to_string))
+            .collect()
+    })
+}
+
 pub fn redacted(v: &str) -> bool {
     let lower = v.to_ascii_lowercase();
     // Defense-in-depth only: use full privacy filtering before ingesting real logs.
-    for marker in [
-        "password=",
-        "password:",
-        "token=",
-        "token:",
-        "secret=",
-        "secret:",
-        "api_key=",
-        "apikey=",
-        "authorization: bearer ",
-        "authorization=bearer ",
-    ] {
+    for marker in secret_markers() {
         let mut remaining = lower.as_str();
-        while let Some(at) = remaining.find(marker) {
+        while let Some(at) = remaining.find(marker.as_str()) {
             let following = &remaining[at + marker.len()..];
             if !following.trim_start().starts_with("[redacted]") {
                 return false;

@@ -4,6 +4,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+const MAX_FILE_BYTES: u64 = 180_000;
+const MAX_LIST_ENTRIES: usize = 240;
+const MAX_LIST_DEPTH: u8 = 2;
+
 pub struct Workspace<'a> {
     pub cfg: &'a Config,
 }
@@ -60,7 +64,7 @@ impl<'a> Workspace<'a> {
                 .collect::<Vec<_>>();
             entries.sort_by_key(|e| e.path());
             for e in entries {
-                if found.len() >= 240 {
+                if found.len() >= MAX_LIST_ENTRIES {
                     break;
                 }
                 let p = e.path();
@@ -74,14 +78,14 @@ impl<'a> Workspace<'a> {
                 }
                 if kind.is_dir() {
                     found.push(format!("{}/", name.display()));
-                    if depth < 2 {
+                    if depth < MAX_LIST_DEPTH {
                         stack.push((p, depth + 1));
                     }
                 } else if kind.is_file() {
                     found.push(name.display().to_string());
                 }
             }
-            if found.len() >= 240 {
+            if found.len() >= MAX_LIST_ENTRIES {
                 break;
             }
         }
@@ -91,7 +95,7 @@ impl<'a> Workspace<'a> {
     pub fn read(&self, name: &str) -> JResult<String> {
         let target = self.target(name, true)?;
         let info = fs::metadata(&target).map_err(|e| e.to_string())?;
-        if info.len() > 180_000 {
+        if info.len() > MAX_FILE_BYTES {
             return Err("file too large; limit 180 KB".into());
         }
         fs::read_to_string(target).map_err(|e| e.to_string())
@@ -101,7 +105,7 @@ impl<'a> Workspace<'a> {
         if !self.cfg.allow_write {
             return Err("file editing disabled; use --allow-write".into());
         }
-        if text.len() > 180_000 {
+        if text.len() as u64 > MAX_FILE_BYTES {
             return Err("write exceeds 180 KB limit".into());
         }
         let rel = Path::new(name);

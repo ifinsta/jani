@@ -23,12 +23,7 @@ fn run_arg(cfg: &Config, index: usize) -> JResult<&str> {
             None
         })
         .ok_or("Mirror operation requires a run ID")?;
-    if id.len() > 128
-        || id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    {
+    if !crate::types::valid_id(id, 128) {
         return Err("run ID contains unsupported characters".into());
     }
     Ok(id)
@@ -122,7 +117,7 @@ pub fn command(cfg: &Config) -> JResult<Value> {
                 invocation_id: new_id("mirror"),
                 tenant_id: identity.tenant.clone(),
                 principal_id: identity.principal.clone(),
-                action: "mirror.compare".into(),
+                action: crate::tools::action::MIRROR_COMPARE.into(),
                 resource: format!("mirror:run:{second}"),
                 effect: Effect::Read,
                 risk: RiskTier::R0,
@@ -138,12 +133,7 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         }
     }
     if sub == "history" {
-        if !cfg
-            .state_dir
-            .join("mirror")
-            .join("improvements.sqlite3")
-            .exists()
-        {
+        if !jani_store::mirror::db_path(&cfg.state_dir).exists() {
             return Ok(json!({"status":"proposed_only","recommendations":[]}));
         }
         return MirrorRegister::open(&cfg.state_dir)?.list(&identity.tenant, 100);

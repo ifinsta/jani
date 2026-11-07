@@ -43,7 +43,7 @@
       "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
     },
     "protocol": {
-      "enum": ["openai", "anthropic"],
+      "enum": ["openai", "openai-compatible", "anthropic", "anthropic-messages"],
       "description": "Transport. Auto-detected from the API host when omitted."
     },
     "maxOutputTokens": {
@@ -94,7 +94,7 @@
           "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
         },
         "protocol": {
-          "enum": ["openai", "anthropic"]
+          "enum": ["openai", "openai-compatible", "anthropic", "anthropic-messages"]
         },
         "maxOutputTokens": {
           "type": "integer",

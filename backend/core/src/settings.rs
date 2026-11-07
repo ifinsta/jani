@@ -18,15 +18,16 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+const SETTINGS_VERSION: u32 = 1;
 const MAX_SETTINGS_BYTES: u64 = 128 * 1024;
 const MAX_PROFILES: usize = 32;
-const MAX_STEPS: usize = 80;
+pub const MAX_STEPS: usize = 80;
 const MAX_KEY_BYTES: usize = 8192;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_URL_BYTES: usize = 2048;
 const MAX_PERMISSION_RULES: usize = 128;
 const MAX_PERMISSION_RULE_BYTES: usize = 512;
-const MAX_OUTPUT_TOKENS: usize = 200_000;
+pub const MAX_OUTPUT_TOKENS: usize = 200_000;
 
 #[derive(Clone, Deserialize)]
 #[serde(transparent)]
@@ -215,9 +216,9 @@ impl Settings {
     }
 
     fn validate(&self) -> JResult<()> {
-        if self.version != 1 {
+        if self.version != SETTINGS_VERSION {
             return Err(format!(
-                "unsupported settings version {}; expected 1",
+                "unsupported settings version {}; expected {SETTINGS_VERSION}",
                 self.version
             ));
         }
@@ -621,5 +622,61 @@ mod tests {
         );
         assert!(settings.profile("deep").is_ok());
         assert!(settings.permissions().unwrap().is_some());
+    }
+
+    /// The published JSON schema must describe exactly what the parser accepts:
+    /// every bound the schema states has a matching constant here, and the
+    /// protocol enum may never promise a value `ModelProtocol::parse` rejects.
+    #[test]
+    fn published_schema_matches_parser_bounds() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/schemas/settings.schema.json"))
+                .unwrap();
+        let props = &schema["properties"];
+        let profile = &schema["definitions"]["modelProfile"]["properties"];
+        let rules = &schema["definitions"]["rules"];
+        let bound = |node: &serde_json::Value, key: &str| node[key].as_u64().unwrap() as usize;
+
+        assert_eq!(bound(&props["version"], "const"), SETTINGS_VERSION as usize);
+        assert_eq!(bound(&props["model"], "maxLength"), MAX_MODEL_ID_BYTES);
+        assert_eq!(bound(&props["apiBase"], "maxLength"), MAX_URL_BYTES);
+        assert_eq!(bound(&props["apiKey"], "maxLength"), MAX_KEY_BYTES);
+        assert_eq!(bound(&profile["model"], "maxLength"), MAX_MODEL_ID_BYTES);
+        assert_eq!(bound(&profile["apiBase"], "maxLength"), MAX_URL_BYTES);
+        assert_eq!(bound(&profile["apiKey"], "maxLength"), MAX_KEY_BYTES);
+        assert_eq!(
+            bound(&props["maxOutputTokens"], "maximum"),
+            MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(
+            bound(&profile["maxOutputTokens"], "maximum"),
+            MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(bound(&props["maxSteps"], "maximum"), MAX_STEPS);
+        assert_eq!(bound(&props["models"], "maxProperties"), MAX_PROFILES);
+        assert_eq!(bound(rules, "maxItems"), MAX_PERMISSION_RULES);
+        assert_eq!(
+            bound(&rules["items"], "maxLength"),
+            MAX_PERMISSION_RULE_BYTES
+        );
+
+        let protocols: Vec<&str> = props["protocol"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for name in &protocols {
+            assert!(
+                crate::types::ModelProtocol::ALL_NAMES.contains(name),
+                "schema protocol '{name}' is not accepted by the parser"
+            );
+        }
+        for name in crate::types::ModelProtocol::ALL_NAMES {
+            assert!(
+                protocols.contains(name),
+                "parser accepts protocol '{name}' the schema does not list"
+            );
+        }
     }
 }

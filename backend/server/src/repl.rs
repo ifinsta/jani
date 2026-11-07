@@ -4,9 +4,17 @@ use crate::skills::Catalog;
 use serde_json::Value;
 use std::io::{self, BufRead, IsTerminal, Write};
 
-const BANNER: &str = "Jani interactive terminal. Conversation is retained for this task.\n\
-Commands: /help /status /model /skills /inspect /budget /approvals /approval /new /exit\n\
-Authority is fixed at startup; model profiles can be switched with /model. Restart to change write, command or policy scopes.";
+const BANNER_HEAD: &str = "Jani interactive terminal. Conversation is retained for this task.";
+const BANNER_TAIL: &str = "Authority is fixed at startup; model profiles can be switched with /model. Restart to change write, command or policy scopes.";
+
+fn banner() -> String {
+    let names = COMMANDS
+        .iter()
+        .map(|command| format!("/{}", command.name))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{BANNER_HEAD}\nCommands: {names}\n{BANNER_TAIL}")
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct Command {
@@ -14,6 +22,7 @@ pub(crate) struct Command {
     pub usage: &'static str,
     pub summary: &'static str,
     pub requires_argument: bool,
+    pub aliases: &'static [&'static str],
 }
 
 pub(crate) static COMMANDS: [Command; 11] = [
@@ -22,66 +31,77 @@ pub(crate) static COMMANDS: [Command; 11] = [
         usage: "",
         summary: "Show this help",
         requires_argument: false,
+        aliases: &["?"],
     },
     Command {
         name: "status",
         usage: "",
         summary: "Show frozen authority, task, model and history size",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "model",
         usage: "[NAME]",
         summary: "Switch model or settings profile for later turns",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "skills",
         usage: "",
         summary: "List discovered skills",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "inspect",
         usage: "[RUN_ID]",
         summary: "Show journal events (default: latest turn)",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "budget",
         usage: "",
         summary: "Show the persisted task budget",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "approvals",
         usage: "",
         summary: "List approval requests",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "approval",
         usage: "ID",
         summary: "Attach an approval a verified approver already decided",
         requires_argument: true,
+        aliases: &[],
     },
     Command {
         name: "new",
         usage: "",
         summary: "Clear conversation history; task and budget continue",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "exit",
         usage: "",
         summary: "End the session",
         requires_argument: false,
+        aliases: &[],
     },
     Command {
         name: "quit",
         usage: "",
         summary: "End the session (alias of /exit)",
         requires_argument: false,
+        aliases: &[],
     },
 ];
 
@@ -100,19 +120,10 @@ pub(crate) fn help_text() -> String {
     text
 }
 
-pub(crate) const COMMAND_NAMES: [&str; 11] = [
-    "help",
-    "status",
-    "model",
-    "skills",
-    "inspect",
-    "budget",
-    "approvals",
-    "approval",
-    "new",
-    "exit",
-    "quit",
-];
+/// Command names for completion, derived from the single registry above.
+pub(crate) fn command_names() -> [&'static str; COMMANDS.len()] {
+    COMMANDS.map(|command| command.name)
+}
 
 pub(crate) enum Flow {
     Continue,
@@ -146,7 +157,7 @@ fn run_loop<R: BufRead, O: Write, E: Write>(
     out: &mut O,
     err: &mut E,
 ) -> JResult<()> {
-    writeln!(err, "{BANNER}").map_err(io_error)?;
+    writeln!(err, "{}", banner()).map_err(io_error)?;
     loop {
         write!(err, "jani> ").map_err(io_error)?;
         err.flush().map_err(io_error)?;
@@ -203,8 +214,13 @@ pub(crate) fn execute_command(
     let mut parts = body.splitn(2, char::is_whitespace);
     let name = parts.next().unwrap_or("").to_ascii_lowercase();
     let argument = parts.next().unwrap_or("").trim();
-    let text = match name.as_str() {
-        "help" | "?" => help_text(),
+    let name = COMMANDS
+        .iter()
+        .find(|command| command.aliases.contains(&name.as_str()))
+        .map(|command| command.name)
+        .unwrap_or(name.as_str());
+    let text = match name {
+        "help" => help_text(),
         "exit" | "quit" => return Ok((Flow::Exit, String::new())),
         "new" => {
             agent.reset_conversation();
@@ -311,17 +327,42 @@ mod tests {
 
     #[test]
     fn the_command_index_matches_the_names_list() {
-        let names: Vec<&str> = COMMANDS.iter().map(|command| command.name).collect();
-        assert_eq!(names, COMMAND_NAMES.to_vec());
         assert!(COMMANDS
             .iter()
             .any(|command| command.requires_argument && command.name == "approval"));
     }
 
     #[test]
+    fn every_listed_command_and_alias_dispatches() {
+        let root = workspace();
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        let catalog = Catalog::default();
+        let mut agent = test_agent(&cfg, &catalog);
+        for name in command_names()
+            .iter()
+            .chain(COMMANDS.iter().flat_map(|c| c.aliases.iter()))
+        {
+            if let Err(error) = execute_command(&mut agent, &catalog, &format!("/{name}")) {
+                assert!(!error.starts_with("unknown command"), "/{name}: {error}");
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn banner_lists_every_command() {
+        let banner = banner();
+        for name in command_names() {
+            assert!(banner.contains(&format!("/{name}")), "{banner}");
+        }
+    }
+
+    #[test]
     fn help_lists_every_command_and_the_task_fallback() {
         let help = help_text();
-        for name in COMMAND_NAMES {
+        for name in command_names() {
             assert!(help.contains(&format!("/{name}")), "{help}");
         }
         assert!(help.contains("/inspect [RUN_ID]"), "{help}");

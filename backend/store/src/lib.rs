@@ -10,7 +10,22 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_BYTES: u64 = 8_000_000;
+const DIR_NAME: &str = "attention";
 const DB_NAME: &str = "state.sqlite3";
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Durability policy shared by every store database: WAL for readers,
+/// FULL sync for crash safety, foreign keys enforced. The tables differ per
+/// store; the hardening preamble never does.
+pub(crate) fn harden(db: &Connection) -> Result<(), String> {
+    db.busy_timeout(BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=FULL;
+         PRAGMA foreign_keys=ON;",
+    )
+    .map_err(|e| e.to_string())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,20 +59,16 @@ pub struct Store {
 
 impl Store {
     pub fn open(state_dir: &Path) -> Result<Self, String> {
-        let dir = state_dir.join("attention");
+        let dir = state_dir.join(DIR_NAME);
         safe(state_dir)?;
         safe(&dir)?;
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(DB_NAME);
         safe(&path)?;
         let db = Connection::open(&path).map_err(|e| format!("open attention database: {e}"))?;
-        db.busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(|e| e.to_string())?;
+        harden(&db)?;
         db.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=FULL;
-             PRAGMA foreign_keys=ON;
-             CREATE TABLE IF NOT EXISTS schema_migrations (
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY, installed_at INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS attention_state (

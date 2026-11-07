@@ -67,9 +67,9 @@ impl Preview {
 }
 
 fn pem_hold_start(text: &str) -> Option<usize> {
-    let begin = text.rfind("-----BEGIN ")?;
+    let begin = text.rfind(crate::data::PEM_BEGIN)?;
     let tail = &text[begin..];
-    if tail.contains("PRIVATE KEY-----") && !tail.contains("-----END ") {
+    if tail.contains(crate::data::PEM_PRIVATE_KEY_TAIL) && !tail.contains(crate::data::PEM_END) {
         return Some(begin);
     }
     None
@@ -85,13 +85,12 @@ pub struct ModelGateway<'a> {
 }
 
 fn provider_from_base(base: &str) -> String {
-    base.trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .filter(|host| !host.is_empty())
-        .unwrap_or("openai-compatible")
-        .to_string()
+    let authority = crate::net::url_authority(base);
+    if authority.is_empty() {
+        "openai-compatible".into()
+    } else {
+        authority.to_string()
+    }
 }
 
 impl<'a> ModelGateway<'a> {

@@ -6,6 +6,52 @@ use std::path::Path;
 
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
+/// Canonical `EventInput.decision` values. Producers across four crates write
+/// these and mirror/evidence/recovery match them, so the vocabulary lives
+/// beside the event record rather than being re-typed at every call site.
+/// `EventInput.policy_revision` marker for records produced by the runtime
+/// itself rather than evaluated against a signed policy bundle.
+pub const RUNTIME_REVISION: &str = "runtime";
+
+pub mod decision {
+    pub const STARTED: &str = "started";
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
+    pub const DENY: &str = "deny";
+    pub const PERMIT: &str = "permit";
+    pub const EXECUTED: &str = "executed";
+    /// Internal informational events (e.g. `agent.model` profile switches)
+    /// that are neither permits nor denials of a governed action.
+    pub const ALLOWED: &str = "allowed";
+    /// Recorded when execution pauses on an unsigned approval grant.
+    pub const APPROVAL_REQUIRED: &str = "approval_required";
+}
+
+/// Canonical `EventInput.reason_code` values for codes produced inside the
+/// workspace. Codes produced by the policy engine live in `policy` itself.
+pub mod reason {
+    pub const RUN_STARTED: &str = "run_started";
+    pub const CANCELLED_BY_OPERATOR: &str = "cancelled_by_operator";
+    pub const MODEL_OR_GOVERNANCE_FAILURE: &str = "model_or_governance_failure";
+    pub const EMPTY_ANSWER: &str = "empty_answer";
+    pub const FINAL_ANSWER: &str = "final_answer";
+    pub const STEP_LIMIT: &str = "step_limit";
+    pub const OK: &str = "ok";
+    pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
+    pub const EXECUTION_FAILED: &str = "execution_failed";
+    pub const TOOL_REPORTED_ERROR: &str = "tool_reported_error";
+    pub const CONTRACT_DATA_CLASSIFICATION_DENIED: &str = "contract_data_classification_denied";
+    /// Recorded on `agent.model` events when the operator switches profile.
+    pub const MODEL_SWITCHED: &str = "model_switched";
+    /// Broker-side rejections before a call plan exists.
+    pub const UNKNOWN_TOOL: &str = "unknown_tool";
+    pub const INVALID_TOOL_ARGUMENTS: &str = "invalid_tool_arguments";
+    pub const INVALID_TOOL_REQUEST: &str = "invalid_tool_request";
+    /// Synthetic reason attached to deny-audit fallbacks when no policy code
+    /// exists yet (malformed arguments, unknown tools).
+    pub const INVALID_REQUEST: &str = "invalid_request";
+}
+
 pub struct Journal {
     file: File,
     previous_digest: String,
