@@ -1,6 +1,7 @@
 //! Jani MCP Governance Contract v1.
 //! Fail-closed signed contracts, initiator delegation and response attestations.
 //! MCP transport/OAuth are separate from this authority kernel.
+pub mod review;
 use jani_core::crypto;
 use jani_core::types::{sha256_hex, Classification};
 use serde::{Deserialize, Serialize};
