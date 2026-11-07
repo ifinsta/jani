@@ -20,7 +20,8 @@ build, search QUERY
 Every operation passes the governed native bridge or broker under tenant/task identity, policy and audit. A model invocation cannot widen granted rights.
 
 ## Contract and current limits
-- build hashes eligible safe files and extracts Rust-like symbols, saving path/hash/metadata, not file bodies.
+- build hashes eligible safe files and extracts bounded Rust/Python/JavaScript-like symbols and lexical import/module tokens, saving path/hash/metadata, not file bodies.
+- Unchanged older index records without dependency metadata are refreshed on the next build. The tokens are hints, not type-checked import edges or an interprocedural graph.
 - search uses bounded metadata scanning; it is not semantic embedding, FTS5 or compiler-resolved dependency tracking.
 - The scanner limits eligibility to 15,000 files, 1 MiB each, and excludes protected names and symlinks.
 - Every rebuild still enumerates files and checks hashes; there is no file watcher.
