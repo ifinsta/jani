@@ -547,6 +547,25 @@ fn verify_review_clearance(cfg: &Config, accept: bool) -> JResult<Value> {
 mod tests {
     use super::*;
     #[test]
+    fn review_receipt_can_only_be_accepted_once_per_tenant_task_nonce() {
+        let temp = std::env::temp_dir().join(format!(
+            "jani-review-ledger-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        consume_review_once(&temp, "tenant-a", "task-a", "nonce-a", "digest-a").unwrap();
+        assert!(consume_review_once(&temp, "tenant-a", "task-a", "nonce-a", "digest-a").is_err());
+        assert!(consume_review_once(&temp, "tenant-a", "task-a", "nonce-a", "different").is_err());
+        consume_review_once(&temp, "tenant-a", "task-a", "nonce-b", "digest-b").unwrap();
+        let paths = fs::read_dir(temp.join("review-clearance")).unwrap().count();
+        assert_eq!(paths, 2);
+        fs::remove_dir_all(temp).unwrap();
+    }
+    #[test]
     fn jsonrpc_sse_parser_refuses_missing_matching_response() {
         let id = json!("x");
         let body = "event: notification\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n\
