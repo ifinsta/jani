@@ -20,7 +20,9 @@ analyze PATH
 All native operations are task/tenant scoped and audited by the existing Rust policy bridge or model broker; outputs cannot grant additional rights.
 
 ## Behavior, caveats and faults
-- Analyze uses indexed path and extracted symbol relationships to approximate reverse dependencies and related tests.
+- Analyze uses indexed path, symbol and import/module tokens to approximate reverse dependencies and related tests.
+- Analyze rejects missing target entries, legacy metadata, modified/deleted/symlinked indexed files and other stale index hashes; rebuild the index before retrying.
+- Output includes evidence paths and their recorded SHA-256, `indexFresh=true` for the scanned records and `semanticCompleteness=false`; these are bounded source-level hints, not independent verification.
 - Findings are a heuristic impact set, not a complete Rust compiler dependency graph, proof of affected behavior or permission grant.
 - Each reported path should be anchored to its current metadata hash so stale index state is visible.
 - Changes involving generated files, dynamic resolution, macros, multi-language dependencies or build scripts may escape heuristic discovery.
