@@ -239,7 +239,13 @@ class SeparateProcessInteroperabilityTest(unittest.TestCase):
                 output=json.loads(result.stdout)
                 self.assertEqual(output['transport']['sent'],1)
                 self.assertEqual(output['transport']['pending'],0)
-                self.assertTrue(output['collected']['coverage']['complete'])
+                # The CI host may expose unrelated systemd units. Do not claim
+                # complete fleet coverage when the probe has no logs for those
+                # units; only the three deliberately configured fixtures must
+                # be covered. This asserts safety on both quiet and noisy hosts.
+                missing = set(output['collected']['coverage']['missing_services'])
+                self.assertTrue({'api', 'scheduler', 'database'}.isdisjoint(missing))
+                self.assertEqual(output['collected']['coverage']['complete'], not missing)
                 env=accepted(str(db))
                 self.assertEqual(len(env),1)
                 self.assertEqual({row['resource']['service.name'] for row in env[0]['logs']},{'api','scheduler','database'})
