@@ -19,6 +19,8 @@ jobs:
           python-version: '3.11'
       - name: Verify native dependency intelligence before unrelated service suites
         run: cargo test -p jani-native
+      - name: Verify signed independent review clearance
+        run: cargo test -p jani-mcp
       - run: python -m unittest discover -s synthetic/tests -v
       - run: python -m unittest discover -s tests -p 'test_release_catalog.py' -v
       - run: python tools/release_catalog.py check
