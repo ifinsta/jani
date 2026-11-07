@@ -1,4 +1,5 @@
 //! Standalone native toolkit, deliberately not a second ungated execution runtime.
+mod cargo_graph;
 mod memory;
 mod plans;
 mod repo;
@@ -76,7 +77,10 @@ pub fn run(
         "index" => match op {
             "build" => repo::build(&mut s),
             "search" => repo::search(&s, rest.first().ok_or("index search requires query")?),
-            _ => Err("index commands: build, search QUERY".into()),
+            "cargo-graph" => cargo_graph::import(
+                &s, rest.first().ok_or("index cargo-graph requires RELATIVE_METADATA_JSON")?
+            ),
+            _ => Err("index commands: build, search QUERY, cargo-graph RELATIVE_METADATA_JSON".into()),
         },
         "context" => memory::context(&mut s, op, rest),
         "planner" => plans::planner(&mut s, op, rest, human_approved),
