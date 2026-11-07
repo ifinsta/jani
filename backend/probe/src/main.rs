@@ -64,7 +64,7 @@ fn run_captured(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let Some(mut pipe) = child.stdout.take() else {
+    let Some(pipe) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
         return Err(std::io::Error::other("no output pipe"));
