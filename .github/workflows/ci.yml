@@ -38,7 +38,14 @@ jobs:
       - run: cargo run -p jani-check
       - run: cargo test -p jani-claims
       - run: python tools/doccheck.py
-      - run: cargo run -p jani-claims -- check
+      - name: Check source-backed documentation claims
+        id: claims
+        run: cargo run -p jani-claims -- check
+      - name: Diagnose stale claims without bypassing the gate
+        if: steps.claims.outcome == 'failure'
+        run: |
+          cargo run -p jani-claims -- sync
+          git diff -- claims/index.json claims/OPEN.md
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
       - run: cargo build --release -p jani
