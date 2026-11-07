@@ -227,6 +227,9 @@ pub fn command(cfg: &Config) -> JResult<Value> {
 
 fn command_inner(cfg: &Config) -> JResult<Value> {
     let sub = cfg.sub.as_deref().ok_or("MCP subcommand required")?;
+    if sub == "review-verify" {
+        return verify_review_clearance(cfg);
+    }
     if !matches!(sub, "verify" | "authorize" | "call" | "validate-response") {
         return Err("CONTRACT_UNSUPPORTED_OPERATION".into());
     }
@@ -398,6 +401,87 @@ fn command_inner(cfg: &Config) -> JResult<Value> {
     )?;
     audit(cfg, &action, true, "MCP_RESPONSE_VERIFIED")?;
     Ok(result)
+}
+
+/// Offline, explicitly human-initiated verification; no network access,
+/// user-only commit or automatic approval. The trusted key specifications must
+/// come from the operator's protected Jani configuration, not an agent prompt.
+fn verify_review_clearance(cfg: &Config) -> JResult<Value> {
+    let identity = identity::load(cfg)?;
+    if !identity.verified || identity.subject_type != "human" {
+        return Err("REVIEW_VERIFIED_HUMAN_REQUIRED".into());
+    }
+    let task = cfg.task_id.as_deref().ok_or("REVIEW_TASK_REQUIRED")?;
+    let expected = json_file(
+        cfg.mcp_input_path.as_deref().ok_or("REVIEW_EXPECTED_CONTEXT_REQUIRED")?,
+        MAX_ARGS,
+    )?;
+    let receipt_value = json_file(
+        cfg.mcp_response_path.as_deref().ok_or("REVIEW_RECEIPT_REQUIRED")?,
+        MAX_JSON,
+    )?;
+    let receipt: jani_mcp::review::Clearance =
+        serde_json::from_value(receipt_value).map_err(|_| "REVIEW_RECEIPT_MALFORMED")?;
+    let required = |name: &str| -> JResult<&str> {
+        expected.get(name).and_then(Value::as_str).ok_or_else(|| {
+            format!("REVIEW_EXPECTED_{name}_REQUIRED")
+        })
+    };
+    let expected_tenant = required("tenant")?;
+    let expected_task = required("taskId")?;
+    if expected_tenant != identity.tenant || expected_task != task {
+        return Err("REVIEW_IDENTITY_SCOPE_MISMATCH".into());
+    }
+    if cfg.mcp_receipt_keys.is_empty() {
+        return Err("REVIEW_TRUST_KEYS_REQUIRED".into());
+    }
+    let engine = PolicyEngine::load(cfg)?;
+    let digest = sha256_hex(
+        serde_json::to_string(&expected).map_err(|e| e.to_string())?.as_bytes(),
+    );
+    let request = ActionRequest {
+        task_id: task.into(),
+        invocation_id: new_id("review-verify"),
+        tenant_id: identity.tenant.clone(),
+        principal_id: identity.principal.clone(),
+        action: "mcp.review-clearance.verify".into(),
+        resource: format!("mcp:review:{task}"),
+        effect: Effect::Read,
+        risk: RiskTier::R1,
+        arguments_digest: digest,
+        idempotency_key: None,
+    };
+    if engine.evaluate(cfg, &request).decision != Decision::Permit {
+        return Err("REVIEW_POLICY_DENIED".into());
+    }
+    let evidence_digest = jani_mcp::review::verify(
+        &receipt,
+        &jani_mcp::review::Expected {
+            tenant: expected_tenant,
+            task_id: expected_task,
+            author: required("author")?,
+            base_commit: required("baseCommit")?,
+            head_commit: required("headCommit")?,
+            policy_sha256: required("policySha256")?,
+            catalog_sha256: required("catalogSha256")?,
+            review_sha256: required("reviewSha256")?,
+            runtime_sha256: required("runtimeSha256")?,
+            regression_sha256: required("regressionSha256")?,
+            now: now_unix(),
+            trusted_keys: &cfg.mcp_receipt_keys,
+        },
+    )?;
+    audit(cfg, "mcp.review-clearance.verify", true, "REVIEW_SIGNATURE_VERIFIED")?;
+    Ok(json!({
+        "signatureVerified":true,
+        "receiptDigest":evidence_digest,
+        "taskId":task,
+        "headCommit":receipt.head_commit,
+        "tenant":identity.tenant,
+        "finalActionPerformed":false,
+        "replayLedgerUpdated":false,
+        "humanCommitRequired":true
+    }))
 }
 
 #[cfg(test)]
