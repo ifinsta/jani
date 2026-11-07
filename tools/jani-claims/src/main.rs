@@ -424,6 +424,13 @@ fn review_queue(root: &Path) -> Result<Value, String> {
    "candidates":review,
    "instructions":"Read each documented statement and current source before concluding anything. Submit quoted source evidence to claims/agent-reviews/*.json using the Jani agent reviewer protocol. Do not claim an AI verdict is verified."}))
 }
+/// Git checkout conversion can change CRLF without changing documentation.
+/// Reject invalid UTF-8 while comparing canonical LF bytes on every platform.
+fn read_claims_normalized(path: &Path) -> Result<Vec<u8>, String> {
+    let raw = fs::read(path).map_err(|e| e.to_string())?;
+    let text = String::from_utf8(raw).map_err(|_| "invalid UTF-8 in claims report".to_string())?;
+    Ok(text.replace("\r\n", "\n").into_bytes())
+}
 fn run() -> Result<(), String> {
     let mut a = env::args().skip(1);
     let cmd = a.next().unwrap_or_else(|| "check".into());
@@ -455,9 +462,8 @@ fn run() -> Result<(), String> {
         }
         "scan" => println!("{md}"),
         "check" | "strict" => {
-            if fs::read(root.join("claims/index.json")).map_err(|e| e.to_string())? != index
-                || fs::read(root.join("claims/OPEN.md")).map_err(|e| e.to_string())?
-                    != md.as_bytes()
+            if read_claims_normalized(&root.join("claims/index.json"))? != index
+                || read_claims_normalized(&root.join("claims/OPEN.md"))? != md.as_bytes()
             {
                 return Err("claims register stale; run cargo run -p jani-claims -- sync".into());
             }
@@ -482,6 +488,20 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claims_check_canonicalizes_git_checkout_line_endings_only() {
+        let root = std::env::temp_dir().join(format!("claims-eol-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("report.json");
+        fs::write(&file, b"{\r\n  \"a\": 1\r\n}\r\n").unwrap();
+        assert_eq!(read_claims_normalized(&file).unwrap(), b"{\n  \"a\": 1\n}\n");
+        fs::write(&file, b"{\r  \"a\": 1}\r").unwrap();
+        assert_ne!(read_claims_normalized(&file).unwrap(), b"{\n  \"a\": 1}\n");
+        fs::write(&file, [0xffu8]).unwrap();
+        assert!(read_claims_normalized(&file).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn anchored_claim_checks_source() {
         let root = std::env::temp_dir().join(format!("claims-test-{}", std::process::id()));
