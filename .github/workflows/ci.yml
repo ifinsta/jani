@@ -42,7 +42,7 @@ jobs:
         id: claims
         run: cargo run -p jani-claims -- check
       - name: Diagnose stale claims without bypassing the gate
-        if: steps.claims.outcome == 'failure'
+        if: failure() && steps.claims.outcome == 'failure'
         run: |
           cargo run -p jani-claims -- sync
           git diff -- claims/index.json claims/OPEN.md
