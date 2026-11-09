@@ -20,6 +20,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 - [PRODUCT EXECUTION PROGRAMME](PRODUCT_EXECUTION_PROGRAM.md) — phase gates, acceptance criteria and evidence
 - [COMPONENT CONTRACTS](COMPONENT_CONTRACTS.md)
 - [PROJECT CONTRACT](PROJECT_CONTRACT.md)
+- [LAB — signed self-improvement experiments](LAB.md)
 - [RELEASE ACCEPTANCE](RELEASE_ACCEPTANCE.md)
 
 ## Core, security and lifecycle
