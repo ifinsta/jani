@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,8 +22,8 @@ VERSION = "jani-lab/v1"
 MAX_FILES = 20000
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_BYTES = 512 * 1024 * 1024
-IGNORE_DIRS = frozenset({".git", ".jani", "target", "__pycache__", "node_modules"})
-SKIP_FILES = frozenset({".env", ".netrc", "id_rsa", "id_ed25519"})
+IGNORE_DIRS = frozenset({".git", ".jani", "target", "__pycache__", "node_modules", ".ssh", ".aws", ".kube", "secrets"})
+SKIP_FILES = frozenset({".env", ".netrc", ".npmrc", "id_rsa", "id_ed25519", "credentials.txt"})
 RESULT = re.compile(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;")
 
 class TrialError(Exception):
