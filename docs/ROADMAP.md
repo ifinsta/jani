@@ -23,6 +23,11 @@ tests: []
 - Add hardened plugin execution SDK and fuller MCP interop while retaining source-side human commit rules.
 ## Phase 3 — Operated service
 - Secure backups, multi-node state/leases, observability, incident containment, support targets and progressive deployment.
+## Self-improvement lab (partial implementation)
+- Signed, matched, three-repeat advisory trial comparisons and Mirror-grounded proposals are available through \`jani lab\`.
+- Still required: isolated independent test execution, verifier key lifecycle, durable evidence and experiment registry, source patch generation, external review clearance and controlled promotion/rollback.
+- Signed self-reported test counts alone never establish production readiness; a separate trusted executor must run the test suite and attest results.
+
 ## Release gate
 - No phase becomes implemented solely from a completed plan, proposal, synthetic corpus or AI review. Require independently verified behavior and negative tests.
 
