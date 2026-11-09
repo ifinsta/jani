@@ -18,7 +18,7 @@ jani lab evaluate trial-pair.json --lab-key verifier:ED25519_PUBLIC_KEY_HEX \
   --state-dir .jani
 ```
 
-The command requires the original Mirror finding to still be present in a verified Jani audit journal. Enterprise mode additionally requires a signed identity/policy permitting `lab.evaluate` on `lab:run:RUN_ID`.
+The command requires the original Mirror finding to still be present in a verified Jani audit journal. Enterprise mode additionally requires a signed identity/policy permitting `lab.evaluate` on both `lab:tenant:TENANT_ID` (before the receipt is read) and `lab:run:RUN_ID` (for the named finding); `lab.propose` is separately granted on `lab:run:RUN_ID`.
 
 The result is `review_candidate` only when all receipts are signed and the three paired trials demonstrate either a stable regression fix or at least 10% faster completion in **every** pair, with at least ten tests each and no loss of tested coverage. Otherwise it is `not_proven` or a hard validation error. Both results carry `requiresHumanApproval: true` and `autoApplied: false`.
 
