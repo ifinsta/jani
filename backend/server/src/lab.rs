@@ -297,6 +297,15 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             }))
         }
         Some("evaluate") => {
+            // Authorize even reading a local receipt file before opening it.
+            // The per-run authorization below narrows this tenant-wide grant.
+            let claimed = identity::load(cfg)?;
+            authorize(
+                cfg,
+                "evaluate",
+                &format!("lab:tenant:{}", claimed.tenant),
+                Effect::Read,
+            )?;
             let path = cfg.positional.first().ok_or("lab evaluate requires FILE")?;
             let submission = input_json(Path::new(path))?;
             let tenant = authorize(
