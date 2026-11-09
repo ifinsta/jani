@@ -397,6 +397,55 @@ mod tests {
         assert!(evaluate(&s, &roots()).is_err());
     }
     #[test]
+    fn missing_trust_root_or_cross_tenant_receipt_is_rejected() {
+        assert!(evaluate(&submission(true), &[]).is_err());
+        let mut s = submission(true);
+        s.tenant_id = "other-tenant".into();
+        assert!(evaluate(&s, &roots()).is_err());
+    }
+
+    #[test]
+    fn identical_source_revision_is_not_a_comparison() {
+        let mut s = submission(false);
+        for receipt in &mut s.candidate {
+            receipt.proof.revision_sha256 = digest('a');
+            receipt.signature = sign_hex(SECRET, &receipt.proof.signing_bytes()).unwrap();
+        }
+        assert!(evaluate(&s, &roots()).is_err());
+    }
+
+    #[test]
+    fn skipped_test_regression_is_denied_even_with_valid_signatures() {
+        let mut s = submission(false);
+        s.candidate[0].proof.skipped = 1;
+        s.candidate[0].proof.passed = 19;
+        let bytes = s.candidate[0].proof.signing_bytes();
+        s.candidate[0].signature = sign_hex(SECRET, &bytes).unwrap();
+        assert!(evaluate(&s, &roots()).is_err());
+    }
+
+    #[test]
+    fn replayed_trial_proof_cannot_replace_a_repetition() {
+        let mut s = submission(false);
+        s.candidate[2] = s.candidate[1].clone();
+        assert!(evaluate(&s, &roots()).is_err());
+    }
+
+    #[test]
+    fn invalid_test_counts_and_incomplete_evidence_fail_closed() {
+        let mut s = submission(false);
+        s.candidate[0].proof.passed = 9;
+        let signed = s.candidate[0].proof.signing_bytes();
+        s.candidate[0].signature = sign_hex(SECRET, &signed).unwrap();
+        assert!(evaluate(&s, &roots()).is_err());
+        let mut s = submission(false);
+        s.candidate[0].proof.completed = false;
+        let signed = s.candidate[0].proof.signing_bytes();
+        s.candidate[0].signature = sign_hex(SECRET, &signed).unwrap();
+        assert!(evaluate(&s, &roots()).is_err());
+    }
+
+    #[test]
     fn no_benefit_is_not_proven() {
         let mut s = submission(false);
         for c in &mut s.candidate {
