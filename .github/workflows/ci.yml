@@ -23,6 +23,7 @@ jobs:
         run: cargo test -p jani-mcp
       - run: python -m unittest discover -s synthetic/tests -v
       - run: python -m unittest discover -s tests -p 'test_release_catalog.py' -v
+      - run: python -m unittest discover -s tools -p 'test_lab_runner.py' -v
       - run: python tools/release_catalog.py check
       - name: JSMT/1 real TLS mTLS interoperability tests (Linux only)
         if: runner.os == 'Linux'
