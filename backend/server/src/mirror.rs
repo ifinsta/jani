@@ -29,7 +29,7 @@ fn run_arg(cfg: &Config, index: usize) -> JResult<&str> {
     Ok(id)
 }
 
-fn read_journal(cfg: &Config) -> JResult<Vec<crate::types::AuditEvent>> {
+pub(crate) fn read_journal(cfg: &Config) -> JResult<Vec<crate::types::AuditEvent>> {
     let path = cfg.state_dir.join(journal::JOURNAL_FILE);
     match fs::symlink_metadata(&path) {
         Ok(meta) => {
