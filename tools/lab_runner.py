@@ -44,7 +44,8 @@ def copy_and_digest(source: Path, dest: Path) -> str:
     hasher = hashlib.sha256(b"jani-lab/source-tree/v1\0")
     count = 0
     total = 0
-    dest.mkdir(mode=0o700, parents=True)
+    dest.mkdir(mode=0o755, parents=True)
+    dest.chmod(0o755)  # bind-mounted snapshot must be readable by UID 65534
     for parent, directories, files in os.walk(source, followlinks=False):
         directories.sort()
         files.sort()
@@ -76,8 +77,12 @@ def copy_and_digest(source: Path, dest: Path) -> str:
             hasher.update(hashlib.sha256(data).digest())
             out = dest / rel
             out.parent.mkdir(parents=True, exist_ok=True)
+            for part in (out.parent, *out.parent.parents):
+                if part == dest.parent:
+                    break
+                part.chmod(0o755)
             out.write_bytes(data)
-            out.chmod(item.stat().st_mode & 0o777)
+            out.chmod((item.stat().st_mode & 0o111) | 0o444)
     if count == 0:
         raise TrialError("empty experiment tree")
     return hasher.hexdigest()
