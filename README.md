@@ -12,6 +12,8 @@ Jani is an open-source, Rust-native coding agent for working inside a Git worktr
 
 **Development direction:** [product and execution excellence programme](docs/PRODUCT_EXECUTION_PROGRAM.md) · [engineering roadmap](docs/ROADMAP.md) · [release acceptance](docs/RELEASE_ACCEPTANCE.md). For Windows contributors, [the phase-1 verification script](tools/verify_tui_phase1.ps1) runs the source gates and terminal probe without installing or publishing.
 
+**Self-improvement experiments (limited):** [Jani Lab](docs/LAB.md) exposes evidence-linked hypotheses and comparison of independent signed test receipts. It cannot execute trials, sign evidence, approve patches or deploy. The feature is advisory and not production-certified.
+
 **Separate experimental track:** [Sentinel probe/gateway guide](docs/PROBE_GATEWAY_GUIDE.md) · [open JSMT/1 protocol](protocol/jsmt/v1/SPEC.md) · [operational release gates](docs/SENTINEL_OPERATIONS.md). Source exists for experimental components; do not assume fleet monitoring coverage or released client/gateway binaries. The only currently published agent binary is for Windows. [Release catalogue](releases/README.md).
 
 ## Choose your path
