@@ -140,6 +140,7 @@ pub struct Config {
     pub contract_path: Option<PathBuf>,
     pub policy_path: Option<PathBuf>,
     pub policy_keys: Vec<String>,
+    pub lab_keys: Vec<String>,
     pub identity_path: Option<PathBuf>,
     pub state_dir: PathBuf,
     pub sandbox_mode: SandboxMode,
@@ -234,6 +235,8 @@ USAGE:
   jani mirror inspect|critique|recommendations|record RUN_ID [OPTIONS]
   jani mirror workflows|history [OPTIONS]
   jani mirror compare RUN_A RUN_B [OPTIONS]
+  jani lab propose RUN_ID [OPTIONS]
+  jani lab evaluate SIGNED_TRIALS.json --lab-key ID:HEX [OPTIONS]
   jani mcp verify|authorize|call|validate-response OP RESOURCE [OPTIONS]
   jani native TOOL OPERATION [ARGUMENTS] [--task TASK] [OPTIONS]
   jani update check|install|watch [OPTIONS]   Verified release-channel delivery
@@ -250,6 +253,7 @@ OPTIONS:
   --contract FILE         JSON work contract (can only restrict, never grant)
   --policy FILE           Signed organization policy bundle (required in enterprise)
   --policy-key KEY        Trusted policy/manifest key, ID:HEX or HEX; repeatable
+  --lab-key ID:HEX        Independent verifier public key; repeatable
   --identity FILE         Signed identity assertion (required for enterprise runs)
   --state-dir PATH        Journal, approvals and receipts (default {state_dir})
   --sandbox MODE          off | auto | bwrap | windows-job (default off locally, auto in enterprise)
@@ -484,6 +488,7 @@ impl Config {
             contract_path: None,
             policy_path: None,
             policy_keys: Vec::new(),
+            lab_keys: Vec::new(),
             identity_path: None,
             state_dir: root.join(defaults::STATE_DIR_NAME),
             sandbox_mode: SandboxMode::Off,
@@ -857,7 +862,7 @@ impl Config {
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
                 | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
-                | "mcp" | "native" | "update" => {
+                | "mcp" | "native" | "lab" | "update" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -888,6 +893,7 @@ impl Config {
                 }
                 "--policy" => cfg.policy_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
                 "--policy-key" => cfg.policy_keys.push(take_value(args, &mut i, a)?),
+                "--lab-key" => cfg.lab_keys.push(take_value(args, &mut i, a)?),
                 "--identity" => {
                     cfg.identity_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
                 }
