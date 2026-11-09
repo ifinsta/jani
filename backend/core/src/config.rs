@@ -1173,6 +1173,22 @@ mod tests {
     }
 
     #[test]
+    fn lab_commands_and_trust_roots_parse_without_granting_execution() {
+        isolate();
+        let args: Vec<String> = [
+            "lab", "evaluate", "receipts.json",
+            "--lab-key", "verifier:abc123",
+        ].iter().map(|s| s.to_string()).collect();
+        let cfg = Config::from_args(&args).unwrap();
+        assert_eq!(cfg.command, "lab");
+        assert_eq!(cfg.sub.as_deref(), Some("evaluate"));
+        assert_eq!(cfg.positional, vec!["receipts.json"]);
+        assert_eq!(cfg.lab_keys, vec!["verifier:abc123"]);
+        assert!(!cfg.allow_write);
+        assert!(!cfg.allow_exec);
+    }
+
+    #[test]
     fn subcommand_operands_are_not_reparsed_as_commands() {
         let args: Vec<String> = ["native", "simulator", "run", "42", "--tenant", "team-1"]
             .iter()
