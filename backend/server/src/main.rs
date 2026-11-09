@@ -7,6 +7,7 @@ mod attention;
 mod broker;
 mod exec;
 mod gateway;
+mod lab;
 mod http;
 mod mcp;
 mod mirror;
@@ -55,6 +56,9 @@ fn run() -> JResult<()> {
     // Mirror works on recorded evidence without model credentials or skill discovery.
     if cfg.command == "mirror" {
         return print_json(&mirror::command(&cfg)?);
+    }
+    if cfg.command == "lab" {
+        return print_json(&lab::command(&cfg)?);
     }
     if cfg.command == "mcp" {
         return print_json(&mcp::command(&cfg)?);
