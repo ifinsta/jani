@@ -392,7 +392,8 @@ mod tests {
         assert!(evaluate(&s, &roots()).is_err());
         let mut s = submission(false);
         s.candidate[1].proof.suite_sha256 = digest('f');
-        s.candidate[1].signature = sign_hex(SECRET, &s.candidate[1].proof.signing_bytes()).unwrap();
+        let signed = s.candidate[1].proof.signing_bytes();
+        s.candidate[1].signature = sign_hex(SECRET, &signed).unwrap();
         assert!(evaluate(&s, &roots()).is_err());
     }
     #[test]
