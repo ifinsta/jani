@@ -60,6 +60,9 @@ impl IdentityAssertion {
             return Err("identity requires principal and tenant".into());
         }
         let now = now_unix();
+        if self.expires_at <= self.issued_at {
+            return Err("identity assertion has an invalid lifetime".into());
+        }
         if self.expires_at <= now {
             return Err("identity assertion has expired".into());
         }
@@ -101,6 +104,43 @@ impl VerifiedIdentity {
     }
 }
 
+/// Explicit identity trust is purpose-separated from every other configured
+/// trust domain. Legacy deployments without identity keys keep the old policy
+/// root behavior for compatibility; managed issuers MUST configure identity keys.
+pub fn trust_keys(cfg: &Config) -> Result<&[String], String> {
+    if cfg.identity_keys.is_empty() {
+        return Ok(&cfg.policy_keys);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut identity_public = Vec::new();
+    for spec in &cfg.identity_keys {
+        let (id, key) = crypto::parse_key_spec(spec)?;
+        if !seen.insert(id) || identity_public.contains(&key.to_bytes()) {
+            return Err("duplicate identity trust key or identifier".into());
+        }
+        identity_public.push(key.to_bytes());
+    }
+    for spec in [
+        &cfg.policy_keys,
+        &cfg.plugin_keys,
+        &cfg.lab_keys,
+        &cfg.mcp_contract_keys,
+        &cfg.mcp_delegation_keys,
+        &cfg.mcp_receipt_keys,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let (_, key) = crypto::parse_key_spec(spec)?;
+        if identity_public.contains(&key.to_bytes()) {
+            return Err(
+                "identity trust key must not be reused for another authority domain".into(),
+            );
+        }
+    }
+    Ok(&cfg.identity_keys)
+}
+
 pub fn load(cfg: &Config) -> Result<VerifiedIdentity, String> {
     let Some(path) = cfg.identity_path.as_ref() else {
         if cfg.mode == RuntimeMode::Enterprise {
@@ -109,7 +149,7 @@ pub fn load(cfg: &Config) -> Result<VerifiedIdentity, String> {
         return Ok(VerifiedIdentity::local(cfg));
     };
     let assertion = load_assertion(path)?;
-    assertion.verify(&cfg.policy_keys)?;
+    assertion.verify(trust_keys(cfg)?)?;
     if assertion.tenant != cfg.tenant {
         return Err(format!(
             "identity tenant '{}' does not match requested tenant '{}'",
@@ -187,5 +227,52 @@ mod tests {
         a.expires_at = now_unix().saturating_sub(1);
         a.sign(&secret, "default").unwrap();
         assert!(a.verify(&[format!("default:{public}")]).is_err());
+    }
+    #[test]
+    fn explicit_identity_key_is_not_shared_authority() {
+        let mut cfg = Config::baseline();
+        let identity_secret = "11".repeat(32);
+        let policy_secret = "22".repeat(32);
+        let identity_public = public_key_hex(&identity_secret).unwrap();
+        cfg.identity_keys = vec![format!("identity:{identity_public}")];
+        cfg.policy_keys = vec![format!(
+            "policy:{}",
+            public_key_hex(&policy_secret).unwrap()
+        )];
+        let mut valid = assertion();
+        valid.sign(&identity_secret, "identity").unwrap();
+        assert!(valid.verify(trust_keys(&cfg).unwrap()).is_ok());
+        assert!(valid.verify(&cfg.policy_keys).is_err());
+        valid.sign(&policy_secret, "policy").unwrap();
+        assert!(valid.verify(trust_keys(&cfg).unwrap()).is_err());
+        for domain in 0..6 {
+            let mut invalid = cfg.clone();
+            let key = vec![format!("alias:{identity_public}")];
+            match domain {
+                0 => invalid.policy_keys = key,
+                1 => invalid.plugin_keys = key,
+                2 => invalid.lab_keys = key,
+                3 => invalid.mcp_contract_keys = key,
+                4 => invalid.mcp_delegation_keys = key,
+                _ => invalid.mcp_receipt_keys = key,
+            }
+            assert!(trust_keys(&invalid).is_err());
+        }
+        cfg.identity_keys.push(format!("alias:{identity_public}"));
+        assert!(trust_keys(&cfg).is_err());
+    }
+
+    #[test]
+    fn legacy_identity_keys_remain_compatible_and_invalid_lifetime_fails() {
+        let mut cfg = Config::baseline();
+        let secret = "33".repeat(32);
+        cfg.policy_keys = vec![format!("default:{}", public_key_hex(&secret).unwrap())];
+        let mut a = assertion();
+        a.sign(&secret, "default").unwrap();
+        assert!(a.verify(trust_keys(&cfg).unwrap()).is_ok());
+        a.issued_at = now_unix() + 60;
+        a.expires_at = a.issued_at;
+        a.sign(&secret, "default").unwrap();
+        assert!(a.verify(trust_keys(&cfg).unwrap()).is_err());
     }
 }
