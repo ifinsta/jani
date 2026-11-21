@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+mod session_intent;
+pub use session_intent::{IssueSession, SessionIntent};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -143,6 +146,7 @@ impl DispatchStore {
             evidence TEXT,at INTEGER NOT NULL);",
         )
         .map_err(sql)?;
+        session_intent::setup(&db)?;
         Ok(Self { db })
     }
     // Administrative bootstrap only; intentionally not an agent-facing operation.
@@ -306,20 +310,36 @@ impl DispatchStore {
         Ok(rows)
     }
 
-    // Trusted IDP/admin revocation; admission and subsequent effects recheck membership.
+    // Administrative revocation and intent invalidation happen in one
+    // IMMEDIATE transaction, not in a preflight read and subsequent write.
     pub fn disable(&mut self, tenant: &str, department: &str, principal: &str) -> Result<()> {
-        if self
-            .db
+        let tx = self.tx()?;
+        if tx
             .execute(
-                "UPDATE member SET enabled=0 WHERE tenant=?1 AND department=?2 AND principal=?3",
+                "UPDATE member SET enabled=0
+             WHERE tenant=?1 AND department=?2 AND principal=?3 AND enabled=1",
                 params![tenant, department, principal],
             )
             .map_err(sql)?
             != 1
         {
-            return Err("unknown member".into());
+            return Err("unknown or already disabled member".into());
         }
-        Ok(())
+        // Any member revocation also cancels sessions for plans on which
+        // that principal was the maker or independent checker. The next
+        // transaction cannot claim their stale authorizations.
+        tx.execute(
+            "UPDATE session_intent SET state='revoked'
+             WHERE tenant=?1 AND department=?2 AND state='issued'
+             AND (principal=?3 OR EXISTS (
+                  SELECT 1 FROM lease
+                  WHERE lease.tenant=session_intent.tenant
+                    AND lease.task=session_intent.task
+                    AND (lease.maker=?3 OR lease.approver=?3)))",
+            params![tenant, department, principal],
+        )
+        .map_err(sql)?;
+        tx.commit().map_err(sql)
     }
     fn tx(&mut self) -> Result<Transaction<'_>> {
         self.db
@@ -666,6 +686,12 @@ impl DispatchStore {
         tx.execute(
             "UPDATE lease SET state='revoked' WHERE tenant=?1 AND task=?2",
             params![scope.0, task],
+        )
+        .map_err(sql)?;
+        tx.execute(
+            "UPDATE session_intent SET state='revoked'
+             WHERE tenant=?1 AND task=?2 AND epoch=?3 AND state='issued'",
+            params![scope.0, task, epoch],
         )
         .map_err(sql)?;
         Self::event(&tx, &l.offer, actor, "revoked", None, now)?;
