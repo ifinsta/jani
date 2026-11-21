@@ -780,7 +780,7 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
                 results.push(state.json());
                 continue;
             }
-            match install_target(&state.path, &bytes, &release) {
+            match install_target(&state.path, &bytes, &release, state.restart_required) {
                 Ok(result) => {
                     installed += 1;
                     results.push(result);
@@ -855,7 +855,12 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
     })
 }
 
-fn install_target(path: &Path, bytes: &[u8], release: &Release) -> JResult<Value> {
+fn install_target(
+    path: &Path,
+    bytes: &[u8],
+    release: &Release,
+    restart_required: bool,
+) -> JResult<Value> {
     let previous = binary_version(path).ok();
     let name = path
         .file_name()
@@ -901,9 +906,7 @@ fn install_target(path: &Path, bytes: &[u8], release: &Release) -> JResult<Value
         "newVersion": release.version,
         "status": "installed",
         "updateAvailable": false,
-        "restartRequired": current_exe()
-            .and_then(|exe| fs::canonicalize(path).ok().map(|target| target == exe))
-            .unwrap_or(false),
+        "restartRequired": restart_required,
         "sha256": release.artifact.sha256,
         "bytes": bytes.len(),
         "backup": backup.map(|path| path.display().to_string()),
