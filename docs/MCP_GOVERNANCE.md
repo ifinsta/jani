@@ -139,6 +139,43 @@ Even if a trusted issuer signs a grant containing `records.update`, Jani refuses
 - This slice does not yet offer MCP tools directly inside the LLM-managed tool palette: **only the governed Jani MCP CLI entry point may invoke them**. This avoids routing unverified sensitive results back into the model until source-to-model classification inheritance is implemented.
 - There is no autonomous record commit, payment release or privilege promotion.
 
+## Experimental IRONCLAD dispatch and banking conformance
+
+The single-host `jani_store::dispatch` state machine separates scoped manager
+proposal, supervisor approval, operator admission/submission, reviewer decision,
+and auditor access. A trusted host must authenticate caller identities, configure
+memberships and issuer keys, independently obtain the expected assignment
+context, and invoke the native assignment verifier inside its transactional
+admission callback. The admitted lease is shortened to the verified signature's
+expiry. Nonces are consumed atomically with admission; stale and revoked
+assignments cannot submit results. A running revoked task becomes uncertain,
+not automatically reofferable. Review requires a different scoped principal and
+separate evidence digest, but the trusted host must verify the evidence itself.
+
+The store is a local library, not a network authorization service or an OS
+isolation boundary. Workers must not access its database or bootstrap APIs.
+Role names supplied by a worker are not authentication. Administrative
+membership revocation is rechecked before admission and submission. There is
+no cross-node consensus, external-effect atomicity, process termination, or
+production bank commit capability in this slice.
+
+The MCP verifier also rejects disclosure after delegation expiry, response
+receipts extending beyond delegation expiry, and changed authorization context
+digests. The synthetic source fixture verifies exact tenant/record scope and
+signs responses; the real CLI is exercised offline under a narrowly scoped
+signed enterprise policy. No live HTTPS or OAuth source conformance is implied.
+
+Run the 20-family, 2,000-case parameterized adversarial matrix (100 fixture
+contexts per family) and lifecycle tests with:
+
+```bash
+cargo test --locked -p jani --test ironclad_dispatch -- --nocapture
+```
+
+Set `IRONCLAD_MATRIX_REPORT` to a trusted output path to retain individual
+expected and actual decisions. The matrix is not 2,000 unique autonomous
+coding assignments, and does not measure live model reasoning.
+
 ## Recommended required validation
 
 ```bash

@@ -1,0 +1,40 @@
+{
+  "cases": 2000,
+  "failed": 0,
+  "families": {
+    "assignment-agent": 100,
+    "assignment-contract-bytes": 100,
+    "assignment-epoch": 100,
+    "assignment-expired": 100,
+    "assignment-forged": 100,
+    "assignment-task": 100,
+    "assignment-tenant": 100,
+    "assignment-valid": 100,
+    "mcp-cross-resource": 100,
+    "mcp-read-valid": 100,
+    "mcp-receipt-after-grant-expiry": 100,
+    "mcp-receipt-beyond-grant": 100,
+    "mcp-receipt-tamper": 100,
+    "mcp-receipt-unfiltered": 100,
+    "mcp-receipt-valid": 100,
+    "mcp-receipt-wrong-key": 100,
+    "mcp-role": 100,
+    "mcp-unknown-field": 100,
+    "mcp-unsigned": 100,
+    "mcp-user-commit": 100
+  },
+  "passed": 2000,
+  "seconds": 23.591721625,
+  "suite": "parameterized-native-adversarial-matrix",
+  "system": "Runpod Linux 2 vCPU/8 GB",
+  "rust_workspace": {
+    "passed": 305,
+    "failed": 0,
+    "ignored": 0,
+    "suites": 18
+  },
+  "clippy_exit": 0,
+  "matrix_sha256": "98648ee5936f06cfaf2dadcbaef87a5e4c922f1e2fbd9ad03b2c96ce79dca1ca",
+  "workspace_log_sha256": "864d2ed66f75f81524e84da7b5075b1670efcdc8b0566f7b88f993d61a91bfd5",
+  "scope": "Parameterized fixture contexts; native kernels and offline CLI. No live model, bank, OAuth or HTTPS source call."
+}
