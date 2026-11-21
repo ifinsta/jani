@@ -47,6 +47,11 @@ pub struct Lease {
     pub approver: Option<String>,
     pub evidence: Option<String>,
 }
+pub struct Promotion {
+    pub offer: Offer,
+    pub nonce: String,
+    pub expires: u64,
+}
 pub struct Review<'a> {
     pub expected: &'a str,
     pub review_digest: &'a str,
@@ -528,6 +533,85 @@ impl DispatchStore {
         Self::event(&tx, &l.offer, actor, "admit", None, now)?;
         tx.commit().map_err(sql)
     }
+    /// Promote a *separately approved* planning assignment to one running
+    /// signed execution, with atomic nonce consumption and lease fencing.
+    /// The trusted host must obtain a current Hivewire ownership snapshot and
+    /// independently verify Jani's signed assignment, human identity, contract,
+    /// policy and workspace before returning a promotion. Workers must never
+    /// access this API, the database or trust roots.
+    pub fn promote_planning<F>(
+        &mut self,
+        scope: (&str, &str),
+        task: &str,
+        epoch: u64,
+        actor: &str,
+        now: u64,
+        verify: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&Offer) -> Result<Promotion>,
+    {
+        let tx = self.tx()?;
+        let previous = Self::get(&tx, scope.0, task)?;
+        if previous.offer.department != scope.1
+            || previous.offer.context != PLANNING_CONTEXT
+            || previous.offer.operator != actor
+        {
+            return Err("execution promotion is not a scoped planning offer".into());
+        }
+        Self::live(&previous, epoch, now, "approved")?;
+        Self::role(&tx, &previous.offer, actor, Role::Operator)?;
+        Self::role(&tx, &previous.offer, &previous.maker, Role::Manager)?;
+        let checker = previous
+            .approver
+            .as_deref()
+            .ok_or("missing independent approval")?;
+        Self::role(&tx, &previous.offer, checker, Role::Supervisor)?;
+        if actor == checker || actor == previous.maker || checker == previous.maker {
+            return Err("independent maker checker and operator required".into());
+        }
+        let proposal = verify(&previous.offer)?;
+        let promoted = &proposal.offer;
+        if promoted.tenant != previous.offer.tenant
+            || promoted.department != previous.offer.department
+            || promoted.task != previous.offer.task
+            || promoted.operator != previous.offer.operator
+            || promoted.epoch != epoch
+            || !id(&promoted.agent)
+            || promoted.agent == "planning-only"
+            || promoted.context == PLANNING_CONTEXT
+            || promoted.context.len() > 16384
+            || !id(&proposal.nonce)
+            || proposal.expires <= now
+            || proposal.expires > previous.offer.expires
+            || proposal.expires != promoted.expires
+        {
+            return Err("signed promotion context or expiry mismatch".into());
+        }
+        let context: serde_json::Value =
+            serde_json::from_str(&promoted.context).map_err(|_| "invalid promoted context")?;
+        if context["tenant"] != promoted.tenant
+            || context["principal"] != promoted.operator
+            || context["taskId"] != promoted.task
+            || context["agent"] != promoted.agent
+            || context["epoch"] != epoch
+        {
+            return Err("promoted assignment context differs from stored authority".into());
+        }
+        let body = serde_json::to_string(promoted).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO nonce(tenant,nonce) VALUES(?1,?2)",
+            params![scope.0, proposal.nonce],
+        )
+        .map_err(sql)?;
+        tx.execute(
+            "UPDATE lease SET body=?3,state='running' WHERE tenant=?1 AND task=?2",
+            params![scope.0, task, body],
+        )
+        .map_err(sql)?;
+        Self::event(&tx, promoted, actor, "signed-promote", None, now)?;
+        tx.commit().map_err(sql)
+    }
     // Revocation fences further local result commits; it is not OS termination.
     // Running assignments become uncertain, never automatically eligible for retry.
     pub fn revoke(
@@ -835,6 +919,157 @@ mod dashboard_tests {
             .is_err());
         assert_eq!(db.audit("bank-a", "T2", &a).unwrap().0.state, "proposed");
     }
+    fn promoted(previous: &Offer, nonce: &str) -> Promotion {
+        let mut offer = previous.clone();
+        offer.agent = "jani-observer".into();
+        offer.context = serde_json::json!({
+            "tenant":offer.tenant,"principal":offer.operator,"taskId":offer.task,
+            "agent":offer.agent,"epoch":offer.epoch
+        })
+        .to_string();
+        offer.expires = 150;
+        Promotion {
+            offer,
+            nonce: nonce.into(),
+            expires: 150,
+        }
+    }
+
+    #[test]
+    fn signed_promotion_is_atomic_fenced_and_requires_independent_approval() {
+        let temp = Temp::new();
+        let path = temp.0.join("p.db");
+        let mut db = DispatchStore::open(&path).unwrap();
+        let m = enroll(&mut db, "bank-a", "risk", "m", Role::Manager);
+        let s = enroll(&mut db, "bank-a", "risk", "s", Role::Supervisor);
+        let o = enroll(&mut db, "bank-a", "risk", "o", Role::Operator);
+        let reviewer = enroll(&mut db, "bank-a", "risk", "r", Role::Reviewer);
+        let audit = enroll(&mut db, "bank-a", "risk", "a", Role::Auditor);
+        let mut plan = offer("bank-a", "risk", "T1", &o);
+        plan.context = PLANNING_CONTEXT.into();
+        db.propose(&m, &plan, 100).unwrap();
+        assert!(db
+            .promote_planning(("bank-a", "risk"), "T1", 1, &o, 101, |p| Ok(promoted(
+                p, "nonce-x"
+            )))
+            .is_err());
+        db.approve_planning(("bank-a", "risk"), "T1", 1, &s, 101)
+            .unwrap();
+        for i in 0..8 {
+            let result = db.promote_planning(
+                (
+                    if i == 0 { "bank-b" } else { "bank-a" },
+                    if i == 1 { "sales" } else { "risk" },
+                ),
+                "T1",
+                if i == 2 { 2 } else { 1 },
+                if i == 3 { &m } else { &o },
+                102,
+                |p| {
+                    if i == 4 {
+                        return Err("invalid signature".into());
+                    }
+                    let mut v = promoted(p, "nonce-x");
+                    if i == 5 {
+                        v.offer.agent = "forged".into();
+                    }
+                    if i == 6 {
+                        v.expires = 201;
+                        v.offer.expires = 201;
+                    }
+                    if i == 7 {
+                        v.offer.context = serde_json::json!({"tenant":"other"}).to_string();
+                    }
+                    Ok(v)
+                },
+            );
+            assert!(result.is_err(), "bad promotion variant {i} accepted");
+        }
+        assert_eq!(
+            db.audit("bank-a", "T1", &audit).unwrap().0.state,
+            "approved"
+        );
+        db.promote_planning(("bank-a", "risk"), "T1", 1, &o, 102, |p| {
+            Ok(promoted(p, "nonce-x"))
+        })
+        .unwrap();
+        assert!(db
+            .promote_planning(("bank-a", "risk"), "T1", 1, &o, 103, |p| Ok(promoted(
+                p, "nonce-x"
+            )))
+            .is_err());
+        assert!(db
+            .submit("bank-a", "T1", 1, &o, &"a".repeat(64), 150)
+            .is_err());
+        db.submit("bank-a", "T1", 1, &o, &"a".repeat(64), 120)
+            .unwrap();
+        assert!(db
+            .review(
+                "bank-a",
+                "T1",
+                1,
+                &o,
+                Review {
+                    expected: &"a".repeat(64),
+                    review_digest: &"b".repeat(64),
+                    accept: true
+                },
+                121
+            )
+            .is_err());
+        db.review(
+            "bank-a",
+            "T1",
+            1,
+            &reviewer,
+            Review {
+                expected: &"a".repeat(64),
+                review_digest: &"b".repeat(64),
+                accept: true,
+            },
+            121,
+        )
+        .unwrap();
+        let (l, n) = db.audit("bank-a", "T1", &audit).unwrap();
+        assert_eq!(l.state, "accepted");
+        assert_eq!(n, 5);
+        drop(db);
+        let db = DispatchStore::open(&path).unwrap();
+        assert_eq!(
+            db.audit("bank-a", "T1", &audit).unwrap().0.state,
+            "accepted"
+        );
+    }
+
+    #[test]
+    fn promotion_fails_closed_after_revocation_and_never_resurrects_uncertain() {
+        let temp = Temp::new();
+        let mut db = DispatchStore::open(&temp.0.join("p.db")).unwrap();
+        let m = enroll(&mut db, "bank-a", "risk", "m", Role::Manager);
+        let s = enroll(&mut db, "bank-a", "risk", "s", Role::Supervisor);
+        let o = enroll(&mut db, "bank-a", "risk", "o", Role::Operator);
+        let mut plan = offer("bank-a", "risk", "T1", &o);
+        plan.context = PLANNING_CONTEXT.into();
+        db.propose(&m, &plan, 100).unwrap();
+        db.approve_planning(("bank-a", "risk"), "T1", 1, &s, 101)
+            .unwrap();
+        db.disable("bank-a", "risk", &s).unwrap();
+        assert!(db
+            .promote_planning(("bank-a", "risk"), "T1", 1, &o, 102, |p| Ok(promoted(
+                p, "nonce-y"
+            )))
+            .is_err());
+        assert!(db
+            .enroll_identity("bank-a", "risk", (ISS, RP, "s"), Role::Supervisor)
+            .is_err());
+        db.disable("bank-a", "risk", &o).unwrap();
+        assert!(db
+            .promote_planning(("bank-a", "risk"), "T1", 1, &o, 102, |p| Ok(promoted(
+                p, "nonce-y"
+            )))
+            .is_err());
+    }
+
     #[test]
     fn planning_marker_is_never_executable_and_cannot_touch_live_offers() {
         let temp = Temp::new();
