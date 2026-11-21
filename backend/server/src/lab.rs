@@ -87,7 +87,11 @@ impl Proof {
             &self.evaluator_sha256,
             &self.environment_sha256,
         ] {
-            if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            if digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
                 return Err("trial digest must be a lower-case 64-digit SHA-256".into());
             }
         }
@@ -119,8 +123,11 @@ struct Submission {
 
 fn input_json(path: &Path) -> JResult<Submission> {
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_INPUT_BYTES {
-        return Err("Lab input must be a regular, non-symlinked JSON file of at most 64 KiB".into());
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_INPUT_BYTES
+    {
+        return Err(
+            "Lab input must be a regular, non-symlinked JSON file of at most 64 KiB".into(),
+        );
     }
     let bytes = fs::read(path).map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_INPUT_BYTES {
@@ -159,7 +166,9 @@ fn evaluate(submission: &Submission, keys: &[String]) -> JResult<Value> {
         || submission.baseline.len() != REPEATS
         || submission.candidate.len() != REPEATS
     {
-        return Err("Lab requires a valid finding and exactly three baseline/candidate trials".into());
+        return Err(
+            "Lab requires a valid finding and exactly three baseline/candidate trials".into(),
+        );
     }
     if keys.is_empty() {
         return Err("Lab requires independent verifier trust roots (--lab-key)".into());
@@ -224,7 +233,9 @@ fn evaluate(submission: &Submission, keys: &[String]) -> JResult<Value> {
             "reason": reason,
             "signatures": submission.baseline.iter().chain(&submission.candidate)
                 .map(|r| r.signature.as_str()).collect::<Vec<_>>(),
-        })).map_err(|e| e.to_string())?.as_slice()
+        }))
+        .map_err(|e| e.to_string())?
+        .as_slice(),
     );
     Ok(json!({
         "version": VERSION,
@@ -272,7 +283,10 @@ fn authorize(cfg: &Config, sub: &str, resource: &str, effect: Effect) -> JResult
 pub fn command(cfg: &Config) -> JResult<Value> {
     match cfg.sub.as_deref() {
         Some("propose") => {
-            let run = cfg.positional.first().ok_or("lab propose requires RUN_ID")?;
+            let run = cfg
+                .positional
+                .first()
+                .ok_or("lab propose requires RUN_ID")?;
             if !types::valid_id(run, 128) {
                 return Err("invalid Lab run ID".into());
             }
@@ -321,9 +335,11 @@ pub fn command(cfg: &Config) -> JResult<Value> {
             // journal and reconstruct the finding from the trusted Mirror rules.
             let events = mirror::read_journal(cfg)?;
             let report = jani_mirror::run_report(&events, &tenant, &submission.source_run_id)?;
-            if !report.findings.iter().any(|f| {
-                f.id == submission.finding_id && !f.evidence.is_empty()
-            }) {
+            if !report
+                .findings
+                .iter()
+                .any(|f| f.id == submission.finding_id && !f.evidence.is_empty())
+            {
                 return Err("Lab finding is not backed by current verified audit evidence".into());
             }
             evaluate(&submission, &cfg.lab_keys)
@@ -338,7 +354,9 @@ mod tests {
     use jani_core::crypto::{public_key_hex, sign_hex};
 
     const SECRET: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-    fn digest(ch: char) -> String { ch.to_string().repeat(64) }
+    fn digest(ch: char) -> String {
+        ch.to_string().repeat(64)
+    }
     fn make(iteration: u8, candidate: bool, fix: bool) -> SignedTrial {
         let proof = Proof {
             version: VERSION.into(),
@@ -358,11 +376,16 @@ mod tests {
             completed: true,
         };
         let signature = sign_hex(SECRET, &proof.signing_bytes()).unwrap();
-        SignedTrial { proof, key_id: "verifier".into(), signature }
+        SignedTrial {
+            proof,
+            key_id: "verifier".into(),
+            signature,
+        }
     }
     fn submission(fix: bool) -> Submission {
         Submission {
-            version: VERSION.into(), tenant_id: "tenant-one".into(),
+            version: VERSION.into(),
+            tenant_id: "tenant-one".into(),
             source_run_id: "run-1".into(),
             finding_id: "mir-abcdefabcdefabcdefabcdef".into(),
             baseline: (0..3).map(|i| make(i, false, fix)).collect(),
