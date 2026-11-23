@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "synthetic_only": true,
+  "model_calls": 0,
+  "source_records": 1000000,
+  "reviewed": 1000000,
+  "flagged": 37449,
+  "clear": 962551,
+  "flag_counts": {
+    "missing_kyc": 10309,
+    "negative_balance_test_rule": 9900,
+    "duplicate_reference": 17698
+  },
+  "wrong_masks": 0,
+  "partitions": 1000,
+  "source_sha256": "b159939247877bc2aaa974c39abef51a15c5d2cbe9eff3c57530cd16b64cfc66",
+  "checks": {
+    "rollback_no_partial_results": true,
+    "expired_lease_reclaimed": true,
+    "stale_worker_rejected": true,
+    "duplicate_commit_rejected": true,
+    "every_record_reviewed_once": true,
+    "exact_expected_flags": true,
+    "no_source_mutation": true,
+    "all_partitions_done": true,
+    "all_evidence_present": true,
+    "database_integrity": true
+  },
+  "seconds": 18.409
+}
