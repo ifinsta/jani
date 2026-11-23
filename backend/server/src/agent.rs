@@ -869,16 +869,19 @@ mod tests {
     }
 
     fn workspace() -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "jani-agent-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let sequence = NEXT_WORKSPACE.fetch_add(1, Ordering::Relaxed);
+            let root =
+                std::env::temp_dir().join(format!("jani-agent-{}-{sequence}", std::process::id()));
+            match std::fs::create_dir(&root) {
+                Ok(()) => return root,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("cannot create test workspace {}: {error}", root.display()),
+            }
+        }
     }
 
     #[test]
