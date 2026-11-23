@@ -3,6 +3,7 @@
 //! The domain contracts are generated from repository-root contract/ by build.rs.
 
 pub mod approvals;
+pub mod assignment;
 pub mod budget;
 pub mod config;
 pub mod contract;
