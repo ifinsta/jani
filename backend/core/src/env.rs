@@ -22,6 +22,7 @@ pub const EXEC_PROGRAMS: &str = "JANI_EXEC_PROGRAMS";
 pub const POLICY: &str = "JANI_POLICY";
 pub const POLICY_KEYS: &str = "JANI_POLICY_KEYS";
 pub const IDENTITY: &str = "JANI_IDENTITY";
+pub const IDENTITY_KEYS: &str = "JANI_IDENTITY_KEYS";
 pub const CONTRACT: &str = "JANI_CONTRACT";
 pub const STATE_DIR: &str = "JANI_STATE_DIR";
 pub const SANDBOX: &str = "JANI_SANDBOX";

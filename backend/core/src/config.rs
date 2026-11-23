@@ -140,6 +140,7 @@ pub struct Config {
     pub contract_path: Option<PathBuf>,
     pub policy_path: Option<PathBuf>,
     pub policy_keys: Vec<String>,
+    pub identity_keys: Vec<String>,
     pub lab_keys: Vec<String>,
     pub identity_path: Option<PathBuf>,
     pub state_dir: PathBuf,
@@ -253,6 +254,7 @@ OPTIONS:
   --contract FILE         JSON work contract (can only restrict, never grant)
   --policy FILE           Signed organization policy bundle (required in enterprise)
   --policy-key KEY        Trusted policy/manifest key, ID:HEX or HEX; repeatable
+  --identity-key KEY      Separate identity-only trust key, ID:HEX or HEX; repeatable
   --lab-key ID:HEX        Independent verifier public key; repeatable
   --identity FILE         Signed identity assertion (required for enterprise runs)
   --state-dir PATH        Journal, approvals and receipts (default {state_dir})
@@ -308,7 +310,7 @@ ENVIRONMENT:
   {e_exec_programs}         Optional extra test runners
   {e_skill_dirs}            Extra skill directories, path-list separated
   {e_mode}, {e_tenant}, {e_principal}, {e_purpose}
-  {e_policy}, {e_policy_keys}, {e_identity}, {e_contract}
+  {e_policy}, {e_policy_keys}, {e_identity}, {e_identity_keys}, {e_contract}
   {e_state_dir}, {e_sandbox}, {e_sandbox_net}
   {e_plugin_dir}, {e_plugin_keys}, {e_provider_region}, {e_provider_class}
   {e_settings}            Alternate settings file
@@ -363,6 +365,7 @@ verified backend is selected and attested.
         e_purpose = env::PURPOSE,
         e_policy = env::POLICY,
         e_policy_keys = env::POLICY_KEYS,
+        e_identity_keys = env::IDENTITY_KEYS,
         e_identity = env::IDENTITY,
         e_contract = env::CONTRACT,
         e_state_dir = env::STATE_DIR,
@@ -488,6 +491,7 @@ impl Config {
             contract_path: None,
             policy_path: None,
             policy_keys: Vec::new(),
+            identity_keys: Vec::new(),
             lab_keys: Vec::new(),
             identity_path: None,
             state_dir: root.join(defaults::STATE_DIR_NAME),
@@ -775,6 +779,9 @@ impl Config {
         cfg.policy_keys = env_nonempty(crate::env::POLICY_KEYS)
             .map(|v| split_list(&v))
             .unwrap_or_default();
+        cfg.identity_keys = env_nonempty(crate::env::IDENTITY_KEYS)
+            .map(|v| split_list(&v))
+            .unwrap_or_default();
         cfg.identity_path = env_nonempty(crate::env::IDENTITY).map(PathBuf::from);
         cfg.contract_path = env_nonempty(crate::env::CONTRACT).map(PathBuf::from);
         cfg.state_dir = env_nonempty(crate::env::STATE_DIR)
@@ -893,6 +900,7 @@ impl Config {
                 }
                 "--policy" => cfg.policy_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
                 "--policy-key" => cfg.policy_keys.push(take_value(args, &mut i, a)?),
+                "--identity-key" => cfg.identity_keys.push(take_value(args, &mut i, a)?),
                 "--lab-key" => cfg.lab_keys.push(take_value(args, &mut i, a)?),
                 "--identity" => {
                     cfg.identity_path = Some(PathBuf::from(take_value(args, &mut i, a)?))

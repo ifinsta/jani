@@ -116,6 +116,7 @@ Approvals stay external. A denied or approval-gated tool call reports the reques
 - `--allow-write` requires at least one explicit relative `--write-path`. There is no implicit full-repository editing.
 - `--allow-exec` permits only approved executable commands; `--exec-program` adds a constrained list of extra test runners.
 - `--mode enterprise`, `--policy`, `--policy-key`, `--identity` and `--contract` supply enterprise authorization. Missing or invalid authority is refused.
+- Managed identity issuers must configure dedicated `--identity-key ID:HEX` (repeatable, or `JANI_IDENTITY_KEYS`). When set, identity assertions verify only against these roots, not policy roots. Public-key reuse with policy, plugin, Lab or MCP trust domains is refused even under a different key ID. Without explicit identity keys, legacy policy-root verification remains available for compatibility. Keep all launch trust configuration and the signer outside agent control. Authentication alone does not authorize a task or action.
 - `--approve` in native planner verification is permitted only for a verified human identity.
 - `--sandbox-mode` and network restrictions must not be used to weaken required confinement. `jani sandbox doctor` reports support, not certification.
 
