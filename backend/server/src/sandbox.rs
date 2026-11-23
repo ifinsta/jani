@@ -10,6 +10,7 @@ pub enum Backend {
     None,
     #[cfg_attr(windows, allow(dead_code))]
     Bubblewrap(PathBuf),
+    #[cfg(windows)]
     WindowsJob,
 }
 
@@ -18,6 +19,7 @@ impl Backend {
         match self {
             Self::None => "none",
             Self::Bubblewrap(_) => "bubblewrap",
+            #[cfg(windows)]
             Self::WindowsJob => "windows-job",
         }
     }
@@ -215,6 +217,7 @@ impl<'a> SandboxManager<'a> {
                 cmd.args(args);
                 Ok((cmd, ProcessIsolation::Direct))
             }
+            #[cfg(windows)]
             Backend::WindowsJob => {
                 let mut cmd = Command::new(program);
                 cmd.args(args);

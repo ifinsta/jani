@@ -1176,9 +1176,15 @@ mod tests {
     fn lab_commands_and_trust_roots_parse_without_granting_execution() {
         isolate();
         let args: Vec<String> = [
-            "lab", "evaluate", "receipts.json",
-            "--lab-key", "verifier:abc123",
-        ].iter().map(|s| s.to_string()).collect();
+            "lab",
+            "evaluate",
+            "receipts.json",
+            "--lab-key",
+            "verifier:abc123",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let cfg = Config::from_args(&args).unwrap();
         assert_eq!(cfg.command, "lab");
         assert_eq!(cfg.sub.as_deref(), Some("evaluate"));
