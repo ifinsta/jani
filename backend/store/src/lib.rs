@@ -1,6 +1,7 @@
 //! Transactional single-host SQLite state and transition outbox.
 //! No network service or coordinator is required.
 //! External side effects are never claimed atomic with a SQLite commit.
+pub mod dispatch;
 pub mod mirror;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};

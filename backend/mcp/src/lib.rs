@@ -409,6 +409,19 @@ pub fn verify_response(
     keys: &[String],
     now: u64,
 ) -> Result<Value, String> {
+    // Authority can expire between authorization and response disclosure.
+    if grant.expires_at <= now {
+        return Err("DELEGATION_EXPIRED_OR_INVALID".into());
+    }
+    let mut original_call = call.clone();
+    original_call.request_digest.clear();
+    if call.contract_digest != contract.digest()?
+        || call.delegation_digest != grant.digest()?
+        || call.request_digest
+            != sha256_hex(&serde_json::to_vec(&original_call).map_err(|e| e.to_string())?)
+    {
+        return Err("CONTRACT_RESPONSE_VIOLATION: authorization context changed".into());
+    }
     let top = response.as_object().ok_or("CONTRACT_RESPONSE_VIOLATION")?;
     if top.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || top.get("error").is_some() {
         return Err("MCP_RPC_ERROR_OR_INVALID_RESPONSE".into());
@@ -457,6 +470,7 @@ pub fn verify_response(
         || receipt.entitlements != call.entitlements
         || receipt.expires_at <= now
         || receipt.expires_at > now.saturating_add(300)
+        || receipt.expires_at > grant.expires_at
         || !receipt.filtered
     {
         return Err("CONTRACT_RESPONSE_VIOLATION: incorrect scope or payload".into());
