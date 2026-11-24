@@ -1,9 +1,10 @@
 //! The authenticated reverse proxy to a person's own `jani ui`.
 //!
 //! Only `/` and `/api/*` are forwarded. The gateway adds the workspace token and
-//! a loopback `Origin`; it drops cookies and every other header, so the browser's
-//! siwi session cookie never reaches the workspace and the workspace's token
-//! never reaches the browser.
+//! a fixed `Origin`/`Host`; it drops cookies and every other header, so the
+//! browser's siwi session cookie never reaches the workspace and the workspace's
+//! token never reaches the browser. The workspace listens on a Unix socket in
+//! the person's own directory, so there is no network port to reach it by.
 
 use crate::{failure_response, App};
 use axum::{
@@ -13,10 +14,17 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::client::conn::http1;
+use hyper_util::rt::TokioIo;
 use serde_json::json;
-use siwi_axum::SiwiUser;
+use std::{path::Path, time::Duration};
+use tokio::net::UnixStream;
 
 const MAX_BODY: usize = 64 * 1024;
+/// The fixed Host the workspace is told it is served as.
+const WORKSPACE_HOST: &str = "localhost";
 
 /// Paths a workspace serves to a browser. Anything else is not forwarded.
 pub fn allowed_path(path: &str) -> bool {
@@ -58,7 +66,38 @@ const FORWARD_RESPONSE: [HeaderName; 6] = [
     HeaderName::from_static("x-frame-options"),
 ];
 
-pub async fn forward(app: &App, user: &SiwiUser, req: Request) -> Response {
+async fn call(
+    socket: &Path,
+    request: hyper::Request<Full<Bytes>>,
+) -> Result<(StatusCode, HeaderMap, Bytes), String> {
+    let work = async {
+        let stream = UnixStream::connect(socket)
+            .await
+            .map_err(|e| format!("connect: {e}"))?;
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| format!("handshake: {e}"))?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let reply = sender
+            .send_request(request)
+            .await
+            .map_err(|e| format!("request: {e}"))?;
+        let (parts, body) = reply.into_parts();
+        let bytes = body
+            .collect()
+            .await
+            .map_err(|e| format!("body: {e}"))?
+            .to_bytes();
+        Ok::<_, String>((parts.status, parts.headers, bytes))
+    };
+    tokio::time::timeout(Duration::from_secs(60), work)
+        .await
+        .map_err(|_| "timed out".to_string())?
+}
+
+pub async fn forward(app: &App, sub: &str, req: Request) -> Response {
     let (parts, body) = req.into_parts();
     if !allowed_path(parts.uri.path()) {
         return (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response();
@@ -85,34 +124,42 @@ pub async fn forward(app: &App, user: &SiwiUser, req: Request) -> Response {
                 .into_response()
         }
     };
-    let endpoint = match app.manager.endpoint(&user.sub, app.sandbox).await {
+    let is_page = parts.method == Method::GET && parts.uri.path() == "/";
+    let endpoint = match app.manager.endpoint(sub).await {
         Ok(e) => e,
-        Err(f) => return failure_response(&f),
+        Err(f) => return failure_response(&f, is_page),
     };
-    let target = format!(
-        "http://127.0.0.1:{}{}",
-        endpoint.port,
-        parts
-            .uri
-            .path_and_query()
-            .map(|p| p.as_str())
-            .unwrap_or("/")
-    );
-    let mut out = app.client.request(parts.method.clone(), target);
+    let mut out = hyper::Request::builder()
+        .method(parts.method.clone())
+        .uri(
+            parts
+                .uri
+                .path_and_query()
+                .map(|p| p.as_str())
+                .unwrap_or("/"),
+        )
+        .header(header::HOST, WORKSPACE_HOST)
+        .header("x-jani-token", endpoint.token.as_str());
     for name in FORWARD_REQUEST {
         if let Some(v) = parts.headers.get(&name) {
             out = out.header(name, v);
         }
     }
-    out = out.header("X-Jani-Token", &endpoint.token);
     if parts.method == Method::POST {
-        out = out.header(
-            header::ORIGIN,
-            format!("http://127.0.0.1:{}", endpoint.port),
-        );
-        out = out.body(bytes);
+        out = out.header(header::ORIGIN, format!("http://{WORKSPACE_HOST}"));
     }
-    let reply = match out.send().await {
+    let Ok(request) = out.body(Full::new(if parts.method == Method::POST {
+        bytes
+    } else {
+        Bytes::new()
+    })) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "bad request"})),
+        )
+            .into_response();
+    };
+    let (status, headers, body) = match call(&endpoint.socket, request).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "workspace did not answer");
@@ -123,28 +170,17 @@ pub async fn forward(app: &App, user: &SiwiUser, req: Request) -> Response {
                 .into_response();
         }
     };
-    let status = StatusCode::from_u16(reply.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut headers = HeaderMap::new();
+    let mut kept = HeaderMap::new();
     for name in FORWARD_RESPONSE {
-        if let Some(v) = reply.headers().get(name.as_str()) {
+        if let Some(v) = headers.get(&name) {
             if let Ok(v) = HeaderValue::from_bytes(v.as_bytes()) {
-                headers.insert(name, v);
+                kept.insert(name, v);
             }
         }
     }
-    let body = match reply.bytes().await {
-        Ok(b) => b,
-        Err(_) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"error": "workspace_unreachable"})),
-            )
-                .into_response()
-        }
-    };
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = status;
-    *response.headers_mut() = headers;
+    *response.headers_mut() = kept;
     response
 }
 
@@ -154,8 +190,8 @@ mod tests {
 
     #[test]
     fn only_the_page_and_the_api_are_forwarded() {
-        for ok in ["/", "/api/overview", "/api/session?after=1"] {
-            assert!(allowed_path(ok.split('?').next().unwrap()), "{ok}");
+        for ok in ["/", "/api/overview", "/api/session"] {
+            assert!(allowed_path(ok), "{ok}");
         }
         for bad in [
             "/siwi/start",

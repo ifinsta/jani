@@ -14,7 +14,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, createHash } from "node:crypto";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ACCOUNTS_BIN = resolve(process.env.ACCOUNTS_BIN || join(HERE, "../../../accounts/target/debug/accounts-server"));
@@ -44,13 +44,16 @@ async function waitFor(url, child, ms = 30000) {
   }
 }
 
-export async function startStack({ gatewayEnv = {} } = {}) {
+export const keyOf = (sub) => createHash("sha256").update(`jani-cloud/v1:${sub}`).digest("hex").slice(0, 24);
+
+export async function startStack({ gatewayEnv = {}, files = {} } = {}) {
   for (const [bin, what] of [[ACCOUNTS_BIN, "accounts-server"], [GATEWAY_BIN, "jani-cloud"], [JANI_BIN, "jani"]]) {
     if (!existsSync(bin)) throw new Error(`missing ${what}: ${bin}`);
   }
   const dir = mkdtempSync(join(tmpdir(), "jani-cloud-e2e-"));
   // mkdtemp is 0700; per-person Unix users must be able to traverse to their own directory.
   chmodSync(dir, 0o711);
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
   const procs = [];
   const logs = { accounts: "", gateway: "", provider: "" };
   const stop = async () => {
@@ -133,11 +136,13 @@ export async function startStack({ gatewayEnv = {} } = {}) {
       RUST_LOG: "info",
       ...gatewayEnv,
     };
+    for (const [k, v] of Object.entries(gatewayEnvFull)) if (typeof v === "string") gatewayEnvFull[k] = v.replaceAll("{PROVIDER}", String(providerPort)).replaceAll("{APP}", String(appPort)).replaceAll("{DIR}", dir);
     const gateway = spawnLogged("gateway", GATEWAY_BIN, [], gatewayEnvFull);
     await waitFor(`${APP}/health`, gateway);
-    return { dir, data, logs, ACCOUNTS, APP, ISSUER, isRoot, janiBin: JANI_BIN, registration, gateway, sandbox, uidIsolation, stop };
+    return { dir, data, logs, ACCOUNTS, APP, ISSUER, isRoot, janiBin: JANI_BIN, registration, gateway, sandbox, uidIsolation, providerPort, appPort, stop };
   } catch (error) {
     await stop();
+    error.message += `\n--- gateway log ---\n${logs.gateway.replace(/\x1b\[[0-9;]*m/g, "").slice(0, 900)}`;
     throw error;
   }
 }

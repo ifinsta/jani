@@ -6,7 +6,8 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { startStack, USERS, PASSWORD } from "./harness.mjs";
+import { startStack, USERS, PASSWORD, keyOf } from "./harness.mjs";
+import { writeFileSync } from "node:fs";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 let stack, browser;
@@ -159,7 +160,7 @@ describe("jani-cloud with ifinsta accounts", () => {
         const top = readdirSync(root);
         for (const hidden of ["home", "root", "data", "var", "opt-host"]) assert.ok(!top.includes(hidden) || hidden === "var", `sandbox root exposes /${hidden}`);
         assert.ok(!top.includes("home"), "the host's /home is not visible");
-        assert.deepEqual(readdirSync(join(root, "work")).sort(), ["home", "repo", "state"], "only its own directory is mounted");
+        assert.deepEqual(readdirSync(join(root, "work")).sort(), ["home", "repo", "state", "ui.sock"], "only its own directory is mounted");
         assert.ok(!existsSync(join(root, stack.data)), "the gateway's data directory is not visible");
       }
       assert.equal(roots.length, 2);
@@ -298,4 +299,414 @@ describe("operating limits", () => {
       }
     });
   }
+});
+
+// ---- network isolation and resource limits -------------------------------
+
+const hasBwrap = (() => { try { execFileSync("which", ["bwrap"]); return true; } catch { return false; } })();
+const hasCgroup = existsSync("/sys/fs/cgroup/memory") || existsSync("/sys/fs/cgroup/cgroup.controllers");
+
+async function script(own, turns) {
+  const r = await fetch(`http://127.0.0.1:${own.providerPort}/__script`, { method: "POST", body: JSON.stringify({ turns }) });
+  assert.equal(r.status, 204);
+}
+
+// Send one turn from the page and wait for it to finish; return the transcript.
+async function turn(page, text, { timeout = 90000 } = {}) {
+  const before = await page.evaluate(async () => {
+    const r = await fetch("/api/session?after=-1");
+    if (!r.ok) throw new Error("session unavailable: " + r.status + " " + (await r.text()).slice(0, 120));
+    return (await r.json()).entries.length;
+  });
+  const sent = await page.evaluate(async (t) => (await fetch("/api/session/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: t }) })).status, text);
+  assert.equal(sent, 202);
+  const until = Date.now() + timeout;
+  for (;;) {
+    const s = await page.evaluate(async () => (await fetch("/api/session?after=-1")).json());
+    if (!s.busy && s.entries.length > before) return s.entries.slice(before);
+    if (Date.now() > until) throw new Error("turn did not finish");
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+// A probe is a pytest file the scripted model writes and runs inside the workspace.
+// Jani's tool `ok` only means "the command ran", so the result is read from the
+// JUnit report the probe leaves in the workspace, never from that flag.
+const probe = (name, code) => [
+  { tool: "write", args: { path: `out/${name}_test.py`, content: code } },
+  { tool: "command", args: { argv: ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", `--junitxml=out/${name}.xml`, `out/${name}_test.py`], timeout_secs: 90 } },
+  { final: "done" },
+];
+
+describe("network isolation and resource limits", { skip: !hasBwrap && "needs bubblewrap" }, () => {
+  let own, browserB, page;
+  before(async () => {
+    own = await startStack({
+      gatewayEnv: {
+        JANI_CLOUD_SANDBOX: "bwrap",
+        JANI_CLOUD_QUOTAS: "auto",
+        JANI_CLOUD_JANI_ARGS: "--allow-write --write-path out --allow-exec --exec-program python3 --api-base http://127.0.0.1:{PROVIDER}/v1 --model fake-1",
+        JANI_CLOUD_LIMIT_MEMORY_MB: "256",
+        JANI_CLOUD_LIMIT_PIDS: "128",
+        JANI_CLOUD_LIMIT_OPEN_FILES: "128",
+        JANI_CLOUD_LIMIT_DISK_MB: "20",
+        JANI_CLOUD_LIMIT_CPUS: "0.5",
+        JANI_CLOUD_DISK_CHECK_SECONDS: "1",
+      },
+    });
+    stack = own;
+    browserB = await chromium.launch();
+    page = await signInByRedirect(await browserB.newContext(), USERS.alice);
+  });
+  after(async () => {
+    await browserB?.close();
+    await own?.stop();
+  });
+
+  const outDir = () => join(own.data, "users", readdirSync(join(own.data, "users"))[0], "repo/out");
+  // What the probe really did: counts from its own JUnit report, or null if it never finished.
+  const report = (name) => {
+    const f = join(outDir(), `${name}.xml`);
+    if (!existsSync(f)) return null;
+    const attr = (k) => Number((readFileSync(f, "utf8").match(new RegExp(`${k}="(\\d+)"`)) || [])[1]);
+    return { tests: attr("tests"), failures: attr("failures"), errors: attr("errors"), skipped: attr("skipped") };
+  };
+  const detail = (name) => { try { return [...readFileSync(join(outDir(), `${name}.xml`), "utf8").matchAll(/<failure message="([^"]*)"/g)].map((m) => m[1].slice(0, 300)).join(" | "); } catch { return "no report"; } };
+  const passed = (name, tests) => assert.deepEqual(report(name), { tests, failures: 0, errors: 0, skipped: 0 }, `${name}: every check ran and passed. ${detail(name)}`);
+
+  test("the workspace has its own empty network namespace, and the host's is out of reach", async () => {
+    const pid = janiPids()[0];
+    const mine = (await import("node:fs")).readlinkSync(`/proc/${own.gateway.pid}/ns/net`);
+    const theirs = (await import("node:fs")).readlinkSync(`/proc/${pid}/ns/net`);
+    assert.notEqual(mine, theirs, "a different network namespace from the gateway's");
+    await script(own, [probe("net", `
+import os, socket, pytest
+def test_only_loopback_exists():
+    # /proc/net/dev is per network namespace: this is the workspace's own, not the host's.
+    names = [l.split(":")[0].strip() for l in open("/proc/net/dev").read().splitlines()[2:]]
+    assert names == ["lo"], names
+def test_the_hosts_loopback_ports_are_unreachable():
+    for port in (${own.appPort}, ${own.providerPort}):
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=2)
+def test_the_internet_is_unreachable_directly():
+    with pytest.raises(OSError):
+        socket.create_connection(("1.1.1.1", 80), timeout=2)
+`)]);
+    await turn(page, "check the network");
+    passed("net", 3);
+  });
+
+  test("the only way out is the allowlist proxy: the model provider, nothing else", async () => {
+    await script(own, [probe("egress", `
+import http.client, urllib.error, urllib.request, pytest
+def test_the_model_provider_is_reachable_through_the_proxy():
+    try:
+        urllib.request.urlopen("http://127.0.0.1:${own.providerPort}/", timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code in (404, 501), e.code      # the provider answered; the proxy let it through
+def test_another_host_is_refused_for_plain_http():
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen("http://example.test/", timeout=5)
+    assert e.value.code == 403 and b"egress denied" in e.value.read()
+def test_another_host_is_refused_for_https_tunnels():
+    with pytest.raises(OSError, match="403"):      # the proxy refuses the CONNECT
+        urllib.request.urlopen("https://example.test/", timeout=5)
+def test_localhost_by_name_is_not_the_allowed_literal():
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen("http://localhost:${own.appPort}/", timeout=5)
+    assert e.value.code == 403
+def test_the_gateway_port_is_not_allowed_even_as_a_literal():
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen("http://127.0.0.1:${own.appPort}/", timeout=5)
+    assert e.value.code == 403
+`)]);
+    await turn(page, "check egress");
+    passed("egress", 5);
+    assert.match(own.logs.gateway, /egress denied/, "denials are logged with the workspace");
+  });
+
+  test("a workspace over its memory limit is killed and the rest of the host is untouched", async () => {
+    await script(own, [probe("mem", `
+def test_allocate_far_more_than_the_limit():
+    open("out/mem_started", "w").close()
+    blocks = []
+    for _ in range(80):
+        blocks.append(bytearray(b"x") * (10 * 1024 * 1024))   # really written: 800 MB against a 256 MB limit
+`)]);
+    await turn(page, "use lots of memory");
+    assert.ok(existsSync(join(outDir(), "mem_started")), "the probe started");
+    assert.equal(report("mem"), null, "the probe was killed before it could finish, so it left no report");
+    const ok = await page.evaluate(async () => (await fetch("/api/overview")).status);
+    assert.equal(ok, 200, "the workspace itself survived its child being killed");
+  });
+
+  test("process, file-descriptor and file-size limits hold", async () => {
+    await script(own, [probe("limits", `
+import os, subprocess, pytest
+def test_cannot_start_unbounded_processes():
+    kids = []
+    try:
+        with pytest.raises(OSError):
+            for _ in range(2000):
+                kids.append(subprocess.Popen(["sleep", "30"]))
+        assert len(kids) < 2000
+    finally:
+        for k in kids:
+            k.kill()
+def test_open_file_limit():
+    fds = []
+    try:
+        with pytest.raises(OSError):
+            for _ in range(1000):
+                fds.append(os.open("/dev/null", os.O_RDONLY))
+    finally:
+        for fd in fds:
+            os.close(fd)
+def test_a_single_file_cannot_exceed_the_disk_limit():
+    # A sparse file: it hits the file-size limit without using any disk.
+    fd = os.open("big.bin", os.O_WRONLY | os.O_CREAT)
+    try:
+        os.lseek(fd, 25 * 1024 * 1024, os.SEEK_SET)
+        with pytest.raises(OSError):
+            os.write(fd, b"x")
+    finally:
+        os.close(fd)
+        os.remove("big.bin")
+`)]);
+    await turn(page, "hit the other limits");
+    passed("limits", 3);
+  });
+
+  test("CPU is held to the configured share", { skip: !hasCgroup && "needs a writable cgroup" }, async () => {
+    await script(own, [probe("cpu", `
+import time
+def test_busy_loop_gets_about_half_a_cpu():
+    wall0, cpu0 = time.time(), time.process_time()
+    while time.time() - wall0 < 4:
+        pass
+    wall, cpu = time.time() - wall0, time.process_time() - cpu0
+    assert cpu / wall < 0.8, (cpu, wall)      # limit is 0.5 CPU
+`)]);
+    await turn(page, "burn cpu");
+    passed("cpu", 1);
+  });
+
+  test("limits are visible on the host: the workspace sits in its own cgroup", { skip: !hasCgroup && "needs a writable cgroup" }, async () => {
+    const pid = janiPids()[0];
+    const cg = readFileSync(`/proc/${pid}/cgroup`, "utf8");
+    assert.match(cg, /jani-cloud\/[0-9a-f]{24}/, cg);
+    const limits = readFileSync(`/proc/${pid}/limits`, "utf8");
+    assert.match(limits, /Max open files\s+128\s+128/);
+    assert.match(limits, /Max core file size\s+0\s+0/);
+    assert.match(limits, /Max file size\s+20971520\s+20971520/);
+  });
+
+  test("filling the disk stops the workspace, explains why, and offers a clean start", async () => {
+    await script(own, [[
+      { tool: "write", args: { path: "out/fill_test.py", content: `
+def test_fill():
+    for i in range(9):
+        with open(f"filler{i}.bin", "wb") as f:
+            f.write(b"x" * (4 * 1024 * 1024))
+` } },
+      { tool: "command", args: { argv: ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "out/fill_test.py"], timeout_secs: 60 } },
+      { final: "filled" },
+    ]]);
+    // The watchdog may stop the workspace mid-turn, so do not wait for the turn to finish.
+    const sent = await page.evaluate(async () => (await fetch("/api/session/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "fill the disk" }) })).status);
+    assert.equal(sent, 202);
+    // The watchdog checks every second; the workspace is stopped once it is over 20 MB.
+    const cookie = (await page.context().cookies(own.APP)).map((c) => `${c.name}=${c.value}`).join("; ");
+    let res;
+    for (let i = 0; i < 40; i++) {
+      res = await fetch(own.APP + "/", { headers: { cookie } });
+      if (res.status === 507) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    assert.equal(res.status, 507, "over-quota workspaces are refused");
+    assert.match(await res.text(), /workspace is full/i);
+    const api = await fetch(own.APP + "/api/overview", { headers: { cookie } });
+    assert.equal(api.status, 507);
+    assert.equal((await api.json()).error, "storage_full");
+    // The only way back is to delete files: same-origin, and the journal is kept.
+    const denied = await fetch(own.APP + "/cloud/reset", { method: "POST", headers: { cookie, "content-type": "application/json", origin: "http://attacker.example", "x-siwi": "1" }, body: "{}" });
+    assert.equal(denied.status, 403);
+    const reset = await fetch(own.APP + "/cloud/reset", { method: "POST", headers: { cookie, "content-type": "application/json", origin: own.APP, "x-siwi": "1" }, body: "{}" });
+    assert.equal(reset.status, 200);
+    const again = await fetch(own.APP + "/", { headers: { cookie } });
+    assert.equal(again.status, 200, "the workspace starts again");
+    const dirs = readdirSync(join(own.data, "users"));
+    assert.ok(!existsSync(join(own.data, "users", dirs[0], "repo/filler0.bin")), "the files are gone");
+    assert.ok(existsSync(join(own.data, "users", dirs[0], "state/journal.jsonl")), "the audit journal is kept");
+  });
+});
+
+describe("negative control", { skip: !hasBwrap && "needs bubblewrap" }, () => {
+  test("the same probes FAIL when the network is shared, so a pass above means something", async () => {
+    const own = await startStack({
+      gatewayEnv: {
+        JANI_CLOUD_SANDBOX: "bwrap",
+        JANI_CLOUD_NET: "shared",
+        JANI_CLOUD_JANI_ARGS: "--allow-write --write-path out --allow-exec --exec-program python3 --api-base http://127.0.0.1:{PROVIDER}/v1 --model fake-1",
+      },
+    });
+    const b = await chromium.launch();
+    try {
+      stack = own;
+      const page = await signInByRedirect(await b.newContext(), USERS.alice);
+      await script(own, [probe("net", `
+import socket, pytest
+def test_the_hosts_loopback_ports_are_unreachable():
+    with pytest.raises(OSError):
+        socket.create_connection(("127.0.0.1", ${own.appPort}), timeout=2)
+`)]);
+      await turn(page, "check the network");
+      const user = readdirSync(join(own.data, "users"))[0];
+      const xml = readFileSync(join(own.data, "users", user, "repo/out/net.xml"), "utf8");
+      assert.match(xml, /failures="1"/, "with a shared network the gateway's port IS reachable, so the probe fails");
+    } finally {
+      await b.close();
+      await own.stop();
+    }
+  });
+});
+
+
+// ---- approvals -------------------------------------------------------------
+
+describe("approvals by a designated approver", () => {
+  let own, b, alice, bob, aliceSub, bobSub, approversFile;
+  const cookieOf = async (page) => (await page.context().cookies(own.APP)).map((c) => `${c.name}=${c.value}`).join("; ");
+  const me = (page) => page.evaluate(async () => (await fetch("/cloud/me")).json());
+  const aliceDir = () => join(own.data, "users", keyOf(aliceSub));
+  const store = () => JSON.parse(readFileSync(join(aliceDir(), "state/approvals.json"), "utf8"));
+
+  before(async () => {
+    own = await startStack({
+      gatewayEnv: {
+        JANI_CLOUD_JANI_ARGS: "--allow-write --write-path out --api-base http://127.0.0.1:{PROVIDER}/v1 --model fake-1",
+        JANI_CLOUD_SETTINGS: "{DIR}/settings.json",
+        JANI_CLOUD_APPROVERS_FILE: "{DIR}/approvers",
+      },
+      files: {
+        // Writes under out/ ask first, which is what puts an approval in the way.
+        "settings.json": JSON.stringify({ version: 1, permissions: { defaultMode: "default", allow: ["Read(./**)"], ask: ["Write(./out/**)"], deny: ["Read(./.env)"] } }),
+        approvers: "# nobody yet\n",
+      },
+    });
+    stack = own;
+    approversFile = join(own.dir, "approvers");
+    b = await chromium.launch();
+    alice = await signInByRedirect(await b.newContext(), USERS.alice);
+    bob = await signInByRedirect(await b.newContext(), USERS.bob);
+    aliceSub = (await me(alice)).sub;
+    bobSub = (await me(bob)).sub;
+  });
+  after(async () => {
+    await b?.close();
+    await own?.stop();
+  });
+
+  test("a held action waits for an approver, and the requester cannot approve it", async () => {
+    await script(own, [
+      [{ tool: "write", args: { path: "out/a.txt", content: "approved content" } }, { final: "held" }],
+      [{ tool: "write", args: { path: "out/a.txt", content: "approved content" } }, { final: "written" }],
+      [{ tool: "write", args: { path: "out/b.txt", content: "second" } }, { final: "held again" }],
+    ]);
+    await turn(alice, "write a.txt");
+    assert.ok(!existsSync(join(aliceDir(), "repo/out/a.txt")), "nothing was written while the approval is pending");
+    assert.equal(store().filter((r) => r.status === "pending").length, 1);
+    await alice.click("[data-v=graph]");
+    await alice.click("#dockTabs [data-t=approvals]");
+    await alice.waitForFunction(() => document.querySelector("#dockBody")?.textContent.includes("Waiting for an approver"));
+    assert.equal(await alice.locator("#dockBody .btn").count(), 0, "no Approve button for the person who asked");
+    const cookie = await cookieOf(alice);
+    assert.equal((await fetch(own.APP + "/cloud/approvals", { headers: { cookie } })).status, 403, "alice is not an approver");
+    assert.equal((await fetch(own.APP + "/cloud/approver", { headers: { cookie } })).status, 403);
+    assert.equal((await me(alice)).approver, false);
+  });
+
+  test("an unverified email address does not make anyone an approver", async () => {
+    writeFileSync(approversFile, `email:${USERS.bob}\n`);
+    const m = await me(bob);
+    assert.equal(m.emailVerified, false, "the development accounts are unverified");
+    assert.equal(m.approver, false, "so an email entry must not grant approval");
+  });
+
+  test("an approver named by subject sees the request and approves it in the approver page", async () => {
+    writeFileSync(approversFile, `# approvers\nsub:${bobSub}\n`);
+    assert.equal((await me(bob)).approver, true, "picked up without a restart");
+    await bob.reload();
+    await bob.waitForFunction(() => !document.querySelector("#apLink").hidden, null, { timeout: 20000 });
+    assert.match(await bob.textContent("#apLink"), /Approvals\s*\(1\)/, "a badge counts the waiting requests");
+    await bob.click("#apLink");
+    await bob.waitForSelector("[data-testid=approvals] table");
+    const row = (await bob.locator("[data-testid=approvals] tbody tr").first().textContent()).replace(/\s+/g, " ");
+    assert.match(row, new RegExp(USERS.alice), "shows who asked");
+    assert.match(row, /repo\.write/);
+    assert.match(row, /repo:out\/a\.txt/);
+    const id = store().find((r) => r.status === "pending").approvalId;
+    // Deciding takes two clicks, so one stray click cannot approve anything.
+    await bob.click(`[data-testid=approve-${id}]`);
+    assert.equal(store().find((r) => r.approvalId === id).status, "pending", "one click only arms it");
+    await bob.click(`[data-testid=approve-${id}]`);
+    await bob.waitForFunction(() => document.querySelector("#status")?.textContent === "Approved.");
+    const decided = store().find((r) => r.approvalId === id);
+    assert.equal(decided.status, "approved");
+    assert.equal(decided.approver, `ifinsta-${keyOf(bobSub)}`, "the store records who approved");
+    if (own.uidIsolation) assert.equal(statSync(join(aliceDir(), "state/approvals.json")).uid, statSync(aliceDir()).uid, "the file is still alice's, not root's");
+  });
+
+  test("the requester attaches the decision and the action runs once", async () => {
+    await alice.click("#dockTabs [data-t=approvals]");
+    await alice.waitForFunction(() => /Attach to session/.test(document.querySelector("#dockBody")?.textContent), null, { timeout: 15000 });
+    await alice.click("#dockBody .btn:has-text('Attach to session')");
+    await alice.waitForSelector(".k-note:has-text('Attached approval')", { timeout: 15000 });
+    await turn(alice, "write a.txt now");
+    assert.equal(readFileSync(join(aliceDir(), "repo/out/a.txt"), "utf8"), "approved content");
+    assert.equal(store().find((r) => r.capability === "repo.write").status, "consumed", "the approval is single use");
+  });
+
+  test("every decision is recorded in a hash-chained audit journal", async () => {
+    const audit = join(own.data, "audit");
+    const out = execFileSync(own.janiBin, ["audit", "verify", "--state-dir", audit], { encoding: "utf8" });
+    assert.equal(JSON.parse(out).ok, true, "the chain verifies");
+    const events = readFileSync(join(audit, "journal.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const e = events.find((x) => x.action === "approval.decide");
+    assert.equal(e.actor_id, `ifinsta-${keyOf(bobSub)}`);
+    assert.equal(e.decision, "permit");
+    assert.equal(e.approval_id, store().find((r) => r.capability === "repo.write").approvalId);
+  });
+
+  test("an approver cannot approve their own request, and the store says so", async () => {
+    writeFileSync(approversFile, `sub:${bobSub}\nsub:${aliceSub}\n`);
+    await turn(alice, "write b.txt");
+    const pending = store().find((r) => r.status === "pending");
+    assert.ok(pending, "a second request is waiting");
+    const cookie = await cookieOf(alice);
+    const list = await (await fetch(own.APP + "/cloud/approvals", { headers: { cookie } })).json();
+    assert.equal(list.pending.find((p) => p.approvalId === pending.approvalId).own, true, "flagged as her own");
+    const res = await fetch(own.APP + "/cloud/approvals/decide", { method: "POST", headers: { cookie, origin: own.APP, "content-type": "application/json" }, body: JSON.stringify({ user: keyOf(aliceSub), id: pending.approvalId, approve: true }) });
+    assert.equal(res.status, 409);
+    assert.match((await res.json()).message, /separation of duties/i);
+    assert.equal(store().find((r) => r.approvalId === pending.approvalId).status, "pending", "unchanged");
+  });
+
+  test("deciding needs a same-origin request and a well-formed target", async () => {
+    const cookie = await cookieOf(bob);
+    const pending = store().find((r) => r.status === "pending");
+    const post = (extra, body) => fetch(own.APP + "/cloud/approvals/decide", { method: "POST", headers: { cookie, "content-type": "application/json", ...extra }, body: JSON.stringify(body) });
+    const ok = { user: keyOf(aliceSub), id: pending.approvalId, approve: false };
+    assert.equal((await post({}, ok)).status, 403, "no Origin");
+    assert.equal((await post({ origin: "http://attacker.example" }, ok)).status, 403, "foreign Origin");
+    assert.equal((await post({ origin: own.APP, "sec-fetch-site": "cross-site" }, ok)).status, 403);
+    for (const bad of [{ ...ok, user: "../../etc" }, { ...ok, user: "z".repeat(24) }, { ...ok, id: "../x" }]) {
+      assert.equal((await post({ origin: own.APP }, bad)).status, 409, JSON.stringify(bad));
+    }
+    assert.equal(store().find((r) => r.approvalId === pending.approvalId).status, "pending", "nothing changed");
+    // And rejecting works, and is recorded as a denial.
+    assert.equal((await post({ origin: own.APP }, ok)).status, 200);
+    assert.equal(store().find((r) => r.approvalId === pending.approvalId).status, "rejected");
+  });
 });

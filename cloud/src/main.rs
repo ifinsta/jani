@@ -4,10 +4,15 @@
 //! person is proxied to their own `jani ui` process. The browser never sees that
 //! process's token and cannot reach any other person's.
 
+mod approvals;
+mod auth;
+mod cgroup;
+mod egress;
 mod proxy;
 mod workspace;
 
 use anyhow::{Context, Result};
+use auth::{MaybePerson, Person};
 use axum::{
     extract::{FromRef, Request, State},
     http::{header, HeaderValue, StatusCode},
@@ -15,18 +20,22 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use cgroup::{Limits, Mode};
+use serde::Deserialize;
 use serde_json::json;
 use siwi::{Config, MemoryStore, Siwi};
-use siwi_axum::{MaybeSiwiUser, SiwiUser};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-use workspace::{Failure, Manager, Sandbox, Settings};
+use workspace::{Failure, Manager, NetMode, Sandbox, Settings};
 
 pub struct App {
     pub manager: Arc<Manager>,
-    pub sandbox: Sandbox,
     /// Exact origin of the registered redirect URI; the only Origin we accept.
     pub origin: String,
-    pub client: reqwest::Client,
+    pub approvers: approvals::Approvers,
+    pub profiles: approvals::Profiles,
+    pub data_dir: PathBuf,
+    pub self_bin: PathBuf,
+    pub uid_isolation: bool,
 }
 
 #[derive(Clone, FromRef)]
@@ -51,6 +60,20 @@ fn settings_from_env() -> Result<Settings> {
         Ok("bwrap") | Err(_) => Sandbox::Bwrap,
         Ok(other) => anyhow::bail!("JANI_CLOUD_SANDBOX must be bwrap, auto or off, not {other:?}"),
     };
+    let net = match std::env::var("JANI_CLOUD_NET").as_deref() {
+        Ok("shared") => NetMode::Shared,
+        Ok("isolated") => NetMode::Isolated,
+        Ok("auto") | Err(_) => NetMode::Auto,
+        Ok(other) => {
+            anyhow::bail!("JANI_CLOUD_NET must be auto, isolated or shared, not {other:?}")
+        }
+    };
+    let quotas = match std::env::var("JANI_CLOUD_QUOTAS").as_deref() {
+        Ok("require") => Mode::Require,
+        Ok("off") => Mode::Off,
+        Ok("auto") | Err(_) => Mode::Auto,
+        Ok(other) => anyhow::bail!("JANI_CLOUD_QUOTAS must be require, auto or off, not {other:?}"),
+    };
     let number = |name: &str, default: u64| -> Result<u64> {
         match std::env::var(name) {
             Ok(v) => v
@@ -59,6 +82,18 @@ fn settings_from_env() -> Result<Settings> {
             Err(_) => Ok(default),
         }
     };
+    // 0 means "no limit".
+    let limit = |name: &str, default: u64| -> Result<Option<u64>> {
+        Ok(Some(number(name, default)?).filter(|v| *v > 0))
+    };
+    let cpus = match std::env::var("JANI_CLOUD_LIMIT_CPUS") {
+        Ok(v) => Some(
+            v.parse::<f64>()
+                .with_context(|| "JANI_CLOUD_LIMIT_CPUS must be a number")?,
+        )
+        .filter(|v| *v > 0.0),
+        Err(_) => None,
+    };
     Ok(Settings {
         data_dir: PathBuf::from(
             std::env::var("JANI_CLOUD_DATA").unwrap_or_else(|_| "./data".into()),
@@ -66,6 +101,7 @@ fn settings_from_env() -> Result<Settings> {
         jani_bin: PathBuf::from(
             std::env::var("JANI_CLOUD_JANI_BIN").unwrap_or_else(|_| "jani".into()),
         ),
+        self_bin: std::env::current_exe().context("cannot find this executable")?,
         jani_args: std::env::var("JANI_CLOUD_JANI_ARGS")
             .unwrap_or_default()
             .split_whitespace()
@@ -76,6 +112,7 @@ fn settings_from_env() -> Result<Settings> {
             "JANI_API_KEY,JANI_API_BASE,JANI_MODEL",
         ),
         template: std::env::var("JANI_CLOUD_TEMPLATE").ok().map(PathBuf::from),
+        settings_file: std::env::var("JANI_CLOUD_SETTINGS").ok().map(PathBuf::from),
         max_active: number("JANI_CLOUD_MAX_ACTIVE", 8)? as usize,
         idle_ttl: Duration::from_secs(number("JANI_CLOUD_IDLE_SECONDS", 1800)?),
         sandbox,
@@ -83,6 +120,17 @@ fn settings_from_env() -> Result<Settings> {
             Ok(v) => Some(v.parse().context("JANI_CLOUD_UID_BASE must be a number")?),
             Err(_) => None,
         },
+        net,
+        egress_allow: env_list("JANI_CLOUD_EGRESS_ALLOW", ""),
+        limits: Limits {
+            memory_mb: limit("JANI_CLOUD_LIMIT_MEMORY_MB", 1024)?,
+            pids: limit("JANI_CLOUD_LIMIT_PIDS", 256)?,
+            cpus,
+            open_files: limit("JANI_CLOUD_LIMIT_OPEN_FILES", 1024)?,
+            disk_mb: limit("JANI_CLOUD_LIMIT_DISK_MB", 2048)?,
+        },
+        quotas,
+        disk_check: Duration::from_secs(number("JANI_CLOUD_DISK_CHECK_SECONDS", 10)?.max(1)),
     })
 }
 
@@ -99,8 +147,46 @@ fn is_root() -> bool {
     false
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // `jani-cloud sandbox-init ...` runs inside a workspace's sandbox as its network relay.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("sandbox-init") {
+        return sandbox_init(&args[2..]);
+    }
+    // `jani-cloud decide-approval ...` runs as the requester's own Unix user.
+    if args.get(1).map(String::as_str) == Some("decide-approval") {
+        return approvals::helper(&args[2..]);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+fn sandbox_init(args: &[String]) -> Result<()> {
+    let (mut socket, mut listen) = (None, None);
+    let mut it = args.iter();
+    let mut command: Vec<String> = Vec::new();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--socket" => socket = it.next().cloned(),
+            "--listen" => listen = it.next().cloned(),
+            "--" => {
+                command = it.cloned().collect();
+                break;
+            }
+            other => anyhow::bail!("sandbox-init: unexpected argument {other:?}"),
+        }
+    }
+    let code = egress::sandbox_init(
+        &socket.context("sandbox-init needs --socket")?,
+        &listen.context("sandbox-init needs --listen")?,
+        &command,
+    )?;
+    std::process::exit(code);
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -109,15 +195,19 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     let origin = config.redirect_uri.origin().ascii_serialization();
     let settings = settings_from_env()?;
-    let sandbox = settings.validate(is_root())?;
+    let plan = settings.plan(is_root())?;
     std::fs::create_dir_all(&settings.data_dir)?;
     tracing::info!(
-        ?sandbox,
+        sandbox = ?plan.sandbox,
         uid_isolation = settings.uid_base.is_some(),
+        isolated_network = plan.isolated_net,
+        egress_allow = %plan.egress.describe(),
         max_active = settings.max_active,
         "workspace isolation"
     );
-
+    for note in &plan.notes {
+        tracing::warn!("{note}");
+    }
     let store: Arc<dyn siwi::Store> = match std::env::var("IFINSTA_REDIS_URL") {
         #[cfg(feature = "redis")]
         Ok(_) => Arc::new(siwi_redis::RedisStore::from_env().await?),
@@ -129,7 +219,17 @@ async fn main() -> Result<()> {
         }
     };
     let siwi = Arc::new(Siwi::new(config, store)?);
-    let manager = Manager::new(settings);
+    let disk_check = settings.disk_check;
+    let (data_dir, self_bin, uid_isolation) = (
+        settings.data_dir.clone(),
+        settings.self_bin.clone(),
+        settings.uid_base.is_some(),
+    );
+    let approvers = approvals::Approvers::from_env();
+    if !approvers.configured() {
+        tracing::warn!("no approvers configured (JANI_CLOUD_APPROVERS / JANI_CLOUD_APPROVERS_FILE): held actions cannot be approved");
+    }
+    let manager = Manager::new(settings, plan);
     let reaper = manager.clone();
     let tick =
         (manager.settings().idle_ttl / 4).clamp(Duration::from_secs(1), Duration::from_secs(60));
@@ -142,15 +242,23 @@ async fn main() -> Result<()> {
             }
         }
     });
+    let watcher = manager.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(disk_check).await;
+            watcher.enforce_disk().await;
+        }
+    });
     let app_manager = manager.clone();
+    let profiles = approvals::Profiles::new(&data_dir);
     let app = Arc::new(App {
         manager,
-        sandbox,
         origin,
-        client: reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(60))
-            .build()?,
+        approvers,
+        profiles,
+        data_dir,
+        self_bin,
+        uid_isolation,
     });
     let router = router(AppState {
         siwi: siwi.clone(),
@@ -196,6 +304,20 @@ fn router(state: AppState) -> Router {
         .route("/cloud.css", get(asset_css))
         .route("/cloud.js", get(asset_js))
         .route("/cloud/stop", post(stop))
+        .route("/cloud/storage", get(storage))
+        .route("/cloud/reset", post(reset))
+        .route("/cloud/me", get(me))
+        .route("/cloud/approvals", get(approvals_list))
+        .route("/cloud/approvals/decide", post(approvals_decide))
+        .route("/cloud/approver", get(approver_page))
+        .route(
+            "/cloud-approver.js",
+            get(|| async { asset(APPROVER_JS, "text/javascript; charset=utf-8").await }),
+        )
+        .route(
+            "/cloud-storage.js",
+            get(|| async { asset(STORAGE_JS, "text/javascript; charset=utf-8").await }),
+        )
         .merge(siwi_axum::routes(state.siwi.clone()))
         .fallback(gateway)
         .with_state(state)
@@ -232,6 +354,10 @@ client.addEventListener("siwi:error", (e) => say("Sign-in did not complete (" + 
 const CLOUD_CSS: &str = r#"
 .c-cloud{min-height:100vh;display:grid;place-items:center;padding:24px}
 .c-cloud .c-panel{width:min(440px,100%)}
+.c-cloud--wide .c-panel{width:min(1100px,100%)}
+.c-cloud__table{width:100%;border-collapse:collapse}
+.c-cloud__table th,.c-cloud__table td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border,#ccd)}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:.9em;overflow-wrap:anywhere}
 .c-cloud h1{margin:0}
 .c-cloud__fine{font-size:.85em}
 "#;
@@ -288,7 +414,7 @@ async fn login_page(siwi: &Siwi) -> Response {
 async fn gateway(
     State(app): State<Arc<App>>,
     State(siwi): State<Arc<Siwi>>,
-    MaybeSiwiUser(user): MaybeSiwiUser,
+    MaybePerson(user): MaybePerson,
     req: Request,
 ) -> Response {
     let path = req.uri().path().to_string();
@@ -305,11 +431,12 @@ async fn gateway(
             Redirect::to("/").into_response()
         };
     };
-    proxy::forward(&app, &user, req).await
+    app.profiles.record(&workspace::user_key(&user.sub), &user);
+    proxy::forward(&app, &user.sub, req).await
 }
 
 /// Sign-out hook: stop the caller's workspace before the session ends.
-async fn stop(State(app): State<Arc<App>>, user: SiwiUser, req: Request) -> Response {
+async fn stop(State(app): State<Arc<App>>, user: Person, req: Request) -> Response {
     if let Err(why) = proxy::same_origin(&app, req.headers()) {
         return proxy::forbidden(why);
     }
@@ -317,20 +444,244 @@ async fn stop(State(app): State<Arc<App>>, user: SiwiUser, req: Request) -> Resp
     Json(json!({"ok": true, "stopped": stopped})).into_response()
 }
 
-pub fn failure_response(f: &Failure) -> Response {
-    let status = match f {
-        Failure::Capacity => StatusCode::SERVICE_UNAVAILABLE,
-        Failure::Start(_) => StatusCode::BAD_GATEWAY,
-    };
-    // The detail is logged, not shown: it can name paths and processes.
+/// What a person sees when their workspace cannot be reached. The detail is
+/// logged, not shown: it can name paths and processes.
+pub fn failure_response(f: &Failure, html: bool) -> Response {
     tracing::error!(error = %f, "workspace unavailable");
-    let public = match f {
-        Failure::Capacity => "All workspaces are busy. Try again in a moment.",
-        Failure::Start(_) => "Your workspace could not start. Try again shortly.",
+    match f {
+        Failure::Capacity => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "workspace_unavailable", "message": "All workspaces are busy. Try again in a moment."})),
+        )
+            .into_response(),
+        Failure::Start(_) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": "workspace_unavailable", "message": "Your workspace could not start. Try again shortly."})),
+        )
+            .into_response(),
+        Failure::OverQuota { used_mb, limit_mb } => {
+            if html {
+                let page = STORAGE_PAGE.replace("__USED__", &used_mb.to_string()).replace("__LIMIT__", &limit_mb.to_string());
+                return headers(Html(page).into_response(), None).with_status(StatusCode::INSUFFICIENT_STORAGE);
+            }
+            (
+                StatusCode::INSUFFICIENT_STORAGE,
+                Json(json!({"error": "storage_full", "message": format!("Your workspace storage is over its limit ({used_mb} of {limit_mb} MB)."), "usedMb": used_mb, "limitMb": limit_mb})),
+            )
+                .into_response()
+        }
+    }
+}
+
+trait WithStatus {
+    fn with_status(self, status: StatusCode) -> Response;
+}
+impl WithStatus for Response {
+    fn with_status(mut self, status: StatusCode) -> Response {
+        *self.status_mut() = status;
+        self
+    }
+}
+
+const STORAGE_PAGE: &str = r##"<!doctype html>
+<html lang="en" data-density="comfortable"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Storage full</title>
+<script src="/siwi/theme.js"></script>
+<link rel="stylesheet" href="/siwi/ui.css"><link rel="stylesheet" href="/cloud.css">
+<script type="module" src="/cloud-storage.js"></script>
+</head><body><main class="c-cloud" id="main"><div class="c-panel"><div class="c-panel__body o-stack">
+ <h1>Your workspace is full</h1>
+ <p>It is using <b>__USED__ MB</b> of its <b>__LIMIT__ MB</b> limit, so it was stopped. Your audit journal and approvals are kept.</p>
+ <p class="u-muted">You can delete your workspace files and start again with an empty worktree. This cannot be undone.</p>
+ <div class="o-cluster"><button class="c-button c-button--primary" type="button" id="reset" data-testid="reset">Delete my workspace files</button></div>
+ <p class="u-muted" id="status" role="status" aria-live="polite"></p>
+</div></div></main></body></html>"##;
+
+const STORAGE_JS: &str = r#"
+const status = document.getElementById("status");
+document.getElementById("reset").addEventListener("click", async () => {
+  status.textContent = "Deleting…";
+  const r = await fetch("/cloud/reset", { method: "POST", credentials: "same-origin", headers: { "x-siwi": "1", "content-type": "application/json" }, body: "{}" });
+  if (r.ok) location.reload(); else status.textContent = "Could not delete (" + r.status + "). Try again.";
+});
+"#;
+
+/// A person's own storage use, for the page to show.
+async fn storage(State(app): State<Arc<App>>, user: Person) -> Response {
+    let (used, limit) = app.manager.storage(&user.sub);
+    Json(json!({"usedMb": used, "limitMb": limit})).into_response()
+}
+
+/// Delete the person's worktree and start over. State is kept.
+async fn reset(State(app): State<Arc<App>>, user: Person, req: Request) -> Response {
+    if let Err(why) = proxy::same_origin(&app, req.headers()) {
+        return proxy::forbidden(why);
+    }
+    match app.manager.reset(&user.sub).await {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "reset failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "reset_failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ----------------------------------------------------------------- approvals
+
+#[derive(Deserialize)]
+struct DecideBody {
+    user: String,
+    id: String,
+    approve: bool,
+}
+
+fn not_an_approver() -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({"error": "not_an_approver", "message": "Your account is not on this deployment's approver list."}))).into_response()
+}
+
+/// Who the signed-in person is, and whether they may approve. Also what an
+/// operator copies `sub` from to add the first approver.
+async fn me(State(app): State<Arc<App>>, person: Person) -> Response {
+    let approver = app.approvers.is_approver(&person);
+    let pending = if approver {
+        let me = workspace::user_key(&person.sub);
+        approvals::list_pending(&app.data_dir, &app.profiles, &me)
+            .iter()
+            .filter(|v| v["own"] == false)
+            .count()
+    } else {
+        0
     };
-    (
-        status,
-        Json(json!({"error": "workspace_unavailable", "message": public})),
-    )
+    Json(json!({
+        "email": person.email,
+        "emailVerified": person.email_verified,
+        "name": person.name,
+        "sub": person.sub,
+        "approver": approver,
+        "pending": pending,
+    }))
+    .into_response()
+}
+
+async fn approvals_list(State(app): State<Arc<App>>, person: Person) -> Response {
+    if !app.approvers.is_approver(&person) {
+        return not_an_approver();
+    }
+    let me = workspace::user_key(&person.sub);
+    Json(json!({"pending": approvals::list_pending(&app.data_dir, &app.profiles, &me)}))
         .into_response()
 }
+
+async fn approvals_decide(
+    State(app): State<Arc<App>>,
+    person: Person,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<DecideBody>,
+) -> Response {
+    if !app.approvers.is_approver(&person) {
+        return not_an_approver();
+    }
+    if let Err(why) = proxy::same_origin(&app, &headers) {
+        return proxy::forbidden(why);
+    }
+    match approvals::decide(
+        &app.data_dir,
+        &app.self_bin,
+        app.uid_isolation,
+        &person,
+        &body.user,
+        &body.id,
+        body.approve,
+    )
+    .await
+    {
+        Ok(result) => Json(result).into_response(),
+        // The store's own words (separation of duties, expired, wrong role) are the useful ones.
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "refused", "message": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn approver_page(
+    State(app): State<Arc<App>>,
+    State(siwi): State<Arc<Siwi>>,
+    person: Person,
+) -> Response {
+    if !app.approvers.is_approver(&person) {
+        return not_an_approver();
+    }
+    let _ = siwi;
+    headers(Html(APPROVER_PAGE).into_response(), None)
+}
+
+const APPROVER_PAGE: &str = r##"<!doctype html>
+<html lang="en" data-density="comfortable"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Approvals</title>
+<script src="/siwi/theme.js"></script>
+<link rel="stylesheet" href="/siwi/ui.css"><link rel="stylesheet" href="/cloud.css">
+<script type="module" src="/cloud-approver.js"></script>
+</head><body><main class="c-cloud c-cloud--wide" id="main"><div class="c-panel"><div class="c-panel__body o-stack">
+ <div class="o-cluster" style="justify-content:space-between"><h1>Approvals</h1><a class="c-button" href="/">Back to my workspace</a></div>
+ <p class="u-muted">Actions people's assistants are waiting to take. You see what is being done and where, not the content: the audit journal records a digest. Approving lets that one action run once.</p>
+ <div id="list" data-testid="approvals"></div>
+ <p class="u-muted" id="status" role="status" aria-live="polite"></p>
+</div></div></main></body></html>"##;
+
+const APPROVER_JS: &str = r#"
+const list = document.getElementById("list");
+const status = document.getElementById("status");
+const when = (t) => new Date(t * 1000).toLocaleString();
+const mono = (t) => { const s = document.createElement("span"); s.className = "mono"; s.textContent = t; return s; };
+let armed = null;
+async function load() {
+  const r = await fetch("/cloud/approvals", { credentials: "same-origin" });
+  if (!r.ok) { status.textContent = "Could not load approvals (" + r.status + ")."; return; }
+  const { pending } = await r.json();
+  list.textContent = "";
+  if (!pending.length) { const p = document.createElement("p"); p.className = "u-muted"; p.textContent = "Nothing is waiting for you."; list.append(p); return; }
+  const table = document.createElement("table"); table.className = "c-cloud__table";
+  table.innerHTML = "<thead><tr><th>Requested by</th><th>Action</th><th>Where</th><th>Risk</th><th>Expires</th><th></th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const a of pending) {
+    const tr = document.createElement("tr");
+    const cell = (...nodes) => { const td = document.createElement("td"); td.append(...nodes); tr.append(td); return td; };
+    cell(a.requester + (a.own ? " (you)" : ""));
+    cell(mono(a.capability));
+    cell(mono(a.resource));
+    cell(a.risk);
+    cell(when(a.expiresAt));
+    const actions = cell();
+    if (a.own) { actions.textContent = "Someone else must decide this"; }
+    else {
+      const key = a.user + ":" + a.approvalId;
+      for (const approve of [true, false]) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "c-button" + (approve ? " c-button--primary" : "");
+        const mine = armed && armed.key === key && armed.approve === approve;
+        b.textContent = mine ? "Confirm " + (approve ? "approve" : "reject") : (approve ? "Approve" : "Reject");
+        b.dataset.testid = (approve ? "approve-" : "reject-") + a.approvalId;
+        b.addEventListener("click", async () => {
+          if (!mine) { armed = { key, approve }; load(); return; }
+          armed = null; status.textContent = "Recording…";
+          const res = await fetch("/cloud/approvals/decide", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-siwi": "1" }, body: JSON.stringify({ user: a.user, id: a.approvalId, approve }) });
+          const out = await res.json().catch(() => ({}));
+          status.textContent = res.ok ? (approve ? "Approved." : "Rejected.") : (out.message || "Refused (" + res.status + ").");
+          load();
+        });
+        actions.append(b, " ");
+      }
+    }
+    body.append(tr);
+  }
+  table.append(body); list.append(table);
+}
+load();
+setInterval(() => { if (!document.hidden && !armed) load(); }, 10000);
+"#;

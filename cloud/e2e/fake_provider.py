@@ -12,9 +12,22 @@ SCRIPTS=[
 ]
 state={"turn":-1,"step":0}
 lock=threading.Lock()
+def build(turns):
+    out=[]
+    for turn in turns:
+        steps=[]
+        for i,st in enumerate(turn):
+            steps.append(fin(st["final"]) if "final" in st else tc("s%d"%i,st["tool"],st["args"]))
+        out.append(steps)
+    return out
 class H(BaseHTTPRequestHandler):
     def log_message(self,*a):pass
     def do_POST(self):
+        if self.path=="/__script":
+            n=int(self.headers.get("content-length",0));body=json.loads(self.rfile.read(n) or b"{}")
+            with lock:
+                SCRIPTS[:]=build(body["turns"]);state["turn"]=-1;state["step"]=0
+            self.send_response(204);self.end_headers();return
         n=int(self.headers.get("content-length",0));body=json.loads(self.rfile.read(n) or b"{}")
         with lock:
             last=body["messages"][-1]
