@@ -2,7 +2,7 @@ use crate::types::{new_id, now_unix, sha256_hex, AuditEvent, Classification};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
@@ -54,6 +54,7 @@ pub mod reason {
 
 pub struct Journal {
     file: File,
+    path: PathBuf,
     previous_digest: String,
 }
 
@@ -80,18 +81,38 @@ impl Journal {
             .map_err(|e| format!("cannot create state directory {}: {e}", state_dir.display()))?;
         let path = state_dir.join(JOURNAL_FILE);
         let previous_digest = last_digest(&path)?;
+        // `read` is needed so the handle can be locked on every platform.
         let file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&path)
             .map_err(|e| format!("cannot open audit journal {}: {e}", path.display()))?;
         Ok(Self {
             file,
+            path,
             previous_digest,
         })
     }
 
+    /// Append one event. Other writers (a second `Journal` in this process, or
+    /// another process) may have appended since this handle last wrote, so the
+    /// chain head is re-read under an exclusive file lock every time. Without
+    /// that, two writers each chain to a stale head and the journal fails
+    /// verification.
     pub fn record(&mut self, input: EventInput<'_>) -> Result<AuditEvent, String> {
+        match self.file.lock() {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {}
+            Err(e) => return Err(format!("cannot lock audit journal: {e}")),
+        }
+        let result = self.append_locked(input);
+        let _ = self.file.unlock();
+        result
+    }
+
+    fn append_locked(&mut self, input: EventInput<'_>) -> Result<AuditEvent, String> {
+        self.previous_digest = last_digest(&self.path)?;
         let mut event = AuditEvent {
             event_version: "1.0".into(),
             event_id: new_id("evt"),
@@ -225,6 +246,27 @@ mod tests {
             std::env::temp_dir().join(format!("jani-journal-{}", crate::process::unique_id()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn interleaved_writers_keep_one_verifiable_chain() {
+        let dir = temp_dir();
+        // Two handles on one journal, as when a live session and a separate
+        // governed operation both append. Each used to chain to a stale head.
+        let mut session = Journal::open(&dir).unwrap();
+        session.record(input("run-a", "agent.run")).unwrap();
+        let mut other = Journal::open(&dir).unwrap();
+        other
+            .record(input("native-tool", "native.index.build"))
+            .unwrap();
+        session.record(input("run-a", "repo.read")).unwrap();
+        other
+            .record(input("native-tool", "native.index.build"))
+            .unwrap();
+        session.record(input("run-a", "agent.run")).unwrap();
+        let check = verify(&dir).unwrap();
+        assert_eq!(check["ok"], true, "{check}");
+        assert_eq!(check["events"], 5);
     }
 
     fn input<'a>(run: &'a str, action: &'a str) -> EventInput<'a> {

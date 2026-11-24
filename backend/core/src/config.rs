@@ -173,6 +173,7 @@ pub struct Config {
     pub update_interval_seconds: u64,
     pub update_cycles: u64,
     pub ui_port: u16,
+    pub ui_unix_socket: Option<PathBuf>,
 }
 
 fn default_command(interactive: bool) -> &'static str {
@@ -241,7 +242,7 @@ USAGE:
   jani mcp verify|authorize|call|validate-response OP RESOURCE [OPTIONS]
   jani native TOOL OPERATION [ARGUMENTS] [--task TASK] [OPTIONS]
   jani update check|install|watch [OPTIONS]   Verified release-channel delivery
-  jani ui [--port N] [OPTIONS]        Local web workspace (loopback only, token required)
+  jani ui [--port N | --unix-socket PATH] [OPTIONS]  Local web workspace (loopback or owner-only socket, token required)
 
 Jani has no embedded coordination engine. It works directly in a Git
 worktree. Skills are advisory. Every tool call passes through a Rust
@@ -523,6 +524,7 @@ impl Config {
             update_interval_seconds: defaults::UPDATE_INTERVAL_SECONDS,
             update_cycles: 0,
             ui_port: 0,
+            ui_unix_socket: None,
         }
     }
 
@@ -1002,6 +1004,9 @@ impl Config {
                             "--interval must be 1..{MAX_UPDATE_INTERVAL_SECONDS}"
                         ));
                     }
+                }
+                "--unix-socket" => {
+                    cfg.ui_unix_socket = Some(PathBuf::from(take_value(args, &mut i, a)?))
                 }
                 "--port" => {
                     cfg.ui_port = take_value(args, &mut i, a)?

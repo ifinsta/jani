@@ -24,7 +24,9 @@ use std::collections::hash_map::RandomState;
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
@@ -37,6 +39,98 @@ const MAX_HEADERS: usize = 64;
 const MAX_LINE: usize = 8 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 const TRANSCRIPT_CAP: usize = 2000;
+
+/// One client connection: loopback TCP, or a Unix socket.
+enum Conn {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(UnixStream),
+}
+
+impl Conn {
+    fn try_clone(&self) -> std::io::Result<Conn> {
+        Ok(match self {
+            Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
+            #[cfg(unix)]
+            Conn::Unix(s) => Conn::Unix(s.try_clone()?),
+        })
+    }
+    fn set_read_timeout(&self, d: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            Conn::Tcp(s) => s.set_read_timeout(d),
+            #[cfg(unix)]
+            Conn::Unix(s) => s.set_read_timeout(d),
+        }
+    }
+    fn shutdown_write(&self) -> std::io::Result<()> {
+        match self {
+            Conn::Tcp(s) => s.shutdown(Shutdown::Write),
+            #[cfg(unix)]
+            Conn::Unix(s) => s.shutdown(Shutdown::Write),
+        }
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Conn::Tcp(s) => s.read(buf),
+            #[cfg(unix)]
+            Conn::Unix(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Conn::Tcp(s) => s.write(buf),
+            #[cfg(unix)]
+            Conn::Unix(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Conn::Tcp(s) => s.flush(),
+            #[cfg(unix)]
+            Conn::Unix(s) => s.flush(),
+        }
+    }
+}
+
+enum Listener {
+    Tcp(TcpListener),
+    #[cfg(unix)]
+    Unix(UnixListener),
+}
+
+impl Listener {
+    fn accept(&self) -> std::io::Result<Conn> {
+        match self {
+            Listener::Tcp(l) => l.accept().map(|(s, _)| Conn::Tcp(s)),
+            #[cfg(unix)]
+            Listener::Unix(l) => l.accept().map(|(s, _)| Conn::Unix(s)),
+        }
+    }
+}
+
+/// Bind the Unix socket owner-only. A stale socket from a crashed run is
+/// replaced; anything else at that path is refused rather than deleted.
+#[cfg(unix)]
+fn bind_unix(path: &std::path::Path) -> JResult<UnixListener> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if !meta.file_type().is_socket() {
+            return Err(format!("{} exists and is not a socket", path.display()));
+        }
+        std::fs::remove_file(path).map_err(|e| format!("cannot replace stale socket: {e}"))?;
+    }
+    let listener =
+        UnixListener::bind(path).map_err(|e| format!("cannot bind {}: {e}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("cannot restrict {}: {e}", path.display()))?;
+    Ok(listener)
+}
 
 enum Job {
     Line(String),
@@ -89,15 +183,34 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
-    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, cfg.ui_port))
-        .map_err(|e| format!("cannot bind 127.0.0.1:{}: {e}", cfg.ui_port))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let (listener, hosts, address) = match cfg.ui_unix_socket.as_deref() {
+        #[cfg(unix)]
+        Some(path) => (
+            Listener::Unix(bind_unix(path)?),
+            // Nothing is reachable over the network, so the only Host that makes
+            // sense is a fixed name the front end sends.
+            vec!["localhost".to_string()],
+            format!("unix:{}", path.display()),
+        ),
+        #[cfg(not(unix))]
+        Some(_) => return Err("--unix-socket is only supported on Unix".into()),
+        None => {
+            let tcp = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, cfg.ui_port))
+                .map_err(|e| format!("cannot bind 127.0.0.1:{}: {e}", cfg.ui_port))?;
+            let port = tcp.local_addr().map_err(|e| e.to_string())?.port();
+            (
+                Listener::Tcp(tcp),
+                vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")],
+                format!("http://127.0.0.1:{port}"),
+            )
+        }
+    };
     let shared = Shared {
         cfg,
         catalog,
         token: random_hex(24),
         nonce: random_hex(12),
-        hosts: vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")],
+        hosts,
         transcript: Mutex::new(Transcript::default()),
         jobs: Mutex::new(None),
         cancel: AtomicBool::new(false),
@@ -106,14 +219,10 @@ pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
     {
         // A closed stdout must not take the server down.
         let mut out = std::io::stdout();
+        let _ = writeln!(out, "Jani workspace: {address}/#token={}", shared.token);
         let _ = writeln!(
             out,
-            "Jani workspace: http://127.0.0.1:{port}/#token={}",
-            shared.token
-        );
-        let _ = writeln!(
-            out,
-            "Loopback only. Authority is frozen at startup (writes: {}, commands: {}). Press Ctrl+C to stop.",
+            "Local only. Authority is frozen at startup (writes: {}, commands: {}). Press Ctrl+C to stop.",
             cfg.allow_write, cfg.allow_exec
         );
     }
@@ -121,8 +230,10 @@ pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
     *shared.jobs.lock().map_err(|_| "ui state poisoned")? = Some(tx);
     std::thread::scope(|scope| {
         scope.spawn(|| worker(&shared, rx));
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
+        loop {
+            let Ok(stream) = listener.accept() else {
+                continue;
+            };
             if shared.live.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                 shared.live.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
@@ -319,7 +430,7 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request, (u16, &'static str)> {
+fn read_request(stream: &mut Conn) -> Result<Request, (u16, &'static str)> {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|_| (500, "timeout setup failed"))?;
@@ -387,7 +498,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, (u16, &'static str)> 
 }
 
 fn respond(
-    stream: &mut TcpStream,
+    stream: &mut Conn,
     status: u16,
     content_type: &str,
     body: &[u8],
@@ -422,7 +533,7 @@ fn respond(
     stream.flush()
 }
 
-fn json_response(stream: &mut TcpStream, status: u16, value: &Value) {
+fn json_response(stream: &mut Conn, status: u16, value: &Value) {
     let body = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
     let _ = respond(
         stream,
@@ -433,21 +544,21 @@ fn json_response(stream: &mut TcpStream, status: u16, value: &Value) {
     );
 }
 
-fn fail(stream: &mut TcpStream, status: u16, message: &str) {
+fn fail(stream: &mut Conn, status: u16, message: &str) {
     json_response(stream, status, &json!({ "error": message }));
 }
 
-fn handle(shared: &Shared<'_>, mut stream: TcpStream) {
+fn handle(shared: &Shared<'_>, mut stream: Conn) {
     serve(shared, &mut stream);
     // Closing with unread request bytes makes the kernel send a reset, which
     // can discard the response the client has not read yet. Half-close, then
     // drain a bounded amount of whatever the peer was still sending.
-    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.shutdown_write();
     let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
     let _ = std::io::copy(&mut (&mut stream).take(1 << 20), &mut std::io::sink());
 }
 
-fn serve(shared: &Shared<'_>, stream: &mut TcpStream) {
+fn serve(shared: &Shared<'_>, stream: &mut Conn) {
     let request = match read_request(stream) {
         Ok(request) => request,
         Err((status, message)) => return fail(stream, status, message),

@@ -485,3 +485,71 @@ fn registered_agents_and_alerts_are_listed_read_only() {
     assert_eq!(post(&ui, "/api/attention", json!({})).status, 404);
     ui.root = state;
 }
+
+#[cfg(unix)]
+#[test]
+fn unix_socket_mode_has_no_tcp_port_and_keeps_every_check() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixStream;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("jani-ui-sock-{}-{stamp:x}", std::process::id()));
+    std::fs::create_dir_all(root.join("repo")).unwrap();
+    let socket = root.join("ui.sock");
+    let mut child = support::jani()
+        .args(["ui", "--unix-socket"])
+        .arg(&socket)
+        .arg("--repo")
+        .arg(root.join("repo"))
+        .arg("--state-dir")
+        .arg(root.join("state"))
+        .env("JANI_API_KEY", "test-key")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let rest = line.split("unix:").nth(1).expect(&line);
+    let (path, token) = rest.trim().split_once("/#token=").expect(&line);
+    assert_eq!(std::path::Path::new(path), socket);
+    assert_eq!(
+        std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "owner-only socket"
+    );
+    let call = |host: &str, with_token: bool| -> (u16, String) {
+        let mut s = UnixStream::connect(&socket).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut head =
+            format!("GET /api/overview HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+        if with_token {
+            head.push_str(&format!("X-Jani-Token: {token}\r\n"));
+        }
+        head.push_str("\r\n");
+        s.write_all(head.as_bytes()).unwrap();
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).unwrap();
+        let status = raw.split_whitespace().nth(1).unwrap().parse().unwrap();
+        (status, raw)
+    };
+    assert_eq!(call("localhost", true).0, 200);
+    assert_eq!(
+        call("localhost", false).0,
+        401,
+        "the token is still required"
+    );
+    assert_eq!(
+        call("attacker.example", true).0,
+        403,
+        "Host is still checked"
+    );
+    let (_, body) = call("localhost", true);
+    assert!(body.contains("\"proxied\""), "{body}");
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+}
