@@ -46,6 +46,8 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- Fix a Windows-only journal regression introduced with the interleaved-writer fix: the writer re-read the chain head through a second file handle while holding an exclusive lock, which Windows rejects with `ERROR_LOCK_VIOLATION` (os error 33), so every append failed. Appends now read the tail through the locked handle, and inspection takes a shared lock so it waits for a writer instead of failing. A journal already broken by the earlier stale-head bug remains unverified; rotate it with an operator-kept backup rather than rewriting its chain.
+
 - The workspace UI now follows a code-editor layout: title bar with menus, command box and layout toggles; an activity bar of icons; a collapsible sidebar; editor tabs for the graph, terminal and each screen; an optional inspector and panel; a status bar; and a command palette (Ctrl+Shift+P). Panes are optional, draggable and remembered. See `docs/WEB_WORKSPACE.md`.
 
 - jani-cloud now isolates each workspace's network (own namespace, outbound only through an allowlist proxy to the model provider), enforces per-person memory, process, CPU, file and disk limits, listens on per-user Unix sockets instead of loopback ports, and adds designated approvers: an operator-listed person can approve another person's held action through an approver page, using Jani's own approval store (separation of duties, role, expiry) with a hash-chained decision journal. cgroup v2, the Dockerfile and bubblewrap inside a container remain untested. See `cloud/README.md`.
