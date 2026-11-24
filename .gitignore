@@ -9,3 +9,8 @@
 synthetic/generated/
 __pycache__/
 *.pyc
+
+# jani-cloud (standalone crate and its browser tests)
+cloud/target/
+cloud/e2e/node_modules/
+!cloud/.env.example

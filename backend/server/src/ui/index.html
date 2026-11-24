@@ -359,6 +359,7 @@ tr.new td{animation:flash 1.4s ease-out}
     <span class="chip mode" id="authChip" title="Authority fixed when jani ui started">Authority: …</span>
     <span class="chip" id="chainChip">Journal …</span>
     <span class="chip" id="budgetChip"><span class="dim">Budget</span> <b class="mono" id="budgetTop">none</b></span>
+    <span class="chip" id="acct" hidden><span class="dim">Signed in</span> <b id="acctWho"></b> <button type="button" class="linkbtn" id="signout">Sign out</button> <button type="button" class="linkbtn dim" id="signoutAll" title="Also end your ifinsta session on your other apps">Sign out everywhere</button></span>
     <button class="iconbtn" id="themeBtn" type="button" aria-label="Toggle theme" title="Toggle theme">
       <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 1.8a5.2 5.2 0 0 1 0 10.4z" fill="currentColor"/></svg>
     </button>
@@ -757,7 +758,9 @@ $$('#inspTabs button').forEach(function(b){b.addEventListener('click',function()
 /* ---------- rail and top ---------- */
 function renderOverview(){
   var ov=S.ov;if(!ov)return;
-  $('#wt').textContent=ov.worktree;$('#modeVal').textContent=ov.mode;
+  if(ov.proxied&&!S.acctInit){S.acctInit=true;initAccount()}
+  $('#wt').textContent=ov.proxied?'your workspace':ov.worktree;$('#wt').title=ov.proxied?'A private worktree that only you can see':ov.worktree;$('#modeVal').textContent=ov.proxied?'hosted':ov.mode;
+  if(ov.proxied){var ec=$('#emptyCanvas p');if(ec)ec.textContent='Send a task from the Terminal tab. Every tool call and decision appears here.'}
   var a=ov.authority,parts=['read'];
   if(a.allowWrite)parts.push('write ('+a.writePaths.length+')');
   if(a.allowExec)parts.push('run ('+(a.execPrograms.length||'any')+')');
@@ -781,6 +784,22 @@ function renderOverview(){
   if(!ov.skills.length)sk.appendChild(el('span',{class:'dim',text:'No SKILL.md files discovered'}));
   ov.skills.forEach(function(s){sk.appendChild(el('span',{class:'chip mono',title:s.description,text:s.name}))});
   if(ov.warnings&&ov.warnings.length&&!S.warnShown){S.warnShown=true;banner('Settings warning: '+ov.warnings[0],'warn')}
+}
+/* Behind the cloud gateway the page shows who is signed in and can sign out. */
+function initAccount(){
+  fetch('/siwi/session',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null}).then(function(s){
+    if(s&&s.signed_in){$('#acctWho').textContent=s.email||'your account';$('#acct').hidden=false}
+  }).catch(function(){});
+  function signOut(everywhere){
+    var h={'x-siwi':'1','Content-Type':'application/json'};
+    fetch('/cloud/stop',{method:'POST',credentials:'same-origin',headers:h,body:'{}'}).catch(function(){})
+      .then(function(){return fetch('/siwi/logout',{method:'POST',credentials:'same-origin',headers:h,body:'{}'})})
+      .then(function(r){return r.json().catch(function(){return {}})})
+      .then(function(j){if(everywhere&&j&&j.end_session_url)location.href=j.end_session_url;else location.reload()})
+      .catch(function(){location.reload()});
+  }
+  $('#signout').addEventListener('click',function(){signOut(false)});
+  $('#signoutAll').addEventListener('click',function(){signOut(true)});
 }
 function renderRuns(){
   var box=$('#runs');box.textContent='';
@@ -995,7 +1014,7 @@ function renderTermMeta(){
   tIn.placeholder=T.ended?'Session closed.':p?'Approvals are pending. Decide outside this session, then attach with /approval <id>.':'Type a message to begin. /help lists every command.';
   tIn.disabled=T.ended;
   $('#tTask').textContent=T.taskId?'task '+T.taskId:'';
-  $('#tStatL').textContent=(S.ov?S.ov.worktree:'')+(T.taskId?' · '+T.taskId:'');
+  $('#tStatL').textContent=(S.ov?(S.ov.proxied?'your workspace':S.ov.worktree):'')+(T.taskId?' · '+T.taskId:'');
   var r=$('#tStatR');r.textContent='v'+(S.ov?S.ov.version:'')+' · '+plural(T.turns,'turn');
   if(p)r.appendChild(el('span',{class:'hot',text:'  ·  ! '+p+' pending'}));
   var c=$('#termCount');c.textContent=String(p);c.hidden=!p;
@@ -1055,6 +1074,8 @@ tScroll.addEventListener('scroll',function(){T.follow=tScroll.scrollHeight-tScro
 var pollTimer=null,spinTimer=null;
 function pollSession(){
   clearTimeout(pollTimer);
+  // A hidden tab makes no requests, so it cannot keep a cloud workspace alive.
+  if(document.hidden&&!T.busy){pollTimer=setTimeout(pollSession,3000);return Promise.resolve()}
   return api('/api/session?after='+T.last).then(function(s){
     var wasBusy=T.busy,added=s.entries&&s.entries.length;
     (s.entries||[]).forEach(function(e){T.entries.push(e);T.last=Math.max(T.last,e.n)});
@@ -1305,7 +1326,7 @@ window.addEventListener('resize',function(){if(S.fit&&S.view==='graph')fit()});
 new ResizeObserver(function(){if(S.fit&&S.view==='graph')fit()}).observe(board);
 grow();renderTerm();
 goScreen(location.hash.slice(1)||'workspace');
-refreshOverview().then(refreshAll).then(function(){pollSession();setInterval(refreshAll,4000);setInterval(refreshOverview,15000)});
+refreshOverview().then(refreshAll).then(function(){pollSession();setInterval(function(){if(!document.hidden)refreshAll()},4000);setInterval(function(){if(!document.hidden)refreshOverview()},15000);document.addEventListener('visibilitychange',function(){if(!document.hidden){refreshAll();pollSession()}})});
 })();
 
 </script></body></html>

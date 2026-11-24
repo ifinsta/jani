@@ -648,6 +648,8 @@ fn overview(shared: &Shared<'_>) -> JResult<Value> {
         .to_string();
     Ok(json!({
         "version": env!("CARGO_PKG_VERSION"),
+        // Set by a front end (jani-cloud) that signs people in and proxies to this process.
+        "proxied": std::env::var("JANI_UI_PROXIED").as_deref() == Ok("1"),
         "worktree": cfg.root.display().to_string(),
         "stateDir": cfg.state_dir.display().to_string(),
         "mode": cfg.mode.as_str(),

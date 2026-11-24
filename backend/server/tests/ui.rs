@@ -248,6 +248,7 @@ fn overview_reports_the_frozen_authority_without_leaking_the_key() {
     assert_eq!(v["model"]["keyConfigured"], true);
     assert_eq!(v["identity"]["verified"], false);
     assert_eq!(v["journal"]["ok"], true);
+    assert_eq!(v["proxied"], false, "plain jani ui is not behind a gateway");
 }
 
 #[test]

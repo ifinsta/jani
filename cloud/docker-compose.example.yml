@@ -1,0 +1,20 @@
+# Example only. Put a TLS-terminating reverse proxy in front: the session cookie
+# is Secure and the registered redirect URI must be https.
+services:
+  jani-cloud:
+    image: jani-cloud
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"   # the reverse proxy talks to this
+    volumes:
+      - jani-data:/data
+    # bubblewrap needs to create namespaces. Docker's default seccomp profile
+    # blocks that, so either relax it for this container...
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    # ...or grant only what bwrap needs instead of relaxing seccomp:
+    # cap_add: [SYS_ADMIN]
+    restart: unless-stopped
+volumes:
+  jani-data:

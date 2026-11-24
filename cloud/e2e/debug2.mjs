@@ -1,0 +1,18 @@
+import { createRequire } from "node:module";
+import { startStack, USERS, PASSWORD } from "./harness.mjs";
+const { chromium } = createRequire(import.meta.url)("playwright");
+const stack = await startStack();
+const b = await chromium.launch();
+const ctx = await b.newContext();
+const p = await ctx.newPage();
+p.on("response", (r) => { const u = r.url(); if (!/siwi\/|api\//.test(u) || /logout|stop/.test(u)) console.log("HTTP", r.status(), u.slice(0, 130)); });
+await p.goto(`${stack.APP}/siwi/login?return_to=/`);
+await p.waitForURL((u) => u.toString().startsWith(`${stack.ACCOUNTS}/login`));
+await p.fill("#email", USERS.bob); await p.fill("#password", PASSWORD); await p.click("button[type=submit]");
+await p.waitForFunction(() => document.querySelector("#wt")?.textContent.startsWith("/"));
+console.log("--- clicking sign out");
+await p.click("#signout");
+await p.waitForTimeout(4000);
+console.log("URL", p.url());
+console.log("TEXT", (await p.textContent("body")).replace(/\s+/g, " ").slice(0, 300));
+await b.close(); await stack.stop();

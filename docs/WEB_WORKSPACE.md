@@ -68,7 +68,7 @@ Anyone who can read the printed URL, or who can run code as your user on the sam
 
 ## Limits
 
-- No authentication beyond the token; no TLS; no remote or multi-user mode.
+- No authentication beyond the token; no TLS; no remote or multi-user mode. `jani ui` itself stays loopback-only by design. A hosted, multi-user prototype is a separate front end, [jani-cloud](../cloud/README.md), that signs people in with ifinsta and runs one `jani ui` per person behind it.
 - One agent session per process. A turn that is already waiting on the model cannot be preempted; Esc cancels cooperatively between model calls and tool calls.
 - The graph shows 40 tool calls at a time with a pager for earlier ones. The journal view loads 200 events at a time, up to 1,000 matches; narrow with the filters beyond that.
 - Verification: `backend/server/tests/ui.rs` covers the trust boundary, the refusals above, paging and filtering, and the real session wiring. Browser behaviour was exercised by hand against a scripted local model provider, in light and dark, at desktop and 400 px width. Not exercised: Windows, macOS, a live model provider, enterprise mode with a signed policy bundle, and an executable plugin (none exist).
