@@ -1,5 +1,6 @@
 use crate::agent::{Agent, TurnEvent};
 use crate::config::{Config, JResult, ModelChoice};
+use crate::consent::{ConsentAnswer, ConsentGate, ConsentRequest};
 use crate::repl::{command_names, execute_command, Command, Flow, COMMANDS};
 use crate::skills::{Catalog, Skill};
 use ratatui::backend::CrosstermBackend;
@@ -89,6 +90,7 @@ pub fn run(agent: &mut Agent<'_>, cfg: &Config, catalog: &Catalog) -> JResult<()
     let meta = Meta::new(cfg, agent);
     let mut state = State::new(meta, agent.turns(), agent.pending_approvals().len());
     state.models = cfg.model_choices.clone();
+    agent.set_consent(state.gate.clone());
     let _guard = TerminalGuard::enter().map_err(io_error)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout())).map_err(io_error)?;
     terminal.clear().map_err(io_error)?;
@@ -319,6 +321,7 @@ fn run_turn(
     let (tx, rx) = mpsc::channel::<TurnEvent>();
     let cancellation = Arc::new(AtomicBool::new(false));
     state.live = Some(LiveTurn::default());
+    state.gate.rearm();
     std::thread::scope(|scope| -> JResult<()> {
         let worker_cancel = Arc::clone(&cancellation);
         let worker_agent = &mut *agent;
@@ -331,6 +334,12 @@ fn run_turn(
         loop {
             while let Ok(event) = rx.try_recv() {
                 state.apply(event);
+            }
+            state.ask = state.gate.pending();
+            if state.ask.is_some() {
+                if let Some(live) = state.live.as_mut() {
+                    live.activity = "waiting for your answer".into();
+                }
             }
             draw_screen(terminal, state)?;
             set_cursor_visible(false);
@@ -347,10 +356,15 @@ fn run_turn(
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if is_ctrl(&key, 'c') {
                             cancellation.store(true, Ordering::SeqCst);
+                            // A question left open would block the turn at its "safe boundary".
+                            state.gate.cancel();
                             if let Some(live) = state.live.as_mut() {
                                 live.activity =
                                     "cancellation requested; waiting for safe boundary".into();
                             }
+                        } else if state.ask.is_some() {
+                            // While the agent waits for an answer, keys answer it; nothing else is typed.
+                            answer_ask(state, &key);
                         } else {
                             editor_key(state, key);
                         }
@@ -368,6 +382,7 @@ fn run_turn(
         Ok(())
     })?;
 
+    state.ask = None;
     let live = state.live.take().unwrap_or_default();
     match outcome.expect("turn outcome") {
         Ok(answer) => {
@@ -407,6 +422,31 @@ fn run_turn(
         }
     }
     Ok(())
+}
+
+/// Keys for the "may I run this?" question: `y` once, `s` this session, `a` always
+/// (saved as an operator rule), `n` or Esc to deny. Anything else is ignored.
+fn answer_ask(state: &mut State, key: &KeyEvent) {
+    let Some((id, request)) = state.ask.clone() else {
+        return;
+    };
+    let (answer, label) = match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => (ConsentAnswer::Once, "allowed once"),
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            (ConsentAnswer::Session, "allowed for this session")
+        }
+        KeyCode::Char('a') | KeyCode::Char('A') => (ConsentAnswer::Always, "always allowed"),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => (ConsentAnswer::Deny, "denied"),
+        _ => return,
+    };
+    if state.gate.answer(id, answer) {
+        let subject = match answer {
+            ConsentAnswer::Session | ConsentAnswer::Always => request.suggest.join(" "),
+            _ => request.argv.join(" "),
+        };
+        state.push(Entry::new(Kind::Note, format!("{label}: {subject}")));
+        state.ask = None;
+    }
 }
 
 fn starter_prompt(key: &KeyCode) -> Option<&'static str> {
@@ -617,6 +657,10 @@ struct State {
     seen_approvals: Vec<String>,
     turns: u64,
     quit: bool,
+    /// Where the agent asks about commands `--exec smart` cannot classify as safe.
+    gate: Arc<ConsentGate>,
+    /// The question waiting for the operator, if any.
+    ask: Option<(u64, ConsentRequest)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -789,6 +833,8 @@ impl State {
             seen_approvals: Vec::new(),
             turns,
             quit: false,
+            gate: Arc::new(ConsentGate::default()),
+            ask: None,
         }
     }
 
@@ -1388,6 +1434,7 @@ fn draw(frame: &mut Frame, state: &mut State) {
     draw_transcript(frame, state, chunks[1]);
     draw_input(frame, state, chunks[2]);
     draw_palette(frame, state, content, chunks[2]);
+    draw_ask(frame, state, content, chunks[2]);
     draw_hints(frame, state, chunks[3]);
     if show_tips {
         draw_tip(frame, state, chunks[4]);
@@ -1989,6 +2036,83 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
             ),
         );
     }
+}
+
+/// The question the agent is waiting on, over the transcript just above the composer.
+fn draw_ask(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
+    let Some((_, request)) = state.ask.as_ref() else {
+        return;
+    };
+    let available = input.y.saturating_sub(content.y);
+    let width = content.width.min(100);
+    if available < 9 || width < 30 {
+        return;
+    }
+    let inner_width = usize::from(width.saturating_sub(4));
+    let command = clip(&request.argv.join(" "), inner_width.saturating_sub(2));
+    let reason = clip(&format!("{}.", request.reason), inner_width);
+    let always = clip(&request.suggest.join(" "), inner_width.saturating_sub(28));
+    let height = 9u16;
+    let area = Rect::new(
+        content.x + (content.width - width) / 2,
+        input.y - height,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(USER))
+        .title(Span::styled(
+            " needs your OK · the agent wants to run a command ",
+            Style::default().fg(USER).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(PANEL));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let key = |letter: &str| {
+        Span::styled(
+            letter.to_string(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("  {command}"),
+            Style::default().fg(CODE),
+        )),
+        Line::from(Span::styled(
+            format!("  {reason}"),
+            Style::default().fg(DIM),
+        )),
+        Line::from(""),
+        Line::from(vec![Span::raw("  "), key("y"), Span::raw("  allow once")]),
+        Line::from(vec![
+            Span::raw("  "),
+            key("s"),
+            Span::raw("  allow for this session"),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            key("a"),
+            Span::raw(format!("  always allow \"{always}\" (saves a rule)")),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    let deny = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width,
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("n", Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
+            Span::raw("  deny (Esc too). Ctrl+C cancels the turn and denies."),
+        ])),
+        deny,
+    );
 }
 
 fn draw_palette(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
@@ -4235,5 +4359,99 @@ mod tests {
         type_text(&mut state, "/model ");
         assert!(state.palette.is_none());
         assert_eq!(state.editor.text, "/model ");
+    }
+
+    fn ask_state() -> (State, std::thread::JoinHandle<ConsentAnswer>) {
+        let mut state = State::new(meta(), 0, 0);
+        state.live = Some(LiveTurn::default());
+        state.busy = true;
+        let gate = state.gate.clone();
+        // The agent side blocks in `ask`; park it on a thread and wait for the question to appear.
+        let agent_side = std::thread::spawn(move || {
+            use crate::consent::Consent;
+            gate.ask(&ConsentRequest {
+                argv: vec!["npm".into(), "install".into(), "left-pad".into()],
+                reason: "npm install installs or changes dependencies".into(),
+                suggest: vec!["npm".into(), "install".into()],
+            })
+        });
+        while state.gate.pending().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        state.ask = state.gate.pending();
+        (state, agent_side)
+    }
+
+    #[test]
+    fn a_waiting_question_is_shown_with_the_command_the_reason_and_every_answer() {
+        let (mut state, agent_side) = ask_state();
+        let screen = render(&mut state, 110, 32);
+        for want in [
+            "needs your OK",
+            "npm install left-pad",
+            "installs or changes dependencies",
+            "allow once",
+            "allow for this session",
+            "always allow \"npm install\"",
+            "deny",
+        ] {
+            assert!(screen.contains(want), "{want} missing:\n{screen}");
+        }
+        state.gate.cancel();
+        assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+    }
+
+    #[test]
+    fn keys_answer_the_question_and_nothing_else_does() {
+        for (key, expected, note) in [
+            (
+                KeyCode::Char('y'),
+                ConsentAnswer::Once,
+                "allowed once: npm install left-pad",
+            ),
+            (
+                KeyCode::Char('s'),
+                ConsentAnswer::Session,
+                "allowed for this session: npm install",
+            ),
+            (
+                KeyCode::Char('a'),
+                ConsentAnswer::Always,
+                "always allowed: npm install",
+            ),
+            (
+                KeyCode::Char('n'),
+                ConsentAnswer::Deny,
+                "denied: npm install left-pad",
+            ),
+            (
+                KeyCode::Esc,
+                ConsentAnswer::Deny,
+                "denied: npm install left-pad",
+            ),
+        ] {
+            let (mut state, agent_side) = ask_state();
+            // A stray key answers nothing and the question stays open.
+            answer_ask(
+                &mut state,
+                &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            );
+            answer_ask(
+                &mut state,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            assert!(
+                state.gate.pending().is_some(),
+                "only the listed keys answer"
+            );
+            answer_ask(&mut state, &KeyEvent::new(key, KeyModifiers::NONE));
+            assert!(state.ask.is_none());
+            assert!(
+                state.entries.iter().any(|e| e.text.contains(note)),
+                "{note}"
+            );
+            // The agent's side received exactly that answer.
+            assert_eq!(agent_side.join().unwrap(), expected);
+        }
     }
 }
