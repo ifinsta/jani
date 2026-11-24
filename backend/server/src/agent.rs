@@ -50,6 +50,10 @@ struct Session {
     network: NetworkPolicy,
     run_seq: u64,
     last_run_id: Option<String>,
+    /// Where `--exec smart` asks the operator about commands it cannot classify as safe.
+    consent: Option<crate::consent::SharedConsent>,
+    /// Command prefixes the operator allowed "for this session".
+    session_exec: Vec<Vec<String>>,
 }
 
 fn clipped(value: Value) -> String {
@@ -271,7 +275,7 @@ Runtime context:
 - Policy revision: {policy}
 - Sandbox profile: {sandbox}; network: {network}
 - Operator write scope: {write_scope}
-- Command execution permitted: {allow_exec}
+- Command execution: {allow_exec}
 - Project permission rules: {project_permissions}
 - Work-contract acceptance criteria: {acceptance}
 - Approved plugin capabilities (advisory catalog): {capabilities}
@@ -298,7 +302,11 @@ Discovered skill names: {skills}"#,
             sandbox = sandbox_profile.as_str(),
             network = network.as_str(),
             write_scope = write_scope,
-            allow_exec = cfg.allow_exec,
+            allow_exec = match cfg.exec_mode {
+                config::ExecMode::Off => "off",
+                config::ExecMode::Allowlist => "fixed list of test and git commands",
+                config::ExecMode::Smart => "smart: inspection and (when sandboxed) build/test run directly; other commands are put to the operator",
+            },
             project_permissions = project_permissions,
             acceptance = acceptance,
             capabilities = capabilities,
@@ -323,6 +331,8 @@ Discovered skill names: {skills}"#,
             network,
             run_seq: 0,
             last_run_id: None,
+            consent: None,
+            session_exec: Vec::new(),
         })
     }
 
@@ -536,6 +546,8 @@ Discovered skill names: {skills}"#,
                             default_profile: self.sandbox_profile,
                             default_network: self.network,
                             approval_ids: &self.approval_ids,
+                            consent: self.consent.as_deref(),
+                            session_exec: &mut self.session_exec,
                         };
                         let result = broker.invoke(&invocation_id, name, &params);
                         json!(result)
@@ -675,6 +687,11 @@ impl<'a> Agent<'a> {
         let catalog = self.catalog;
         self.session
             .run_turn(cfg, catalog, prompt, announce, None, None)
+    }
+
+    /// Attach the operator interface that answers "may I run this?" for `--exec smart`.
+    pub fn set_consent(&mut self, consent: crate::consent::SharedConsent) {
+        self.session.consent = Some(consent);
     }
 
     pub fn task_id(&self) -> &str {

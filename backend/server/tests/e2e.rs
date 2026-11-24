@@ -727,3 +727,139 @@ fn repeating_one_call_is_called_out_and_then_stopped() {
     assert_eq!(run_end["reason_code"], "repeated_calls");
     let _ = std::fs::remove_dir_all(root);
 }
+
+fn command_call(id: usize, argv: &[&str]) -> String {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
+            "id": format!("call-{id}"),
+            "type": "function",
+            "function": {"name": "command", "arguments": json!({"argv": argv, "timeout_secs": 30}).to_string()}
+        }]}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 4}
+    })
+    .to_string()
+}
+
+fn bwrap_works() -> bool {
+    std::process::Command::new("bwrap")
+        .args(["--unshare-net", "--ro-bind", "/", "/", "true"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// The headline behaviour of `--exec smart`, against a real sandbox: the agent
+/// inspects and builds on its own, is stopped where the sandbox ends, and is
+/// refused (not blocked forever) what it cannot be trusted with.
+#[cfg(unix)]
+#[test]
+fn smart_exec_builds_inside_the_sandbox_and_refuses_the_rest() {
+    if !bwrap_works() || which_make().is_none() {
+        eprintln!("skipped: needs bubblewrap with network namespaces and make");
+        return;
+    }
+    let root = temp_root();
+    std::fs::write(
+        root.join("Makefile"),
+        "out:\n\tmkdir -p build && echo built > build/out.txt\nleak:\n\techo leaked > leak.txt\n",
+    )
+    .unwrap();
+    // `make` projects create their output directory once; the sandbox opens up an existing one.
+    std::fs::create_dir_all(root.join("build")).unwrap();
+    let state = root.join("state");
+    let script = vec![
+        command_call(0, &["ls", "src"]),
+        command_call(1, &["make", "out"]),
+        command_call(2, &["make", "leak"]),
+        command_call(3, &["touch", "src/made.txt"]),
+        command_call(4, &["sudo", "ls"]),
+        text_reply("Built into build/. The leak target could not write outside the build directory, which is the sandbox working."),
+    ];
+    let (base, bodies, provider) = start_provider(script);
+    let child = support::jani()
+        .args([
+            "--print",
+            "build the project",
+            "--repo",
+            root.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--exec",
+            "smart",
+            "--sandbox",
+            "auto",
+            "--max-steps",
+            "12",
+        ])
+        .env("JANI_API_KEY", "test-provider-secret")
+        .env("JANI_API_BASE", &base)
+        .env("JANI_MODEL", "test-model")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_POLICY")
+        .env_remove("JANI_IDENTITY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jani");
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    provider.join().unwrap();
+
+    // The build wrote where the sandbox allows; the "leak" could not write the read-only worktree.
+    assert_eq!(
+        std::fs::read_to_string(root.join("build/out.txt"))
+            .unwrap()
+            .trim(),
+        "built"
+    );
+    assert!(
+        !root.join("leak.txt").exists(),
+        "the sandbox must keep the worktree read-only"
+    );
+    // Without an operator to ask, the unclassified command did not run and neither did sudo.
+    assert!(!root.join("src/made.txt").exists());
+
+    let events = journal_events(&state);
+    let outcomes: Vec<(String, String)> = events
+        .iter()
+        .filter(|e| e["action"] == "command.exec")
+        .map(|e| {
+            (
+                e["decision"].as_str().unwrap().to_string(),
+                e["reason_code"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let has =
+        |decision: &str, reason: &str| outcomes.iter().any(|(d, r)| d == decision && r == reason);
+    assert!(has("permit", "exec_safe_inspection"), "{outcomes:?}");
+    assert!(has("permit", "exec_confined_build"), "{outcomes:?}");
+    assert!(has("deny", "exec_consent_required"), "{outcomes:?}");
+    assert!(has("deny", "exec_policy_denied"), "{outcomes:?}");
+
+    // What the model saw: the leak target failed, and the refusals told it not to route around them.
+    let requests = bodies.lock().unwrap().clone();
+    let last = requests.last().unwrap();
+    assert!(
+        last.contains("Read-only file system") || last.contains("leak.txt"),
+        "the failed write is visible to the model"
+    );
+    assert!(
+        last.contains("jani exec allow"),
+        "the consent refusal tells the model what the operator can do"
+    );
+    assert!(
+        last.contains("changes the machine"),
+        "the hard deny says why"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn which_make() -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join("make"))
+            .find(|candidate| candidate.is_file())
+    })
+}

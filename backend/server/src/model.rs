@@ -826,7 +826,7 @@ fn spec_for(tool: Tool) -> (&'static str, Value) {
             },"required":["tool","operation","args"],"additionalProperties":false}),
         ),
         Tool::Command => (
-            "Run an allowlisted test or git command permitted by the operator",
+            "Run one command as an argv list (no shell: no pipes, &&, redirection or globbing; one program per call, working directory is the worktree). What runs depends on how the operator started Jani: a fixed list of test and git commands, or in smart mode read-only inspection (ls, grep, rg, find, git status...) and, inside a sandbox, project build and test commands run directly, while anything else is put to the operator, who may decline. A refusal or decline is final: do not retry a variant of the same command; continue without it or say what you need.",
             json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":crate::exec::MAX_TIMEOUT_SECS}},"required":["argv","timeout_secs"],"additionalProperties":false}),
         ),
     }

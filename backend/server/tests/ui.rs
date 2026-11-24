@@ -3,7 +3,7 @@
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
@@ -53,6 +53,10 @@ fn start_with_state(root: &std::path::Path) -> Ui {
 }
 
 fn start(extra: &[&str]) -> Ui {
+    start_with_env(extra, &[])
+}
+
+fn start_with_env(extra: &[&str], env: &[(&str, String)]) -> Ui {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -67,6 +71,7 @@ fn start(extra: &[&str]) -> Ui {
         .arg(root.join("state"))
         .args(extra)
         .env("JANI_API_KEY", "test-key")
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -552,4 +557,195 @@ fn unix_socket_mode_has_no_tcp_port_and_keeps_every_check() {
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A model that replies from a script, one reply per request.
+fn scripted_provider(replies: Vec<Value>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for reply in replies {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim_end().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.trim_end().split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            // The workspace streams, so answer as server-sent events.
+            let message = &reply["choices"][0]["message"];
+            let mut events = Vec::new();
+            if let Some(calls) = message["tool_calls"].as_array() {
+                let calls: Vec<Value> = calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, c)| json!({"index": index, "id": c["id"], "type": c["type"], "function": c["function"]}))
+                    .collect();
+                events.push(json!({"choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": calls}}]}));
+                events.push(
+                    json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+                );
+            } else {
+                events.push(json!({"choices": [{"index": 0, "delta": {"role": "assistant", "content": message["content"]}}]}));
+                events
+                    .push(json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}));
+            }
+            events.push(json!({"choices": [], "usage": reply["usage"]}));
+            let mut text = String::new();
+            for event in events {
+                text.push_str(&format!("data: {event}\n\n"));
+            }
+            text.push_str("data: [DONE]\n\n");
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{text}"
+            );
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    format!("http://{address}/v1")
+}
+
+fn tool_call(argv: &[&str]) -> Value {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
+            "id": "call-1", "type": "function",
+            "function": {"name": "command", "arguments": json!({"argv": argv, "timeout_secs": 20}).to_string()}
+        }]}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+    })
+}
+
+fn say(text: &str) -> Value {
+    json!({"choices": [{"message": {"role": "assistant", "content": text}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}})
+}
+
+fn wait_for_consent(ui: &Ui) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        let session = get(ui, "/api/session?after=-1").json();
+        if !session["consent"].is_null() {
+            return session["consent"].clone();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "the agent never asked: {}",
+        get(ui, "/api/session?after=-1").body
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn smart_exec_asks_the_operator_in_the_workspace_and_the_answer_decides() {
+    let base = scripted_provider(vec![
+        tool_call(&["touch", "made.txt"]),
+        say("made it"),
+        tool_call(&["touch", "other.txt"]),
+        say("understood, not made"),
+    ]);
+    let ui = start_with_env(
+        &["--exec", "smart"],
+        &[("JANI_API_BASE", base), ("JANI_MODEL", "scripted".into())],
+    );
+    // Authority shows the mode the operator started with.
+    assert_eq!(
+        get(&ui, "/api/overview").json()["authority"]["execMode"],
+        "smart"
+    );
+
+    post(&ui, "/api/session/send", json!({"text": "make a file"}));
+    let question = wait_for_consent(&ui);
+    assert_eq!(question["command"], "touch made.txt");
+    assert!(question["reason"].as_str().unwrap().contains("touch"));
+    assert_eq!(question["suggest"], "touch made.txt");
+    // The file is not made while the question is open.
+    assert!(!ui.root.join("repo/made.txt").exists());
+    // A stale or wrong question id is refused; a malformed answer is refused.
+    let id = question["id"].as_u64().unwrap();
+    assert_eq!(
+        post(
+            &ui,
+            "/api/consent",
+            json!({"id": id + 7, "answer": "always"})
+        )
+        .status,
+        409
+    );
+    assert_eq!(
+        post(&ui, "/api/consent", json!({"id": id, "answer": "sure"})).status,
+        400
+    );
+    assert_eq!(
+        post(&ui, "/api/consent", json!({"id": id, "answer": "once"})).status,
+        200
+    );
+    wait_for_entry(&ui, "made it");
+    assert!(ui.root.join("repo/made.txt").exists());
+    assert!(get(&ui, "/api/session?after=-1").json()["consent"].is_null());
+    // Answering twice does nothing.
+    assert_eq!(
+        post(&ui, "/api/consent", json!({"id": id, "answer": "once"})).status,
+        409
+    );
+
+    // Declining stops the command and the model is told so.
+    post(&ui, "/api/session/send", json!({"text": "make another"}));
+    let second = wait_for_consent(&ui);
+    assert_eq!(second["command"], "touch other.txt");
+    assert_eq!(
+        post(
+            &ui,
+            "/api/consent",
+            json!({"id": second["id"], "answer": "deny"})
+        )
+        .status,
+        200
+    );
+    wait_for_entry(&ui, "understood, not made");
+    assert!(!ui.root.join("repo/other.txt").exists());
+
+    // And the journal says who allowed what, and what was declined.
+    let journal = get(&ui, "/api/journal?limit=200").json();
+    let text = journal.to_string();
+    assert!(text.contains("exec_operator_once"), "{text}");
+    assert!(text.contains("exec_operator_declined"), "{text}");
+}
+
+#[cfg(unix)]
+#[test]
+fn cancelling_a_turn_answers_a_waiting_question_no() {
+    let base = scripted_provider(vec![tool_call(&["touch", "never.txt"]), say("stopped")]);
+    let ui = start_with_env(
+        &["--exec", "smart"],
+        &[("JANI_API_BASE", base), ("JANI_MODEL", "scripted".into())],
+    );
+    post(&ui, "/api/session/send", json!({"text": "do it"}));
+    wait_for_consent(&ui);
+    assert_eq!(post(&ui, "/api/session/cancel", json!({})).status, 202);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let session = get(&ui, "/api/session?after=-1").json();
+        if session["consent"].is_null() && session["busy"] == false {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the question never closed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!ui.root.join("repo/never.txt").exists());
 }

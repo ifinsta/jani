@@ -5,7 +5,9 @@ pub use jani_core::{
 mod agent;
 mod attention;
 mod broker;
+mod consent;
 mod exec;
+mod execpolicy;
 mod gateway;
 mod http;
 mod lab;
@@ -109,6 +111,7 @@ fn run() -> JResult<()> {
         },
         "plugins" => plugins_command(&cfg),
         "policy" => policy_command(&cfg),
+        "exec" => exec_command(&cfg),
         "audit" => audit_command(&cfg),
         "inspect" => inspect_command(&cfg),
         "approvals" => approvals_command(&cfg),
@@ -322,6 +325,86 @@ fn policy_command(cfg: &Config) -> JResult<()> {
             print_json(&policy_check(cfg, action, resource)?)
         }
         Some(other) => Err(format!("unknown policy subcommand '{other}'")),
+    }
+}
+
+/// `jani exec rules | allow -- CMD | deny -- CMD | forget N | check -- CMD`
+fn exec_command(cfg: &Config) -> JResult<()> {
+    let argv = || -> JResult<Vec<String>> {
+        if cfg.positional.is_empty() {
+            return Err(
+                "give the command after `--`, e.g. `jani exec allow -- cargo build`".into(),
+            );
+        }
+        Ok(cfg.positional.clone())
+    };
+    let show = |rule: &execpolicy::Rule| {
+        serde_json::json!({
+            "effect": if rule.allow { "allow" } else { "deny" },
+            "command": rule.argv.join(" "),
+            "argv": rule.argv,
+            "addedBy": rule.by,
+            "added": rule.added,
+        })
+    };
+    match cfg.sub.as_deref() {
+        Some("rules") | None => {
+            let rules = execpolicy::load_rules(&cfg.state_dir)?;
+            print_json(&serde_json::json!({
+                "mode": cfg.exec_mode.as_str(),
+                "file": cfg.state_dir.join("exec-rules.json"),
+                "rules": rules.iter().enumerate().map(|(i, r)| {
+                    let mut v = show(r);
+                    v["number"] = (i + 1).into();
+                    v
+                }).collect::<Vec<_>>(),
+            }))
+        }
+        Some(which @ ("allow" | "deny")) => {
+            let rule =
+                execpolicy::add_rule(&cfg.state_dir, which == "allow", argv()?, &cfg.principal)?;
+            print_json(&show(&rule))
+        }
+        Some("forget") => {
+            let number: usize = cfg
+                .positional
+                .first()
+                .and_then(|n| n.parse().ok())
+                .ok_or("forget needs a rule number from `jani exec rules`")?;
+            print_json(&show(&execpolicy::remove_rule(&cfg.state_dir, number)?))
+        }
+        Some("check") => {
+            let argv = argv()?;
+            let rules = execpolicy::load_rules(&cfg.state_dir)?;
+            let profile = execpolicy::default_profile(cfg);
+            let (confined, network_cut) = execpolicy::confinement(cfg, profile, cfg.sandbox_net);
+            let verdict = execpolicy::classify(
+                &argv,
+                &execpolicy::Context {
+                    cfg,
+                    confined,
+                    network_cut,
+                    rules: &rules,
+                    session: &[],
+                },
+            );
+            let (outcome, why, suggest) = match verdict {
+                execpolicy::Verdict::Allow(basis) => ("runs", basis.code().to_string(), Vec::new()),
+                execpolicy::Verdict::Ask { reason, suggest } => {
+                    ("asks the operator", reason, suggest)
+                }
+                execpolicy::Verdict::Deny { reason } => ("refused", reason, Vec::new()),
+            };
+            print_json(&serde_json::json!({
+                "command": argv.join(" "),
+                "outcome": outcome,
+                "why": why,
+                "wouldRemember": suggest.join(" "),
+                "mode": cfg.exec_mode.as_str(),
+                "sandbox": {"profile": profile.as_str(), "confined": confined, "networkCut": network_cut},
+            }))
+        }
+        Some(other) => Err(format!("unknown exec subcommand '{other}'")),
     }
 }
 

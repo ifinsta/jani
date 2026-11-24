@@ -22,6 +22,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 - [PROJECT CONTRACT](PROJECT_CONTRACT.md)
 - [LAB — signed self-improvement experiments](LAB.md)
 - [WEB WORKSPACE — local browser view of runs, approvals and the audit journal](WEB_WORKSPACE.md)
+- [EXECUTION — what the agent may run: off, allowlist, or smart (classified, sandbox-aware, operator-answered)](EXECUTION.md)
 - [RELEASE ACCEPTANCE](RELEASE_ACCEPTANCE.md)
 
 ## Core, security and lifecycle

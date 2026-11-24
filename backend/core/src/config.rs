@@ -108,6 +108,39 @@ impl ModelChoice {
     }
 }
 
+/// How much the model may run. Authority is the operator's: settings files
+/// and the model can lower it, never raise it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ExecMode {
+    /// No commands at all.
+    #[default]
+    Off,
+    /// Only the fixed list of test runners and git commands (`--allow-exec`).
+    Allowlist,
+    /// Classify each command: read-only inspection runs, builds and tests run
+    /// when a sandbox contains them, and anything else asks the operator.
+    Smart,
+}
+
+impl ExecMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "off" | "none" => Some(Self::Off),
+            "allowlist" | "fixed" => Some(Self::Allowlist),
+            "smart" | "auto" => Some(Self::Smart),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Allowlist => "allowlist",
+            Self::Smart => "smart",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub command: String,
@@ -131,6 +164,7 @@ pub struct Config {
     pub root: PathBuf,
     pub allow_write: bool,
     pub allow_exec: bool,
+    pub exec_mode: ExecMode,
     pub write_paths: Vec<PathBuf>,
     pub exec_programs: Vec<String>,
     pub mode: RuntimeMode,
@@ -286,6 +320,9 @@ OPTIONS:
   --allow-write           Enable gated file editing
   --write-path PATH       Approved relative edit scope; repeat as necessary
   --allow-exec            Enable allowlisted test/git commands
+  --exec MODE             Command execution: off (default), allowlist (= --allow-exec) or smart:
+                          read-only inspection runs, builds/tests run when a sandbox contains
+                          them, anything else asks the operator. See docs/EXECUTION.md
   --exec-program NAME     Additional test runner: pytest/python/node/go/dotnet/npm
 
 COMMAND OPTIONS:
@@ -482,6 +519,7 @@ impl Config {
             root: root.clone(),
             allow_write: false,
             allow_exec: false,
+            exec_mode: ExecMode::Off,
             write_paths: Vec::new(),
             exec_programs: Vec::new(),
             mode: RuntimeMode::LocalUnmanaged,
@@ -867,7 +905,7 @@ impl Config {
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
                 | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
-                | "mcp" | "native" | "lab" | "update" | "ui" => {
+                | "mcp" | "native" | "lab" | "update" | "ui" | "exec" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -978,7 +1016,23 @@ impl Config {
                     }
                 }
                 "--allow-write" => cfg.allow_write = true,
-                "--allow-exec" => cfg.allow_exec = true,
+                "--allow-exec" => {
+                    cfg.allow_exec = true;
+                    if cfg.exec_mode == ExecMode::Off {
+                        cfg.exec_mode = ExecMode::Allowlist;
+                    }
+                }
+                "--exec" => {
+                    let value = take_value(args, &mut i, a)?;
+                    cfg.exec_mode = ExecMode::parse(&value)
+                        .ok_or_else(|| "--exec must be off, allowlist or smart".to_string())?;
+                    cfg.allow_exec = cfg.exec_mode != ExecMode::Off;
+                }
+                // `jani exec allow -- cargo build --release`: everything after `--` is the command.
+                "--" if cfg.command == "exec" => {
+                    cfg.positional.extend(args[i + 1..].iter().cloned());
+                    break;
+                }
                 "--write-path" => cfg
                     .write_paths
                     .push(PathBuf::from(take_value(args, &mut i, a)?)),

@@ -1,4 +1,4 @@
-use crate::config::{Config, JResult};
+use crate::config::{validate_relative, Config, JResult};
 use crate::process::ProcessIsolation;
 use crate::types::{new_id, NetworkPolicy, SandboxMode, SandboxProfile, SandboxReceipt};
 use serde_json::json;
@@ -205,10 +205,14 @@ impl<'a> SandboxManager<'a> {
 
     /// Build the command that executes `argv` under the selected plan. Write
     /// scopes are created if absent because the operator already approved them.
-    pub fn command(
+    /// Build the command that executes `argv` under the selected plan, with extra
+    /// worktree-relative directories the command may write (build output such as `target`). Only a confining backend uses them;
+    /// a path that is absolute, climbs out, or is a symlink is ignored.
+    pub fn command_with(
         &self,
         plan: &SandboxPlan,
         argv: &[String],
+        extra_writable: &[PathBuf],
     ) -> JResult<(Command, ProcessIsolation)> {
         let (program, args) = argv.split_first().ok_or("empty executable")?;
         match &plan.backend {
@@ -288,6 +292,26 @@ impl<'a> SandboxManager<'a> {
                 for scope in &self.cfg.write_paths {
                     let full = self.cfg.root.join(scope);
                     cmd.arg("--bind").arg(&full).arg(&full);
+                }
+                for dir in extra_writable {
+                    if validate_relative(dir).is_err() {
+                        continue;
+                    }
+                    let full = self.cfg.root.join(dir);
+                    let linked = std::fs::symlink_metadata(&full)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                    if linked || std::fs::create_dir_all(&full).is_err() {
+                        continue;
+                    }
+                    // Creating it must not have followed a symlinked parent out of the worktree.
+                    let inside = match (full.canonicalize(), self.cfg.root.canonicalize()) {
+                        (Ok(real), Ok(root)) => real.starts_with(root),
+                        _ => false,
+                    };
+                    if inside {
+                        cmd.arg("--bind").arg(&full).arg(&full);
+                    }
                 }
                 cmd.arg("--chdir").arg(root).arg("--");
                 cmd.arg(program).args(args);

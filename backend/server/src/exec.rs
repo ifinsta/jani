@@ -40,6 +40,16 @@ pub fn run(cfg: &Config, argv: &[String], timeout: u64) -> JResult<Value> {
     }))
 }
 
+/// What the broker has already decided about one command.
+#[derive(Clone, Debug, Default)]
+pub struct ExecGrant {
+    /// `--exec smart` classified (or the operator approved) this exact command, so
+    /// the fixed list is not consulted again.
+    pub preauthorized: bool,
+    /// Worktree-relative build-output directories the sandbox may write.
+    pub extra_writable: Vec<std::path::PathBuf>,
+}
+
 /// Execute an allowlisted command through the selected OS sandbox backend and
 /// return both its output and an execution receipt. A profile that requires
 /// confinement fails closed when no backend can satisfy it.
@@ -49,6 +59,7 @@ pub fn run_confined(
     timeout: u64,
     profile: SandboxProfile,
     network: NetworkPolicy,
+    grant: &ExecGrant,
 ) -> JResult<(Value, SandboxReceipt)> {
     if !cfg.allow_exec {
         return Err("command execution disabled; --allow-exec required".into());
@@ -58,7 +69,9 @@ pub fn run_confined(
             "command timeout must be 1..={MAX_TIMEOUT_SECS} seconds"
         ));
     }
-    validate(argv, cfg)?;
+    if !grant.preauthorized {
+        validate(argv, cfg)?;
+    }
     if argv.first().map(String::as_str) == Some("git")
         && argv.get(1).map(String::as_str) == Some("commit")
     {
@@ -66,7 +79,7 @@ pub fn run_confined(
     }
     let manager = SandboxManager::new(cfg);
     let plan: SandboxPlan = manager.prepare(profile, network)?;
-    let (mut cmd, isolation) = manager.command(&plan, argv)?;
+    let (mut cmd, isolation) = manager.command_with(&plan, argv, &grant.extra_writable)?;
     let out = execute_with(&mut cmd, &cfg.root, timeout, isolation)?;
     let termination = if out.timed_out {
         Some("timeout-or-output-limit".to_string())

@@ -159,6 +159,8 @@ struct Shared<'a> {
     jobs: Mutex<Option<mpsc::Sender<Job>>>,
     cancel: AtomicBool,
     live: AtomicUsize,
+    /// Where the agent asks about commands `--exec smart` cannot classify as safe.
+    gate: std::sync::Arc<crate::consent::ConsentGate>,
 }
 
 fn random_hex(bytes: usize) -> String {
@@ -215,6 +217,7 @@ pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
         jobs: Mutex::new(None),
         cancel: AtomicBool::new(false),
         live: AtomicUsize::new(0),
+        gate: std::sync::Arc::new(crate::consent::ConsentGate::default()),
     };
     {
         // A closed stdout must not take the server down.
@@ -223,7 +226,8 @@ pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
         let _ = writeln!(
             out,
             "Local only. Authority is frozen at startup (writes: {}, commands: {}). Press Ctrl+C to stop.",
-            cfg.allow_write, cfg.allow_exec
+            cfg.allow_write,
+            cfg.exec_mode.as_str()
         );
     }
     let (tx, rx) = mpsc::channel();
@@ -301,6 +305,7 @@ fn worker(shared: &Shared<'_>, rx: mpsc::Receiver<Job>) {
             return;
         }
     };
+    agent.set_consent(shared.gate.clone());
     shared.meta(|t| {
         t.model = agent.model().to_string();
         t.task_id = agent.task_id().to_string();
@@ -328,6 +333,7 @@ fn worker(shared: &Shared<'_>, rx: mpsc::Receiver<Job>) {
         } else {
             shared.push("you", line.clone(), json!({}));
             shared.cancel.store(false, Ordering::SeqCst);
+            shared.gate.rearm();
             let mut reasoning = String::new();
             let result = agent.run_turn_events_with_cancel(
                 &line,
@@ -728,8 +734,10 @@ fn route(shared: &Shared<'_>, request: &Request) -> Reply {
         }
         ("GET", "/api/session") => Ok((200, session(shared, request))),
         ("POST", "/api/session/send") => send(shared, request),
+        ("POST", "/api/consent") => answer_consent(shared, request),
         ("POST", "/api/session/cancel") => {
             shared.cancel.store(true, Ordering::SeqCst);
+            shared.gate.cancel();
             Ok((202, json!({"ok": true})))
         }
         _ => Err((404, "not found".into())),
@@ -783,6 +791,7 @@ fn overview(shared: &Shared<'_>) -> JResult<Value> {
             "allowWrite": cfg.allow_write,
             "writePaths": cfg.write_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "allowExec": cfg.allow_exec,
+            "execMode": cfg.exec_mode.as_str(),
             "execPrograms": cfg.exec_programs,
             "sandbox": cfg.sandbox_mode.as_str(),
             "network": cfg.sandbox_net.as_str(),
@@ -1049,7 +1058,35 @@ fn session(shared: &Shared<'_>, request: &Request) -> Value {
         "model": t.model,
         "taskId": t.task_id,
         "fault": t.fault,
+        "consent": shared.gate.pending().map(|(id, q)| json!({
+            "id": id,
+            "argv": q.argv,
+            "command": q.argv.join(" "),
+            "reason": q.reason,
+            "suggest": q.suggest.join(" "),
+        })),
     })
+}
+
+/// The operator's answer to a "may I run this?" card.
+fn answer_consent(shared: &Shared<'_>, request: &Request) -> Reply {
+    let body: Value = serde_json::from_slice(&request.body)
+        .map_err(|_| (400, "body must be JSON".to_string()))?;
+    let id = body["id"]
+        .as_u64()
+        .ok_or((400, "id is required".to_string()))?;
+    let answer = match body["answer"].as_str() {
+        Some("once") => crate::consent::ConsentAnswer::Once,
+        Some("session") => crate::consent::ConsentAnswer::Session,
+        Some("always") => crate::consent::ConsentAnswer::Always,
+        Some("deny") => crate::consent::ConsentAnswer::Deny,
+        _ => return Err((400, "answer must be once, session, always or deny".into())),
+    };
+    if shared.gate.answer(id, answer) {
+        Ok((200, json!({"ok": true})))
+    } else {
+        Err((409, "that question is no longer waiting".into()))
+    }
 }
 
 fn send(shared: &Shared<'_>, request: &Request) -> Reply {

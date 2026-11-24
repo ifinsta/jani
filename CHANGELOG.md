@@ -20,6 +20,15 @@ This page records what changed and what it means for compatibility. It is a deve
 - `releases/` is a commit-based channel, not a tagged release feed. `releases/agent/windows/v0.1.2/` contains the Windows binary built from commit `c2b8b60` with clean build inputs (SHA-256 `5c11ec31…`, 9,818,112 bytes); the installed copy at `%LOCALAPPDATA%\Jani\bin\jani.exe` has the same digest.
 - This page describes commit `c2b8b60` (2026-10-27). Later documentation, probe and evidence changes are listed under Unreleased.
 
+## Unreleased: smart command execution
+
+- **`--exec smart`**: the agent is no longer limited to a fixed list of test commands. Read-only inspection (`ls`, `grep`, `rg`, `find`, `git status`...) runs on its own; builds and tests (`cargo`, `npm run`, `make`, `pytest`...) run on their own when a sandbox confines them (worktree read-only apart from the write scope, no network) and ask otherwise; privilege escalation, disk tools, deleting outside the worktree, force-push and publishing are always refused; everything else asks the operator. See [EXECUTION.md](EXECUTION.md).
+- **The operator answers in the web workspace**: Allow once, for the session, always (saved as an operator rule), or deny, with keyboard shortcuts. Cancelling a turn answers no. Under a signed policy, an unclassified command needs a signed approval instead.
+- **`jani exec rules|allow|deny|forget|check`** manages operator rules in `<state-dir>/exec-rules.json` and explains any verdict. The model and the settings files cannot write rules; an unreadable file stops all commands.
+- Journal events record why each command ran or was refused (`exec_confined_build`, `exec_operator_once`, `exec_consent_required`, ...).
+- A confining sandbox now opens a tool's build-output directory (`target/`, an existing `build/`, ...) for writing; nothing else in the worktree.
+- Fixed: the web workspace hid the first message of every session (and kept the welcome screen up during the first turn).
+
 ## Unreleased: turns end in a deliverable, not in a cutoff
 
 - **A spent step allowance is a handoff, not a failure.** Before, a turn that used all its steps failed with "model stopped after 20 turns without a final answer" and the conversation was rolled back to the last successful turn, discarding everything the agent had read. Now Jani asks the model, with tools forbidden, for a handoff (done and verified, not done, next steps), records the turn as completed (`step_checkpoint`), keeps the conversation, and "continue" resumes.

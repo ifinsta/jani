@@ -1,8 +1,10 @@
 use crate::approvals::{ApprovalStore, NewApproval};
 use crate::budget::BudgetLedger;
-use crate::config::Config;
+use crate::config::{Config, ExecMode};
+use crate::consent::{Consent, ConsentAnswer, ConsentRequest};
 use crate::data::{redact_json, Governance};
 use crate::exec;
+use crate::execpolicy::{self, Basis, Verdict};
 use crate::identity::VerifiedIdentity;
 use crate::journal::{decision as journal_decision, reason, EventInput, Journal};
 use crate::permissions::{Request as PermissionRequest, Verdict as PermissionVerdict};
@@ -32,6 +34,10 @@ pub struct Broker<'a> {
     pub default_profile: SandboxProfile,
     pub default_network: NetworkPolicy,
     pub approval_ids: &'a [String],
+    /// Who to ask when `--exec smart` meets a command it cannot classify as safe.
+    pub consent: Option<&'a dyn Consent>,
+    /// Command prefixes the operator allowed "for this session".
+    pub session_exec: &'a mut Vec<Vec<String>>,
 }
 
 struct Call {
@@ -214,6 +220,155 @@ impl<'a> Broker<'a> {
             data_classification: classification,
         })?;
         Ok(())
+    }
+
+    /// `--exec smart`: classify the command and, when it is not safe on its own,
+    /// get the operator's answer. Returns what the sandbox may additionally
+    /// write, or the finished (refused) result.
+    fn smart_exec(
+        &mut self,
+        invocation_id: &str,
+        call: &Call,
+        args: &Value,
+        decision: &mut PolicyDecision,
+    ) -> Result<exec::ExecGrant, Box<ToolResult>> {
+        let refuse = |this: &mut Self, code: &str, reason: String| {
+            let denial = PolicyDecision {
+                decision: Decision::Deny,
+                reason_code: code.into(),
+                decision_id: decision.decision_id.clone(),
+                policy_revision: decision.policy_revision.clone(),
+                constraints: Constraints {
+                    reason: Some(reason.clone()),
+                    ..Default::default()
+                },
+            };
+            Box::new(this.deny(invocation_id, call, &denial, reason))
+        };
+        let argv = match get_argv(args) {
+            Ok(argv) => argv,
+            Err(error) => return Err(refuse(self, "invalid_tool_request", error)),
+        };
+        let profile = decision
+            .constraints
+            .sandbox_profile
+            .as_deref()
+            .and_then(SandboxProfile::parse)
+            .unwrap_or(self.default_profile);
+        let network = decision
+            .constraints
+            .network
+            .as_deref()
+            .and_then(NetworkPolicy::parse)
+            .unwrap_or(self.default_network);
+        // Trust follows containment: only a sandbox that makes the worktree
+        // read-only (apart from the write scope) and cuts the network counts.
+        let (confined, network_cut) = execpolicy::confinement(self.cfg, profile, network);
+        let rules = match execpolicy::load_rules(&self.cfg.state_dir) {
+            Ok(rules) => rules,
+            Err(error) => {
+                return Err(refuse(
+                    self,
+                    "exec_rules_unreadable",
+                    format!(
+                        "operator command rules could not be read, so no command runs: {error}"
+                    ),
+                ))
+            }
+        };
+        let verdict = execpolicy::classify(
+            &argv,
+            &execpolicy::Context {
+                cfg: self.cfg,
+                confined,
+                network_cut,
+                rules: &rules,
+                session: self.session_exec,
+            },
+        );
+        let granted = || exec::ExecGrant {
+            preauthorized: true,
+            extra_writable: if confined {
+                execpolicy::build_outputs(&argv, &self.cfg.root)
+            } else {
+                Vec::new()
+            },
+        };
+        match verdict {
+            Verdict::Allow(basis) => {
+                decision.reason_code = basis.code().into();
+                Ok(granted())
+            }
+            Verdict::Deny { reason } => Err(refuse(self, "exec_policy_denied", reason)),
+            Verdict::Ask { reason, suggest } => {
+                let line = argv.join(" ");
+                if self.policy.effective.bundle.is_some() {
+                    // Managed mode: only a signed approval from a second person counts.
+                    if decision.decision == Decision::Permit {
+                        *decision = PolicyDecision {
+                            decision: Decision::RequireApproval,
+                            reason_code: "exec_approval_required".into(),
+                            decision_id: decision.decision_id.clone(),
+                            policy_revision: decision.policy_revision.clone(),
+                            constraints: Constraints {
+                                approval_class: Some("exec-unclassified".into()),
+                                reason: Some(format!("`{line}`: {reason}")),
+                                ..decision.constraints.clone()
+                            },
+                        };
+                    }
+                    return Ok(granted());
+                }
+                let Some(consent) = self.consent else {
+                    return Err(refuse(
+                        self,
+                        "exec_consent_required",
+                        format!(
+                            "`{line}` was not run: {reason}. Nobody is attached who can allow it. Tell the operator; they can allow it with `jani exec allow -- {}` or run it in `jani ui`. Do not try a variant of the command to get around this",
+                            suggest.join(" ")
+                        ),
+                    ));
+                };
+                match consent.ask(&ConsentRequest {
+                    argv: argv.clone(),
+                    reason: reason.clone(),
+                    suggest: suggest.clone(),
+                }) {
+                    ConsentAnswer::Deny => Err(refuse(
+                        self,
+                        "exec_operator_declined",
+                        format!("the operator declined `{line}`. Do not retry it or a variant; continue without it or report what you need"),
+                    )),
+                    ConsentAnswer::Once => {
+                        decision.reason_code = Basis::OperatorOnce.code().into();
+                        Ok(granted())
+                    }
+                    ConsentAnswer::Session => {
+                        self.session_exec.push(suggest);
+                        decision.reason_code = Basis::OperatorSession.code().into();
+                        Ok(granted())
+                    }
+                    ConsentAnswer::Always => {
+                        match execpolicy::add_rule(
+                            &self.cfg.state_dir,
+                            true,
+                            suggest,
+                            &self.identity.principal,
+                        ) {
+                            Ok(_) => {
+                                decision.reason_code = Basis::OperatorAlways.code().into();
+                                Ok(granted())
+                            }
+                            Err(error) => Err(refuse(
+                                self,
+                                "exec_rule_not_saved",
+                                format!("the rule could not be saved, so `{line}` was not run: {error}"),
+                            )),
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn deny(
@@ -464,6 +619,16 @@ impl<'a> Broker<'a> {
                 };
             }
         }
+        let mut exec_grant: Option<exec::ExecGrant> = None;
+        if matches!(tool, Tool::Command)
+            && self.cfg.exec_mode == ExecMode::Smart
+            && decision.decision != Decision::Deny
+        {
+            match self.smart_exec(invocation_id, &call, args, &mut decision) {
+                Ok(grant) => exec_grant = Some(grant),
+                Err(result) => return *result,
+            }
+        }
         let mut approved_id: Option<String> = None;
         match decision.decision {
             Decision::Deny => {
@@ -587,7 +752,7 @@ impl<'a> Broker<'a> {
             );
         }
 
-        let execution = self.execute(tool, args, &decision);
+        let execution = self.execute(tool, args, &decision, exec_grant.unwrap_or_default());
         let (data, receipt, error) = match execution {
             Ok(output) => output,
             Err(error) => {
@@ -720,6 +885,7 @@ impl<'a> Broker<'a> {
         tool: Tool,
         args: &Value,
         decision: &PolicyDecision,
+        grant: exec::ExecGrant,
     ) -> Result<(Value, Option<crate::types::SandboxReceipt>, Option<String>), String> {
         let workspace = Workspace { cfg: self.cfg };
         match tool {
@@ -798,7 +964,7 @@ impl<'a> Broker<'a> {
                     .and_then(NetworkPolicy::parse)
                     .unwrap_or(self.default_network);
                 let (value, receipt) =
-                    exec::run_confined(self.cfg, &argv, timeout, profile, network)?;
+                    exec::run_confined(self.cfg, &argv, timeout, profile, network, &grant)?;
                 Ok((value, Some(receipt), None))
             }
         }
@@ -906,6 +1072,8 @@ mod tests {
         journal: Journal,
         approvals: ApprovalStore,
         budget: BudgetLedger,
+        session_exec: Vec<Vec<String>>,
+        consent: Option<Box<dyn Consent>>,
     }
 
     impl TestEnv {
@@ -952,6 +1120,8 @@ mod tests {
                 journal,
                 approvals,
                 budget,
+                session_exec: Vec::new(),
+                consent: None,
             }
         }
 
@@ -971,6 +1141,8 @@ mod tests {
                 default_profile: SandboxProfile::TrustedDev,
                 default_network: NetworkPolicy::Deny,
                 approval_ids: &self.cfg.approval_ids,
+                consent: self.consent.as_deref(),
+                session_exec: &mut self.session_exec,
             }
         }
     }
@@ -1352,6 +1524,252 @@ mod tests {
             broker.invoke("inv-3", "read", &json!({"path": "src/one.txt"}))
         };
         assert_eq!(read.status, "ok");
+        cleanup(env);
+    }
+
+    // ---- smart command execution ---------------------------------------
+
+    use crate::config::ExecMode;
+    use crate::consent::{Consent, ConsentAnswer, ConsentRequest};
+    use std::sync::{Arc, Mutex};
+
+    /// Answers from a script and remembers what it was asked.
+    struct Scripted {
+        answers: Mutex<std::collections::VecDeque<ConsentAnswer>>,
+        asked: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl Consent for Scripted {
+        fn ask(&self, request: &ConsentRequest) -> ConsentAnswer {
+            self.asked.lock().unwrap().push(request.argv.clone());
+            self.answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(ConsentAnswer::Deny)
+        }
+    }
+
+    fn smart_env(answers: &[ConsentAnswer]) -> (TestEnv, Arc<Mutex<Vec<Vec<String>>>>) {
+        let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
+        // Local, unmanaged: no signed bundle, so the operator answers at the keyboard.
+        env.policy.effective.bundle = None;
+        env.policy.effective.enterprise = false;
+        env.cfg.exec_mode = ExecMode::Smart;
+        env.cfg.allow_exec = true;
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        env.consent = Some(Box::new(Scripted {
+            answers: Mutex::new(answers.iter().copied().collect()),
+            asked: asked.clone(),
+        }));
+        (env, asked)
+    }
+
+    fn command(broker: &mut Broker<'_>, id: &str, argv: &[&str]) -> ToolResult {
+        broker.invoke(id, "command", &json!({"argv": argv, "timeout_secs": 20}))
+    }
+
+    fn permit_reasons(dir: &std::path::Path) -> Vec<String> {
+        events(dir)
+            .iter()
+            .filter(|e| e.action == action::COMMAND_EXEC)
+            .map(|e| format!("{}:{}", e.decision, e.reason_code))
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smart_mode_runs_inspection_unasked_and_journals_why() {
+        let (mut env, asked) = smart_env(&[]);
+        {
+            let mut broker = env.broker();
+            let result = command(&mut broker, "inv-1", &["ls", "src"]);
+            assert_eq!(result.status, "ok", "{:?}", result.error);
+            assert!(result.data.unwrap()["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("one.txt"));
+        }
+        assert!(asked.lock().unwrap().is_empty(), "inspection must not ask");
+        assert!(permit_reasons(&env.dir)
+            .iter()
+            .any(|r| r == "permit:exec_safe_inspection"));
+        cleanup(env);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smart_mode_refuses_the_unknown_when_nobody_can_answer_and_does_not_run_it() {
+        let (mut env, _) = smart_env(&[]);
+        env.consent = None;
+        {
+            let mut broker = env.broker();
+            let result = command(&mut broker, "inv-1", &["touch", "src/made.txt"]);
+            assert_eq!(result.status, "denied");
+            let error = result.error.unwrap();
+            assert!(error.contains("jani exec allow"), "{error}");
+            assert!(error.contains("Do not try a variant"), "{error}");
+        }
+        assert!(
+            !env.dir.join("src/made.txt").exists(),
+            "the command must not have run"
+        );
+        assert!(permit_reasons(&env.dir)
+            .iter()
+            .any(|r| r == "deny:exec_consent_required"));
+        cleanup(env);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_operators_answer_decides_and_always_becomes_a_saved_rule() {
+        let (mut env, asked) = smart_env(&[
+            ConsentAnswer::Deny,
+            ConsentAnswer::Once,
+            ConsentAnswer::Session,
+            ConsentAnswer::Always,
+        ]);
+        {
+            let mut broker = env.broker();
+            // Declined: not run, and the model is told not to retry variants.
+            let declined = command(&mut broker, "inv-1", &["touch", "src/a.txt"]);
+            assert_eq!(declined.status, "denied");
+            assert!(declined.error.unwrap().contains("declined"));
+            // Once: runs, and the next identical command asks again.
+            assert_eq!(
+                command(&mut broker, "inv-2", &["touch", "src/b.txt"]).status,
+                "ok"
+            );
+            // Session: runs now and for the same prefix without asking again.
+            assert_eq!(
+                command(&mut broker, "inv-3", &["touch", "src/c.txt"]).status,
+                "ok"
+            );
+            assert_eq!(
+                command(&mut broker, "inv-4", &["touch", "src/c.txt"]).status,
+                "ok"
+            );
+            // Different prefix still asks (this one answers Always).
+            assert_eq!(
+                command(&mut broker, "inv-5", &["mkdir", "src/d"]).status,
+                "ok"
+            );
+            // `mkdir -p src/d` is not the saved prefix `mkdir src/d`, so it asks again; the script
+            // is out of answers and the default is to decline.
+            assert_eq!(
+                command(&mut broker, "inv-6", &["mkdir", "-p", "src/d"]).status,
+                "denied"
+            );
+        }
+        // Asked: touch a (Deny), touch b (Once), touch c (Session), mkdir d (Always), mkdir -p d (default Deny).
+        // The second `touch src/c.txt` was covered by the session grant and did not ask.
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            5,
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        assert!(!env.dir.join("src/a.txt").exists());
+        assert!(env.dir.join("src/b.txt").exists() && env.dir.join("src/c.txt").exists());
+        let rules = execpolicy::load_rules(&env.cfg.state_dir).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].argv, vec!["mkdir", "src/d"]);
+        assert_eq!(rules[0].by, "p1", "the rule records who made it");
+        let reasons = permit_reasons(&env.dir);
+        for want in [
+            "deny:exec_operator_declined",
+            "permit:exec_operator_once",
+            "permit:exec_operator_session",
+            "permit:exec_session_grant",
+            "permit:exec_operator_always",
+        ] {
+            assert!(
+                reasons.iter().any(|r| r == want),
+                "{want} missing in {reasons:?}"
+            );
+        }
+        // A saved rule outlives the session: a fresh broker with nobody to ask still runs it.
+        env.consent = None;
+        env.session_exec.clear();
+        {
+            let mut broker = env.broker();
+            assert_eq!(
+                command(&mut broker, "inv-9", &["mkdir", "src/d"]).status,
+                "ok"
+            );
+        }
+        assert!(permit_reasons(&env.dir)
+            .iter()
+            .any(|r| r == "permit:exec_operator_rule"));
+        cleanup(env);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_denies_are_never_put_to_the_operator() {
+        let (mut env, asked) = smart_env(&[ConsentAnswer::Always, ConsentAnswer::Always]);
+        {
+            let mut broker = env.broker();
+            for (i, argv) in [vec!["sudo", "ls"], vec!["rm", "-rf", "../.."]]
+                .iter()
+                .enumerate()
+            {
+                let result = command(&mut broker, &format!("inv-{i}"), argv);
+                assert_eq!(result.status, "denied", "{argv:?}");
+            }
+        }
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "a hard deny is not a question"
+        );
+        assert!(execpolicy::load_rules(&env.cfg.state_dir)
+            .unwrap()
+            .is_empty());
+        cleanup(env);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_operator_rules_stop_all_commands_rather_than_reading_as_empty() {
+        let (mut env, _) = smart_env(&[]);
+        fs::write(env.cfg.state_dir.join("exec-rules.json"), "{ not json").unwrap();
+        {
+            let mut broker = env.broker();
+            let result = command(&mut broker, "inv-1", &["ls"]);
+            assert_eq!(result.status, "denied");
+            assert!(result.error.unwrap().contains("could not be read"));
+        }
+        cleanup(env);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn under_a_signed_policy_the_unknown_needs_a_signed_approval_not_a_keyboard_answer() {
+        let (mut env, asked) = smart_env(&[ConsentAnswer::Always]);
+        // Put the signed bundle back, with a rule that permits command.exec.
+        env.policy = policy(false);
+        if let Some(bundle) = env.policy.effective.bundle.as_mut() {
+            bundle.spec.rules.push(PolicyRule {
+                action: "command.exec".into(),
+                resource: "**".into(),
+                effect: None,
+                max_risk: None,
+                approval: None,
+                roles: vec![],
+                sandbox_profile: None,
+            });
+        }
+        {
+            let mut broker = env.broker();
+            let result = command(&mut broker, "inv-1", &["touch", "src/x.txt"]);
+            assert_eq!(result.status, "approval_required", "{:?}", result.error);
+            assert_eq!(result.data.unwrap()["approvalClass"], "exec-unclassified");
+        }
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "keyboard consent must not stand in for a signed approval"
+        );
+        assert!(!env.dir.join("src/x.txt").exists());
         cleanup(env);
     }
 }
