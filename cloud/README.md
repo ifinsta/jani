@@ -72,6 +72,33 @@ set -a && . ./.env && set +a && ./jani/cloud/target/release/jani-cloud
 Or build the image (`docker build -f jani/cloud/Dockerfile -t jani-cloud .`) and
 adapt `docker-compose.example.yml`. Terminate TLS in front of it.
 
+### Running the image
+
+The image is built in Debian bookworm and runs on Ubuntu 24.04 (258 MB). It runs
+as root so the gateway can give each person a Unix user and a cgroup. It holds
+**no language toolchains**: build `FROM jani-cloud` and install what your people's
+agents need (python, node, compilers).
+
+bubblewrap creates namespaces, which Docker's defaults forbid. Running the image
+showed that all of these are needed, and what fails without each:
+
+| Flag | Without it |
+|---|---|
+| `--security-opt seccomp=unconfined` | `bwrap: Creating new namespace failed` or `pivot_root: Operation not permitted` |
+| `--security-opt systempaths=unconfined` | `bwrap: Can't mount proc on /newroot/proc` (Docker masks `/proc`) |
+| `--cap-add SYS_ADMIN` | no namespaces or mounts |
+| `--cap-add NET_ADMIN` | `bwrap: loopback: Failed RTM_NEWADDR` when the network is isolated |
+| `--security-opt apparmor=unconfined` | only on hosts that enforce AppArmor (not exercised here) |
+
+With `SYS_ADMIN` the gateway also remounts the container's read-only cgroup
+hierarchies read-write (it logs `remounted a read-only cgroup hierarchy`), which
+Docker otherwise leaves read-only, so memory, process and CPU limits apply. This
+changes the mount inside the container only. `--privileged` would also work, but
+it grants far more than this needs. These flags are broad: **the container
+boundary is weaker than a default container.** The per-person isolation (Unix
+user, bubblewrap, empty network namespace, cgroup) is what the tests exercise;
+treat the container as one layer, and prefer a dedicated VM or node for it.
+
 ### Configuration
 
 | Variable | Default | Meaning |
@@ -159,6 +186,8 @@ outside what each can see; `E2E_NO_UID=1` drops the per-person Unix users.
 
 Verified here: 28 end-to-end tests, each passing in all three of: Unix users only; bubblewrap only; bubblewrap plus Unix users.
 
+**The built Docker image** (bubblewrap plus Unix users, gateway inside the container, flags above) passes 27 of them; the 28th ("killed") cannot be driven through the harness, which signals the `docker run` client rather than the gateway. Checked by hand instead: `kill -9` of `jani-cloud` inside the container makes `tini` exit, the container stops, and no `jani` process remains. Run it with `e2e/docker/gateway.sh` (see its header; `e2e/docker/Dockerfile.test` adds python and pytest, which the probes run inside the workspace).
+
 - Real sign-in against a real `accounts-server`: embedded modal, popup and redirect.
 - Per-person workspaces, state, journal attribution and Unix users.
 - bubblewrap: system read-only, only `/work` mounted, no `/home`.
@@ -172,9 +201,9 @@ A lesson worth keeping: Jani's per-tool `ok` flag means "the command ran", not "
 
 Not verified:
 
-- **The Dockerfile and compose file were never built or run.** There was no Docker.
-- bubblewrap *inside* a container, which needs relaxed seccomp or `SYS_ADMIN`.
 - **cgroup v2** (implemented, untested). Only a v1 host was available.
+- The container on a host that enforces AppArmor, rootless Docker, and Kubernetes (where `SYS_ADMIN` and `systempaths` are usually refused).
+- The compose file itself was not run (its flags were taken from the `docker run` that was).
 - TLS and a reverse proxy; the `__Host-` cookie path (tests use loopback HTTP).
 - `--features redis`, multi-instance operation, and surviving a restart.
 - A live model provider (tests use a scripted one), load, or abuse resistance.

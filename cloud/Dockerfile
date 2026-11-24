@@ -6,17 +6,27 @@
 #
 #   docker build -f jani/cloud/Dockerfile -t jani-cloud .
 #
-# NOT BUILT OR RUN in the environment this was written in (no Docker there).
-# Treat it as the intended recipe and expect to fix small things on first build.
+# Behind a TLS-intercepting proxy, pass its CA bundle as a build secret:
+#
+#   docker build --secret id=cabundle,src=/path/to/ca-bundle.crt -f jani/cloud/Dockerfile -t jani-cloud .
+#
+# The build stage uses Debian bookworm (older glibc) and the runtime stage uses
+# Ubuntu 24.04, whose glibc is newer, so the binaries run unchanged.
 
 FROM rust:1.95-bookworm AS build
+# The image already has exactly this toolchain; pinning it stops rustup from
+# trying to download the rustfmt/clippy components rust-toolchain.toml lists.
+ENV RUSTUP_TOOLCHAIN=1.95.0
 WORKDIR /src
 COPY jani /src/jani
 COPY siwi /src/siwi
-RUN cargo build --release --locked --manifest-path jani/Cargo.toml -p jani \
- && cargo build --release --manifest-path jani/cloud/Cargo.toml
+RUN --mount=type=secret,id=cabundle,required=false \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    if [ -f /run/secrets/cabundle ]; then export SSL_CERT_FILE=/run/secrets/cabundle CARGO_HTTP_CAINFO=/run/secrets/cabundle; fi; \
+    cargo build --release --locked --manifest-path jani/Cargo.toml -p jani \
+ && cargo build --release --locked --manifest-path jani/cloud/Cargo.toml
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 # bubblewrap: per-person confinement. git: seeds each worktree.
 # ca-certificates: TLS to the model provider and to accounts. tini: reaps children.
 RUN apt-get update \
@@ -32,6 +42,8 @@ ENV JANI_CLOUD_BIND=0.0.0.0:8080 \
 VOLUME /data
 EXPOSE 8080
 # Runs as root on purpose: it lets the gateway start each workspace as its own
-# Unix user (JANI_CLOUD_UID_BASE) and lets bubblewrap create namespaces. See the
-# README for the container flags bubblewrap needs.
+# Unix user (JANI_CLOUD_UID_BASE), put it in a cgroup, and lets bubblewrap create
+# namespaces. bubblewrap needs container flags Docker does not grant by default:
+# see "Running the image" in the README. The image carries no language
+# toolchains; build FROM it to give workspaces python, node and the like.
 ENTRYPOINT ["tini", "--", "jani-cloud"]

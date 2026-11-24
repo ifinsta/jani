@@ -8,13 +8,18 @@ services:
       - "127.0.0.1:8080:8080"   # the reverse proxy talks to this
     volumes:
       - jani-data:/data
-    # bubblewrap needs to create namespaces. Docker's default seccomp profile
-    # blocks that, so either relax it for this container...
+    # What bubblewrap needs inside a container (each was found necessary by
+    # running the image, see the README):
+    #  - seccomp=unconfined: Docker's profile blocks pivot_root and namespace creation
+    #  - apparmor=unconfined: only matters on hosts that enforce AppArmor
+    #  - systempaths=unconfined: lets bubblewrap mount a fresh /proc (Docker masks it)
+    #  - SYS_ADMIN: namespaces and mounts; also lets the gateway make cgroups writable
+    #  - NET_ADMIN: bubblewrap sets up loopback in the workspace's empty network namespace
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
-    # ...or grant only what bwrap needs instead of relaxing seccomp:
-    # cap_add: [SYS_ADMIN]
+      - systempaths=unconfined
+    cap_add: [SYS_ADMIN, NET_ADMIN]
     restart: unless-stopped
 volumes:
   jani-data:

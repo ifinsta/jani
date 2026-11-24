@@ -73,6 +73,7 @@ impl Cgroups {
     /// Find a writable cgroup hierarchy, or None.
     pub fn detect() -> Option<Self> {
         let root = PathBuf::from("/sys/fs/cgroup");
+        make_writable(&root);
         if root.join("cgroup.controllers").is_file() {
             return Some(Self {
                 flavor: Flavor::V2,
@@ -221,6 +222,43 @@ impl Cgroups {
     pub fn remove(joined: &Joined) {
         for dir in &joined.dirs {
             let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
+/// Containers mount the cgroup hierarchies read-only even when they hold
+/// CAP_SYS_ADMIN. Root with that capability may flip its own view of them to
+/// read-write (the same step Docker-in-Docker takes); this changes the mount in
+/// this container's namespace only. Anything that fails is left as it was and
+/// reported later as "no writable cgroup".
+fn make_writable(root: &Path) {
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let mut targets = vec![root.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        targets.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+    }
+    for dir in targets {
+        if is_writable(&dir) {
+            continue;
+        }
+        let Ok(path) = CString::new(dir.as_os_str().as_encoded_bytes()) else {
+            continue;
+        };
+        // SAFETY: `path` is a valid NUL-terminated string; the other pointers are null as the call allows.
+        let rc = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                path.as_ptr(),
+                std::ptr::null(),
+                libc::MS_REMOUNT | libc::MS_BIND,
+                std::ptr::null(),
+            )
+        };
+        if rc == 0 && is_writable(&dir) {
+            tracing::info!(cgroup = %dir.display(), "remounted a read-only cgroup hierarchy read-write (container)");
         }
     }
 }

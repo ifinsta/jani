@@ -1,0 +1,12 @@
+# Build context is the directory holding jani/ and siwi/ side by side. Send
+# only those two, without build output or history.
+*
+!jani
+!siwi
+**/target
+**/.git
+**/node_modules
+jani/releases
+jani/validation
+siwi/conformance
+**/.jani

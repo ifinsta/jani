@@ -282,7 +282,11 @@ describe("operating limits", () => {
   });
 
   for (const [signal, label] of [["SIGTERM", "is stopped"], ["SIGKILL", "is killed"]]) {
-    test(`no workspace outlives the gateway when it ${label}`, async () => {
+    // Under docker/gateway.sh the process the harness signals is the `docker run`
+    // client, and killing that leaves the container running. The container's own
+    // answer (tini exits with the gateway) is checked by hand; see the README.
+    const viaDocker = signal === "SIGKILL" && process.env.GATEWAY_IMAGE && "SIGKILL reaches only the docker client here";
+    test(`no workspace outlives the gateway when it ${label}`, { skip: viaDocker }, async () => {
       const own = await startStack();
       const b = await chromium.launch();
       try {
