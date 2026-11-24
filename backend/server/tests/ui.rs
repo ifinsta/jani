@@ -3,7 +3,9 @@
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::net::TcpListener;
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
@@ -560,6 +562,7 @@ fn unix_socket_mode_has_no_tcp_port_and_keeps_every_check() {
 }
 
 /// A model that replies from a script, one reply per request.
+#[cfg(unix)]
 fn scripted_provider(replies: Vec<Value>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -621,6 +624,7 @@ fn scripted_provider(replies: Vec<Value>) -> String {
     format!("http://{address}/v1")
 }
 
+#[cfg(unix)]
 fn tool_call(argv: &[&str]) -> Value {
     json!({
         "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
@@ -631,10 +635,12 @@ fn tool_call(argv: &[&str]) -> Value {
     })
 }
 
+#[cfg(unix)]
 fn say(text: &str) -> Value {
     json!({"choices": [{"message": {"role": "assistant", "content": text}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}})
 }
 
+#[cfg(unix)]
 fn wait_for_consent(ui: &Ui) -> Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {

@@ -728,6 +728,7 @@ fn repeating_one_call_is_called_out_and_then_stopped() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 fn command_call(id: usize, argv: &[&str]) -> String {
     json!({
         "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
@@ -740,6 +741,7 @@ fn command_call(id: usize, argv: &[&str]) -> String {
     .to_string()
 }
 
+#[cfg(unix)]
 fn bwrap_works() -> bool {
     std::process::Command::new("bwrap")
         .args(["--unshare-net", "--ro-bind", "/", "/", "true"])
@@ -856,6 +858,7 @@ fn smart_exec_builds_inside_the_sandbox_and_refuses_the_rest() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 fn which_make() -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)

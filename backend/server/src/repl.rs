@@ -150,7 +150,15 @@ pub fn run(cfg: &Config, catalog: &Catalog) -> JResult<()> {
     let stderr = io::stderr();
     let mut out = stdout.lock();
     let mut err = stderr.lock();
-    run_loop(&mut agent, catalog, stdin.lock(), &mut out, &mut err)
+    // Not `stdin.lock()`: a lock held across a turn would deadlock the terminal prompt,
+    // which may read from stdin on terminals that are not consoles (see consent.rs).
+    run_loop(
+        &mut agent,
+        catalog,
+        io::BufReader::new(io::stdin()),
+        &mut out,
+        &mut err,
+    )
 }
 
 fn run_loop<R: BufRead, O: Write, E: Write>(

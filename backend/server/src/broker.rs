@@ -1529,16 +1529,21 @@ mod tests {
 
     // ---- smart command execution ---------------------------------------
 
+    #[cfg(unix)]
     use crate::config::ExecMode;
+    #[cfg(unix)]
     use crate::consent::{Consent, ConsentAnswer, ConsentRequest};
+    #[cfg(unix)]
     use std::sync::{Arc, Mutex};
 
+    #[cfg(unix)]
     /// Answers from a script and remembers what it was asked.
     struct Scripted {
         answers: Mutex<std::collections::VecDeque<ConsentAnswer>>,
         asked: Arc<Mutex<Vec<Vec<String>>>>,
     }
 
+    #[cfg(unix)]
     impl Consent for Scripted {
         fn ask(&self, request: &ConsentRequest) -> ConsentAnswer {
             self.asked.lock().unwrap().push(request.argv.clone());
@@ -1550,6 +1555,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn smart_env(answers: &[ConsentAnswer]) -> (TestEnv, Arc<Mutex<Vec<Vec<String>>>>) {
         let mut env = TestEnv::new(None, &EffectiveLimits::default(), false);
         // Local, unmanaged: no signed bundle, so the operator answers at the keyboard.
@@ -1565,10 +1571,12 @@ mod tests {
         (env, asked)
     }
 
+    #[cfg(unix)]
     fn command(broker: &mut Broker<'_>, id: &str, argv: &[&str]) -> ToolResult {
         broker.invoke(id, "command", &json!({"argv": argv, "timeout_secs": 20}))
     }
 
+    #[cfg(unix)]
     fn permit_reasons(dir: &std::path::Path) -> Vec<String> {
         events(dir)
             .iter()

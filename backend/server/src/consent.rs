@@ -121,11 +121,17 @@ use std::io::{self, BufRead, IsTerminal, Write};
 
 /// Asks on the terminal, for `--print` and the line-based REPL.
 ///
-/// The answer is read from the controlling terminal itself (`/dev/tty`, or
-/// `CONIN$` on Windows) and the question goes to stderr, the way `sudo` and
-/// `ssh` ask. That keeps stdout clean for the answer, and it never consumes a
-/// line the REPL was about to read as a command or that a script piped in. With
-/// no terminal to ask (CI, pipes) it is not offered and commands are refused.
+/// The question goes to stderr and the answer is read from the terminal itself,
+/// the way `sudo` and `ssh` ask, so stdout stays clean for the result and a line
+/// the REPL or a script was about to read is never taken as an answer:
+///
+/// - Unix: `/dev/tty`, or stdin reopened when there is no controlling terminal.
+/// - Windows: the console input buffer, `CONIN$`. A terminal that is not a
+///   console (mintty and other pty-over-pipe terminals, which Rust still reports
+///   as terminals) has no `CONIN$`; there the answer is read from stdin, which is
+///   safe because nothing holds the stdin lock during a turn.
+///
+/// With no terminal to ask (CI, pipes) it is not offered and commands are refused.
 pub struct TerminalConsent;
 
 impl TerminalConsent {
@@ -137,12 +143,15 @@ impl TerminalConsent {
     fn open_tty() -> io::Result<std::fs::File> {
         #[cfg(windows)]
         {
-            std::fs::File::open("CONIN$")
+            // The console input buffer wants read and write access, as with any
+            // CONIN$ open (rpassword and friends do the same).
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("CONIN$")
         }
         #[cfg(not(windows))]
         {
-            // The controlling terminal, or, when there is none (a pty without a
-            // session), stdin reopened: `available` already knows it is a terminal.
             std::fs::File::open("/dev/tty").or_else(|_| std::fs::File::open("/dev/stdin"))
         }
     }
@@ -150,24 +159,31 @@ impl TerminalConsent {
 
 impl Consent for TerminalConsent {
     fn ask(&self, request: &ConsentRequest) -> ConsentAnswer {
-        let tty = match Self::open_tty() {
-            Ok(tty) => tty,
+        let mut err = io::stderr();
+        match Self::open_tty() {
+            Ok(tty) => {
+                let mut reader = io::BufReader::new(tty);
+                ask_with(request, &mut |line| reader.read_line(line), &mut err)
+            }
+            Err(_) if io::stdin().is_terminal() => {
+                ask_with(request, &mut |line| io::stdin().read_line(line), &mut err)
+            }
             Err(error) => {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "jani: cannot read an answer from the terminal ({error}); refusing the command"
                 );
-                return ConsentAnswer::Deny;
+                ConsentAnswer::Deny
             }
-        };
-        ask_on(request, &mut io::BufReader::new(tty), &mut io::stderr())
+        }
     }
 }
 
 /// The question and the parsing of the answer, apart from where they travel.
 /// Enter, end of input and anything unrecognised after three tries all mean no.
-pub fn ask_on(
+fn ask_with(
     request: &ConsentRequest,
-    input: &mut dyn BufRead,
+    read_line: &mut dyn FnMut(&mut String) -> io::Result<usize>,
     out: &mut dyn Write,
 ) -> ConsentAnswer {
     let prefix = request.suggest.join(" ");
@@ -181,11 +197,16 @@ pub fn ask_on(
         let _ = write!(out, "allow? [y/s/a/N] ");
         let _ = out.flush();
         let mut line = String::new();
-        match input.read_line(&mut line) {
+        match read_line(&mut line) {
             Ok(0) | Err(_) => return ConsentAnswer::Deny,
             Ok(_) => {}
         }
-        match line.trim().to_ascii_lowercase().as_str() {
+        // Console input ends lines with \r\n, and may carry a stray Ctrl+Z (\x1a) at end of input.
+        match line
+            .trim_matches(|c: char| c.is_whitespace() || c == '\u{1a}')
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "y" | "yes" | "once" => return ConsentAnswer::Once,
             "s" | "session" => return ConsentAnswer::Session,
             "a" | "always" => return ConsentAnswer::Always,
@@ -255,7 +276,8 @@ mod tests {
 
     fn ask_with(input: &str) -> (ConsentAnswer, String) {
         let mut out = Vec::new();
-        let answer = ask_on(&request(), &mut input.as_bytes(), &mut out);
+        let mut reader = input.as_bytes();
+        let answer = super::ask_with(&request(), &mut |line| reader.read_line(line), &mut out);
         (answer, String::from_utf8(out).unwrap())
     }
 
@@ -276,6 +298,19 @@ mod tests {
         assert_eq!(ask_with("S\n").0, ConsentAnswer::Session);
         assert_eq!(ask_with("always\n").0, ConsentAnswer::Always);
         assert_eq!(ask_with("n\n").0, ConsentAnswer::Deny);
+    }
+
+    #[test]
+    fn windows_console_line_endings_and_end_of_input_markers_are_understood() {
+        assert_eq!(ask_with("y\r\n").0, ConsentAnswer::Once);
+        assert_eq!(ask_with("a\r\n").0, ConsentAnswer::Always);
+        assert_eq!(ask_with("\r\n").0, ConsentAnswer::Deny);
+        assert_eq!(
+            ask_with("\u{1a}\r\n").0,
+            ConsentAnswer::Deny,
+            "a stray Ctrl+Z is no, not an unrecognised answer to retry"
+        );
+        assert_eq!(ask_with(" s \r\n").0, ConsentAnswer::Session);
     }
 
     #[test]
