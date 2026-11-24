@@ -99,6 +99,11 @@ fn run() -> JResult<()> {
         "run" => {
             let prompt = cfg.prompt.as_ref().ok_or("no prompt supplied")?;
             let mut agent = agent::Agent::new(&cfg, &catalog)?;
+            // With a person at the terminal, an unclassified command is put to them
+            // (on stderr) instead of being refused; with none, it is refused.
+            if consent::TerminalConsent::available() {
+                agent.set_consent(std::sync::Arc::new(consent::TerminalConsent));
+            }
             println!("{}", agent.run(prompt)?);
             Ok(())
         }

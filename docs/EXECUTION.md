@@ -43,7 +43,8 @@ Commands are an argv list, never a shell string, so there is no `a && b`, redire
 
 - **Web workspace (`jani ui`).** A card appears in the terminal: **Allow once** (`y`), **Allow for this session** (`s`), **Always allow "<prefix>"** (`a`), **Deny** (`n`). The agent waits (15 minutes, or until you cancel the turn, which answers no). A decline tells the model not to try a variant.
 - **Terminal UI (`jani` / `jani repl` on a terminal).** A panel opens above the composer with the command and why it needs you: `y` once, `s` this session, `a` always (saves a rule), `n` or Esc to deny. Other keys are ignored while it is open, so nothing you were typing answers it. Ctrl+C cancels the turn and denies. Each answer is also written into the transcript.
-- **No interface attached** (`--print` and the line-based REPL used when stdout is not a terminal): the command is not run and the model is told the operator can allow it with `jani exec allow`. It is never silently dropped or silently run.
+- **`--print` and the line-based REPL** (used when stdout is not a terminal), when a person is at an interactive terminal: the question goes to stderr and the answer is read from the terminal itself (`/dev/tty`, `CONIN$` on Windows), as `sudo` and `ssh` do, so stdout stays clean for the result and a line the REPL or a script was about to read is never taken as an answer. `y` once, `s` session, `a` always, `n` or Enter deny; end of input and three unrecognised answers deny.
+- **No terminal to ask** (CI, pipes, `echo task | jani --print`): the command is not run and the model is told the operator can allow it with `jani exec allow`. It is never silently dropped or silently run.
 - **Under a signed policy bundle** (managed mode), an unclassified command needs a *signed approval from a second person* (class `exec-unclassified`), exactly like any other approval. A keyboard answer does not stand in for one.
 
 "Always" writes an operator rule to `<state-dir>/exec-rules.json`, recording who made it. Rules are prefix matches on whole tokens (`npm install` matches `npm install react`, not `npm installer`) and are never created by the model or by the settings files.
@@ -69,4 +70,4 @@ Every command's journal event carries *why* it ran or was refused: `exec_allowli
 - Windows has no filesystem-confining backend (Job Objects limit resources only), so builds ask there until you allow them (`jani exec allow -- cargo build`, or "Always" in the card).
 - Rules live in the state directory; an unconfined build or test running as you could edit that file. Under a confining sandbox it cannot. If that matters, run builds sandboxed.
 - A build tool's first run needs its dependencies already present: the sandbox has no network. `make`-style projects need their output directory to exist (or `--write-path`).
-- The line-based REPL and `--print` have no prompt; unclassified commands are refused with instructions.
+- The line prompt on Windows (`CONIN$`) is untested; the Unix path is exercised by `backend/server/tests/pty/`.

@@ -143,6 +143,9 @@ pub fn run(cfg: &Config, catalog: &Catalog) -> JResult<()> {
     } else {
         eprintln!("jani: stdout is not a terminal; using line mode");
     }
+    if crate::consent::TerminalConsent::available() {
+        agent.set_consent(std::sync::Arc::new(crate::consent::TerminalConsent));
+    }
     let stdout = io::stdout();
     let stderr = io::stderr();
     let mut out = stdout.lock();
