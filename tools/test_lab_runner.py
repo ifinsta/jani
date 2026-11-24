@@ -45,7 +45,10 @@ class LabRunnerTests(unittest.TestCase):
             source = root / "input"
             source.mkdir()
             (source / "Cargo.toml").write_text("cargo")
-            (source / "leak").symlink_to(source / "Cargo.toml")
+            try:
+                (source / "leak").symlink_to(source / "Cargo.toml")
+            except OSError as error:
+                self.skipTest(f"cannot create symlinks here: {error}")
             with self.assertRaises(lab.TrialError):
                 lab.copy_and_digest(source, root / "output")
 
