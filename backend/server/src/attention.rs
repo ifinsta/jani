@@ -165,6 +165,28 @@ where
     )
 }
 
+/// Read-only inventory of this tenant's agents and alerts, for front ends.
+/// Authorised like any other attention read, and it never changes state.
+pub fn overview(cfg: &Config) -> JResult<Value> {
+    let id = actor(
+        cfg,
+        "attention.agent.status",
+        "*",
+        RiskTier::R0,
+        Effect::Read,
+        false,
+    )?;
+    let tenant = id.tenant;
+    transaction(cfg, &id.principal, "attention.overview", |s| {
+        let agents: Vec<&AgentRecord> = s.agents.values().filter(|a| a.tenant == tenant).collect();
+        let mut alerts: Vec<&AlertRecord> =
+            s.alerts.values().filter(|a| a.tenant == tenant).collect();
+        alerts.sort_by_key(|a| std::cmp::Reverse(a.created_at));
+        alerts.truncate(200);
+        Ok((json!({"agents": agents, "alerts": alerts}), false))
+    })
+}
+
 fn lookup_agent<'a>(s: &'a mut Snapshot, tenant: &str, id: &str) -> JResult<&'a mut AgentRecord> {
     s.agents
         .get_mut(&key(tenant, id))

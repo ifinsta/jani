@@ -278,8 +278,72 @@ tr.new td{animation:flash 1.4s ease-out}
 .runs .run:hover{background:var(--surface-2)}
 .runs .run[aria-current="true"]:hover{background:var(--accent-bg)}
 .rtitle{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px}
+.jbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid var(--line);background:var(--surface)}
+.jbar .field{max-width:240px}.jchk{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mute)}
+.pager{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mute)}
+.pager button{height:24px;width:28px;border:1px solid var(--line);background:var(--surface-2);border-radius:3px}
+.pager button:disabled{opacity:.4}
+.clickrow{cursor:pointer}
+.apdetail{background:var(--surface-2)}
+
+.banner.warn{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
+.banner{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.banner .bx{border:0;background:transparent;color:inherit;font-size:16px;line-height:16px;padding:0 4px}
+.jbar .field{max-width:none;width:270px}
+.card .kv+p,.card .kv+.tbl,.card .kv+.chiprow{margin-top:10px}
+.app{grid-template-rows:auto auto minmax(0,1fr) 236px!important;grid-template-areas:"top top top" "nav nav nav" "rail canvas insp" "rail dock dock"!important}
+.nav{grid-area:nav;display:flex;gap:2px;padding:0 10px;background:var(--surface);border-bottom:1px solid var(--line);overflow-x:auto}
+.nav button{height:34px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--mute);font-weight:500;white-space:nowrap}
+.nav button:hover{color:var(--text)}
+.nav button[aria-current="page"]{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+.page{grid-area:3/1/-1/-1;overflow:auto;padding:18px max(16px,env(safe-area-inset-left,0px)) 40px;min-height:0;min-width:0}
+.page>div{max-width:1240px;margin:0 auto}
+.app:not([data-screen="workspace"]) .rail,.app:not([data-screen="workspace"]) .canvas-section,.app:not([data-screen="workspace"]) .insp,.app:not([data-screen="workspace"]) .dock{display:none}
+.phead{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px}
+.phead h1{margin:0 0 2px;font-size:20px;font-weight:600;letter-spacing:-.01em}
+.phead p{margin:0;max-width:70ch}
+.pactions,.rowacts,.formrow,.chiprow,.chainrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:0 0 14px}
+.stat{padding:10px 12px;border:1px solid var(--line);border-radius:4px;background:var(--surface);border-left:4px solid var(--line-strong)}
+.stat.good{border-left-color:var(--good)}.stat.warn{border-left-color:var(--warn)}.stat.bad{border-left-color:var(--bad)}
+.stat .sv{font-size:20px;font-weight:600;line-height:24px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.stat .sl{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);font-weight:600}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:14px;margin-bottom:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:14px;margin-bottom:14px;min-width:0}
+.cards .card{margin-bottom:0}
+.card h3{margin:0 0 8px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:600}
+.card h4{margin:12px 0 6px;font-size:12px;font-weight:600}
+.card p{margin:0 0 8px}
+.kv.wide{grid-template-columns:minmax(110px,170px) minmax(0,1fr);margin:0}
+.kv.wide dd{font-size:12px}
+.tbl{border:1px solid var(--line);border-radius:4px;background:var(--surface);margin-bottom:14px}
+.card .tbl{margin:8px 0 0}
+.linkbtn{background:none;border:0;padding:0;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.emptybox{padding:28px 20px;border:1px dashed var(--line-strong);border-radius:4px;text-align:center;color:var(--mute);margin:0 0 14px}
+.emptybox h2{margin:0 0 6px;font-size:16px;color:var(--text)}
+.emptybox code,.card code.mono{display:inline-block;margin-top:6px;padding:3px 8px;background:var(--tile);border-radius:3px;overflow-wrap:anywhere}
+.finding{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:4px;padding:12px 14px;margin-bottom:10px}
+.finding p{margin:6px 0 0}
+.frow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.raw{margin:14px 0 0}.raw summary{cursor:pointer;color:var(--mute);font-size:12px}
+.raw pre,.rawpre{margin:8px 0 0;padding:10px;background:var(--surface-2);border:1px solid var(--line);border-radius:3px;overflow:auto;max-height:360px;white-space:pre-wrap;overflow-wrap:anywhere}
+.ruleline{margin:0 0 6px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--line);border-radius:3px;white-space:pre-wrap;overflow-wrap:anywhere}
+.field{height:28px;padding:0 8px;border:1px solid var(--line-strong);border-radius:4px;background:var(--surface-2);min-width:0;max-width:100%}
+.oprow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line)}
+.oprow .field{flex:1;min-width:120px}
+.opout{margin:0 0 6px}
+.why .pill+.mono{margin-left:6px}
+@media (max-width:1100px){.app{grid-template-rows:auto auto minmax(0,1fr) auto 236px!important;grid-template-areas:"top top" "nav nav" "rail canvas" "rail insp" "dock dock"!important}}
+@media (max-width:760px){
+  .app{grid-template-rows:none!important;grid-template-areas:none!important}
+  .top{order:0}.nav{order:1;padding:0}
+  .rail,.canvas-section,.insp,.dock,.page{order:2}
+  .page{padding-left:0;padding-right:0}
+  .kv.wide{grid-template-columns:1fr}
+}
 
 .banner{flex:0 0 100%;border:1px solid var(--bad);border-radius:4px;padding:5px 10px}
+.banner.warn{border-color:var(--warn-line)}
 </style></head><body>
 <div class="app" id="app">
   <header class="top">
@@ -301,9 +365,13 @@ tr.new td{animation:flash 1.4s ease-out}
     <div class="banner" id="banner" role="alert" hidden></div>
   </header>
 
+  <nav class="nav" id="nav" aria-label="Screens"></nav>
+  <main class="page" id="page" hidden></main>
+
   <aside class="rail" aria-label="Runs and authority">
     <section class="sect">
       <h2>Runs <span class="mono dim" id="runTotal"></span></h2>
+      <input class="field" id="runFind" type="search" placeholder="Filter runs…" aria-label="Filter runs" style="width:100%;margin:0 0 8px">
       <div class="runs" id="runs"></div>
     </section>
     <section class="sect">
@@ -328,6 +396,7 @@ tr.new td{animation:flash 1.4s ease-out}
           <button type="button" role="tab" aria-selected="true" data-v="graph">Graph</button>
           <button type="button" role="tab" aria-selected="false" data-v="term">Terminal<span class="count hot" id="termCount" style="margin-left:6px" hidden>0</span></button>
         </div></div>
+      <span class="pager" id="pager" hidden><button type="button" id="pgPrev" aria-label="Earlier tool calls">◀</button><output id="pgInfo"></output><button type="button" id="pgNext" aria-label="Later tool calls">▶</button></span>
       <input class="find" id="find" type="search" placeholder="Find action, decision or reason…" aria-label="Find on canvas">
     </div>
     <div class="boardwrap">
@@ -387,6 +456,12 @@ tr.new td{animation:flash 1.4s ease-out}
       <button role="tab" aria-selected="false" data-t="journal">Audit journal<span class="count" id="jCount">0</span></button>
       <button role="tab" aria-selected="false" data-t="budget">Budget</button>
     </div>
+    <div class="jbar" id="jbar" hidden>
+      <input class="field" id="jq" type="search" placeholder="Search action, reason, actor, digest…" aria-label="Search journal">
+      <select class="field" id="jdec" aria-label="Decision"><option value="">All decisions</option><option>permit</option><option>executed</option><option>deny</option><option>failed</option><option>approval_required</option><option>started</option><option>completed</option><option>allowed</option></select>
+      <label class="jchk"><input type="checkbox" id="jrun"> This run only</label>
+      <span class="mono dim" id="jinfo"></span>
+    </div>
     <div class="dockbody" id="dockBody"></div>
   </section>
 </div>
@@ -423,12 +498,17 @@ function api(path,body){
   return fetch(path,opt).then(function(r){return r.json().catch(function(){return {}}).then(function(j){
     if(!r.ok){var e=new Error(j.error||('HTTP '+r.status));e.status=r.status;throw e}return j})});
 }
-function banner(msg){var b=$('#banner');if(!msg){b.hidden=true;return}b.textContent=msg;b.hidden=false}
+function banner(msg,kind){
+  var b=$('#banner');if(!msg){b.hidden=true;return}
+  b.textContent='';b.className='banner'+(kind==='warn'?' warn':'');
+  b.appendChild(el('span',{text:msg}));
+  var x=el('button',{type:'button',class:'bx','aria-label':'Dismiss',text:'×'});x.addEventListener('click',function(){b.hidden=true});b.appendChild(x);b.hidden=false;
+}
 
 /* ---------- state ---------- */
 var S={ov:null,runs:[],runId:null,run:null,runSig:'',approvals:[],journal:null,budgets:[],
   sel:null,insp:'detail',dock:'approvals',zoom:1,fit:true,focus:false,query:'',
-  filters:{read:true,write:true,command:true},view:'graph',pinned:false};
+  filters:{read:true,write:true,command:true},view:'graph',pinned:false,screen:'workspace',runQ:'',runShow:30,jf:{q:'',decision:'',run:false,limit:200},apOpen:{},apDetail:{},toolOffset:0,graphRun:null};
 var G={nodes:[],edges:[],byId:{},PW:1130,PH:520};
 var NW=176,NH=62;
 
@@ -467,7 +547,9 @@ function buildGraph(){
     var id=e.invocation_id;if(!id||id==='run'){agentEv.push(e);return}
     if(!groups[id]){groups[id]=[];order.push(id)}groups[id].push(e);
   });
-  var hidden=Math.max(0,order.length-40);var shown=order.slice(hidden);
+  if(S.graphRun!==run.runId){S.graphRun=run.runId;S.toolOffset=0}
+  var maxOff=Math.max(0,order.length-40);if(S.toolOffset>maxOff)S.toolOffset=maxOff;
+  var endIdx=order.length-S.toolOffset,startIdx=Math.max(0,endIdx-40);var hidden=startIdx;var shown=order.slice(startIdx,endIdx);
   var PH=Math.max(520,40+shown.length*76+30);
   var mid=shown.length?(40+(shown.length-1)*76)/2:230;
   var cy=Math.max(120,mid);
@@ -506,7 +588,7 @@ function buildGraph(){
   edges.push(['operator','agent','ok'],['agent','model','ok'],['agent','broker','ok']);
   shown.forEach(function(id){edges.push(['broker',id,'tool'],[id,'journal','rec'])});
   if(!shown.length)edges.push(['broker','journal','rec']);
-  G={nodes:nodes,edges:edges,byId:byId,PW:1130,PH:PH,hidden:hidden};
+  G={nodes:nodes,edges:edges,byId:byId,PW:1130,PH:PH,hidden:hidden,total:order.length,start:startIdx,end:endIdx};
 }
 
 /* ---------- canvas ---------- */
@@ -526,7 +608,7 @@ function renderCanvas(){
   $('#emptyCanvas').hidden=!empty||S.view!=='graph';
   if(empty){stage.style.width='0';stage.style.height='0';return}
   plane.style.width=G.PW+'px';plane.style.height=G.PH+'px';
-  laneNames.forEach(function(l,i){plane.appendChild(el('div',{class:'lane',style:'left:'+laneX[i]+'px',text:l==='Tools'&&G.hidden?'Tools (latest 40 of '+(40+G.hidden)+')':l}))});
+  laneNames.forEach(function(l,i){plane.appendChild(el('div',{class:'lane',style:'left:'+laneX[i]+'px',text:l}))});
   var sv=svg('svg',{class:'edges',width:G.PW,height:G.PH,'aria-hidden':'true'});sv.id='edgeSvg';plane.appendChild(sv);
   G.nodes.forEach(function(n){
     var b=el('button',{type:'button',class:'node','data-id':n.id,'aria-pressed':'false',style:'left:'+n.x+'px;top:'+n.y+'px'});
@@ -536,8 +618,14 @@ function renderCanvas(){
     b.addEventListener('click',function(){select(n.id)});
     plane.appendChild(b);
   });
-  paint();applyZoom();
+  paint();applyZoom();renderPager();
 }
+function renderPager(){
+  var p=$('#pager');if(!G.total||G.total<=40){p.hidden=true;return}
+  p.hidden=false;$('#pgInfo').textContent='calls '+(G.start+1)+'–'+G.end+' of '+G.total;
+  $('#pgPrev').disabled=G.start<=0;$('#pgNext').disabled=G.end>=G.total;
+}
+function pageTools(delta){S.toolOffset=Math.max(0,S.toolOffset+delta);S.runSig='';S.sel=null;S.pinned=false;loadRun()}
 function pillFor(n){
   if(n.type!=='tool')return null;
   return {allowed:['good','Permitted'],pending:['warn','Held'],denied:['bad','Denied'],failed:['bad','Failed']}[n.state]||null;
@@ -584,6 +672,8 @@ function fit(){
   S.zoom=Math.max(.35,Math.min(1,z));S.fit=true;applyZoom();board.scrollLeft=0;board.scrollTop=0;
 }
 function setZoom(z){S.fit=false;S.zoom=Math.max(.35,Math.min(1.6,z));applyZoom()}
+$('#pgPrev').addEventListener('click',function(){pageTools(40)});
+$('#pgNext').addEventListener('click',function(){pageTools(-40)});
 $('#zin').addEventListener('click',function(){setZoom(S.zoom*1.2)});
 $('#zout').addEventListener('click',function(){setZoom(S.zoom/1.2)});
 $('#zfit').addEventListener('click',fit);
@@ -690,13 +780,16 @@ function renderOverview(){
   var sk=$('#skills');sk.textContent='';
   if(!ov.skills.length)sk.appendChild(el('span',{class:'dim',text:'No SKILL.md files discovered'}));
   ov.skills.forEach(function(s){sk.appendChild(el('span',{class:'chip mono',title:s.description,text:s.name}))});
-  if(ov.warnings&&ov.warnings.length)banner(ov.warnings[0]);
+  if(ov.warnings&&ov.warnings.length&&!S.warnShown){S.warnShown=true;banner('Settings warning: '+ov.warnings[0],'warn')}
 }
 function renderRuns(){
   var box=$('#runs');box.textContent='';
   $('#runTotal').textContent=S.runs.length?String(S.runs.length):'';
   if(!S.runs.length){box.appendChild(el('div',{class:'dim',style:'padding:4px 8px',text:'No runs yet.'}));return}
-  S.runs.slice(0,30).forEach(function(r){
+  var q=S.runQ.trim().toLowerCase();
+  var list=S.runs.filter(function(r){return !q||(r.runId+' '+r.status+' '+r.taskId).toLowerCase().indexOf(q)>-1});
+  if(!list.length)box.appendChild(el('div',{class:'dim',style:'padding:4px 8px',text:'No runs match.'}));
+  list.slice(0,S.runShow).forEach(function(r){
     var dot={completed:'ok',failed:'bad',unreconciled:'live'}[r.status]||'';
     var b=el('button',{type:'button',class:'run','aria-current':String(r.runId===S.runId)},
       el('span',{class:'dot '+dot}),
@@ -705,7 +798,9 @@ function renderRuns(){
     b.addEventListener('click',function(){S.runId=r.runId;S.userPick=true;S.pinned=false;S.sel=null;S.runSig='';loadRun().then(function(){renderRuns()})});
     box.appendChild(b);
   });
+  if(list.length>S.runShow){var more=el('button',{type:'button',class:'btn',style:'margin:6px 8px',text:'Show '+Math.min(30,list.length-S.runShow)+' more of '+(list.length-S.runShow)});more.addEventListener('click',function(){S.runShow+=30;renderRuns()});box.appendChild(more)}
 }
+$('#runFind').addEventListener('input',function(e){S.runQ=e.target.value;S.runShow=30;renderRuns()});
 function renderBudgetChip(){
   var b=S.budgets[0];
   $('#budgetTop').textContent=!b?'none':(b.ledger.maxToolCalls?b.ledger.toolCalls+'/'+b.ledger.maxToolCalls+' calls':(b.ledger.inputTokens+b.ledger.outputTokens)+' tokens');
@@ -723,7 +818,7 @@ function renderRunState(){
 /* ---------- dock ---------- */
 function pendingForTask(){return S.approvals.filter(function(a){return a.status==='pending'&&a.expiresAt>Date.now()/1000&&(!T.taskId||a.taskId===T.taskId)})}
 function renderDock(){
-  var box=$('#dockBody');box.textContent='';
+  var box=$('#dockBody');box.textContent='';$('#jbar').hidden=S.dock!=='journal';
   $$('#dockTabs button').forEach(function(b){b.setAttribute('aria-selected',String(b.getAttribute('data-t')===S.dock))});
   var pend=S.approvals.filter(function(a){return a.status==='pending'}).length;
   var c=$('#apCount');c.textContent=String(pend);c.classList.toggle('hot',pend>0);
@@ -750,19 +845,32 @@ function renderDock(){
       tr.appendChild(el('td',{class:'mono',text:a.requiredRole||'—'}));
       tr.appendChild(el('td',null,el('span',{class:'pill '+st[0],text:st[1]})));
       tr.appendChild(el('td',{class:'m',text:fmtDay(a.expiresAt)}));
-      tr.appendChild(act);tb.appendChild(tr);
+      tr.appendChild(act);tr.classList.add('clickrow');
+      tr.addEventListener('click',function(){S.apOpen[a.approvalId]=!S.apOpen[a.approvalId];if(S.apOpen[a.approvalId]&&!S.apDetail[a.approvalId])api('/api/approval?id='+encodeURIComponent(a.approvalId)).then(function(d){S.apDetail[a.approvalId]=d;renderDock()}).catch(function(e){banner(e.message)});renderDock()});
+      tb.appendChild(tr);
+      if(S.apOpen[a.approvalId]){
+        var dd=S.apDetail[a.approvalId],cell=el('td',{colspan:'7',class:'apdetail'});
+        if(!dd)cell.textContent='Loading…';
+        else{var ap=dd.approval;cell.appendChild(el('dl',{class:'kv wide'},[['Approval',ap.approvalId],['Task',ap.taskId],['Class',ap.approvalClass],['Required role',ap.requiredRole],['Created',fmtDay(ap.createdAt)],['Expires',fmtDay(ap.expiresAt)],['Decided',ap.decidedAt?fmtDay(ap.decidedAt)+' by '+ap.approver:'not yet'],['Consumed',ap.consumedAt?fmtDay(ap.consumedAt):'no'],['Payload digest',ap.payloadDigest],['Resource',ap.resource]].map(function(p){return [el('dt',{text:p[0]}),el('dd',{text:String(p[1]==null?'—':p[1])})]})));
+          cell.appendChild(el('div',{class:'eyebrow',style:'margin:8px 0 4px',text:'Journal events for this approval'}));
+          if(!dd.events.length)cell.appendChild(el('div',{class:'dim',text:'None recorded yet.'}));
+          dd.events.forEach(function(e){cell.appendChild(el('div',{class:'mono',text:fmtDay(e.timestamp)+'  '+e.action+'  '+e.decision+'  run '+short(e.run_id,14)}))});
+          var rid=dd.events.length?dd.events[0].run_id:null;if(rid)cell.appendChild(el('div',{style:'margin-top:6px'},runLink(rid)));}
+        tb.appendChild(el('tr',{class:'apdetailrow'},cell));
+      }
     });
     t.appendChild(tb);box.appendChild(el('div',{class:'wrapx'},t));
   }else if(S.dock==='journal'){
     var j=S.journal;
-    if(!j||!j.events.length){box.appendChild(el('div',{class:'empty'},'The journal is created by the first run. Nothing has been recorded yet.'));return}
+    $('#jinfo').textContent=j?(j.matched===j.total?plural(j.total,'event'):j.matched+' of '+j.total+' match'):'';
+    if(!j||!j.events.length){box.appendChild(el('div',{class:'empty'},j&&j.total?'No events match these filters.':'The journal is created by the first run. Nothing has been recorded yet.'));return}
     var t2=el('table');
     t2.appendChild(el('thead',null,el('tr',null,['#','Time','Actor','Action','Decision','Reason','Run','Digest'].map(function(h){return el('th',{text:h})}))));
     var tb2=el('tbody');
     j.events.forEach(function(e,i){
       var dc={permit:'good',executed:'good',completed:'good',started:'info',allowed:'good',deny:'bad',failed:'bad',approval_required:'warn'}[e.decision]||'off';
       var tr=el('tr',{class:e.run_id===S.runId?'sel':''});
-      tr.appendChild(el('td',{class:'m dim',text:String(j.firstShown+i)}));
+      tr.appendChild(el('td',{class:'m dim',text:String(e.seq)}));
       tr.appendChild(el('td',{class:'m',text:fmtTime(e.timestamp)}));
       tr.appendChild(el('td',{text:e.actor_id}));
       tr.appendChild(el('td',{class:'m',text:e.action}));
@@ -774,7 +882,7 @@ function renderDock(){
       tb2.appendChild(tr);
     });
     t2.appendChild(tb2);box.appendChild(el('div',{class:'wrapx'},t2));
-    if(j.total>j.events.length)box.appendChild(el('div',{class:'dim',style:'padding:8px 10px',text:'Showing the latest '+j.events.length+' of '+j.total+' events.'}));
+    if(j.hasMore){var capped=S.jf.limit>=1000;var lm=el('button',{type:'button',class:'btn',style:'margin:8px 10px',text:capped?'Showing the latest 1000 matches; narrow with filters':'Load 200 earlier events',disabled:capped?'disabled':null});lm.addEventListener('click',function(){S.jf.limit=Math.min(1000,S.jf.limit+200);S.dockScrolled=true;reloadJournal()});box.appendChild(lm)}
     if(!S.dockScrolled){box.scrollTop=box.scrollHeight}
   }else{
     if(!S.budgets.length){box.appendChild(el('div',{class:'empty'},'No budget ledger yet. One is created per task when a run starts.'));return}
@@ -811,9 +919,19 @@ function loadRun(){
     renderCanvas();if(S.fit)fit();renderInsp();renderRunState();
   }).catch(function(e){banner(e.message)});
 }
+function journalUrl(){
+  var f=S.jf,u='/api/journal?limit='+f.limit;
+  if(f.q)u+='&q='+encodeURIComponent(f.q);if(f.decision)u+='&decision='+encodeURIComponent(f.decision);if(f.run&&S.runId)u+='&run='+encodeURIComponent(S.runId);
+  return u;
+}
+function reloadJournal(){return api(journalUrl()).then(function(j){S.journal=j;S.dockScrolled=false;renderDock()}).catch(function(e){banner(e.message)})}
+var jqTimer=null;
+$('#jq').addEventListener('input',function(e){S.jf.q=e.target.value;S.jf.limit=200;clearTimeout(jqTimer);jqTimer=setTimeout(reloadJournal,250)});
+$('#jdec').addEventListener('change',function(e){S.jf.decision=e.target.value;S.jf.limit=200;reloadJournal()});
+$('#jrun').addEventListener('change',function(e){S.jf.run=e.target.checked;S.jf.limit=200;reloadJournal()});
 function refreshAll(){
   return Promise.all([
-    api('/api/runs'),api('/api/approvals'),api('/api/journal'),api('/api/budgets')
+    api('/api/runs'),api('/api/approvals'),api(journalUrl()),api('/api/budgets')
   ]).then(function(r){
     S.runs=r[0];S.approvals=r[1];S.journal=r[2];S.budgets=r[3];
     if(!S.ov||S.ov.journal.events!==S.journal.total)refreshOverview();
@@ -958,6 +1076,225 @@ function setView(v){
 }
 $$('#viewTabs button').forEach(function(b){b.addEventListener('click',function(){setView(b.getAttribute('data-v'))})});
 
+/* ---------- screens ---------- */
+var SCREENS=[['workspace','Workspace'],['recovery','Recovery'],['policy','Policy'],['evidence','Evidence'],['mirror','Mirror'],['agents','Agents'],['lab','Lab'],['system','System'],['native','Native tools'],['updates','Updates']];
+var PAGE=$('#page'),APP=$('#app');
+function pill(text,cls){return el('span',{class:'pill '+(cls||'off'),text:text})}
+function chips(list,empty){var w=el('div',{class:'chiprow'});if(!list||!list.length)w.appendChild(el('span',{class:'dim',text:empty||'none'}));else list.forEach(function(x){w.appendChild(el('span',{class:'chip mono',text:String(x)}))});return w}
+function card(title){var c=el('section',{class:'card'});if(title)c.appendChild(el('h3',{text:title}));for(var i=1;i<arguments.length;i++){var x=arguments[i];if(x==null)continue;c.appendChild(typeof x==='string'?el('p',{class:'mute',text:x}):x)}return c}
+function kv(pairs){var dl=el('dl',{class:'kv wide'});pairs.forEach(function(p){dl.appendChild(el('dt',{text:p[0]}));var dd=el('dd');if(p[1] instanceof Node)dd.appendChild(p[1]);else dd.textContent=p[1]==null||p[1]===''?'—':String(p[1]);dl.appendChild(dd)});return dl}
+function tbl(headers,rows){var t=el('table');t.appendChild(el('thead',null,el('tr',null,headers.map(function(h){return el('th',{text:h})}))));var tb=el('tbody');rows.forEach(function(r){tb.appendChild(el('tr',null,r.map(function(c){var td=el('td');if(c instanceof Node)td.appendChild(c);else td.textContent=c==null?'—':String(c);return td})))});t.appendChild(tb);return el('div',{class:'wrapx tbl'},t)}
+function jsonBlock(v,label){var d=el('details',{class:'raw'});d.appendChild(el('summary',{text:label||'Raw JSON'}));d.appendChild(el('pre',{class:'mono',text:JSON.stringify(v,null,2)}));return d}
+function stat(label,value,cls){return el('div',{class:'stat'+(cls?' '+cls:'')},el('div',{class:'sv',text:String(value)}),el('div',{class:'sl',text:label}))}
+function note(text,cls){return el('div',{class:'why '+(cls||'')},text)}
+function btn(text,fn,cls){var b=el('button',{type:'button',class:'btn'+(cls?' '+cls:''),text:text});b.addEventListener('click',fn);return b}
+function head(title,desc,actions){var h=el('header',{class:'phead'},el('div',null,el('h1',{text:title}),desc?el('p',{class:'mute',text:desc}):null));if(actions){var a=el('div',{class:'pactions'});actions.forEach(function(x){a.appendChild(x)});h.appendChild(a)}return h}
+function emptyBox(title,text,cmd){var d=el('div',{class:'emptybox'},el('h2',{text:title}),el('p',{text:text}));if(cmd)d.appendChild(el('code',{class:'mono',text:cmd}));return d}
+function failBox(e){return el('div',{class:'why bad'},el('span',{class:'eyebrow',text:'Could not load'}),e&&e.message?e.message:String(e))}
+function download(name,obj){var blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1000)}
+function openRun(id){S.runId=id;S.userPick=true;S.pinned=false;S.sel=null;S.runSig='';goScreen('workspace');loadRun().then(renderRuns)}
+function runLink(id){var b=el('button',{type:'button',class:'linkbtn mono',text:short(id,18),title:'Open '+id});b.addEventListener('click',function(){openRun(id)});return b}
+function sevPill(s){return pill(s,{high:'bad',critical:'bad',medium:'warn',low:'info',info:'off'}[s]||'off')}
+
+var renderToken=0;
+function mount(id,build){
+  var tk=++renderToken;PAGE.textContent='';PAGE.appendChild(el('div',{class:'dim',style:'padding:8px 2px',text:'Loading…'}));
+  Promise.resolve().then(build).then(function(node){if(tk!==renderToken||S.screen!==id)return;PAGE.textContent='';PAGE.appendChild(node)}).catch(function(e){if(tk!==renderToken||S.screen!==id)return;PAGE.textContent='';PAGE.appendChild(failBox(e))});
+}
+
+/* --- Recovery --- */
+function screenRecovery(){return api('/api/recovery').then(function(d){
+  var root=el('div');
+  root.appendChild(head('Recovery','Runs that did not finish cleanly, and what the journal can and cannot say about them.',[btn('Refresh',function(){goScreen('recovery',true)})]));
+  var runs=(d.runs||[]).slice().sort(function(a,b){return b.lastTimestamp-a.lastTimestamp});
+  root.appendChild(el('div',{class:'stats'},stat('Need reconciliation',d.unreconciledRuns,d.unreconciledRuns?'warn':'good'),stat('Runs recorded',runs.length),stat('Journal chain',d.journalChainVerified?'verified':'FAILED',d.journalChainVerified?'good':'bad')));
+  root.appendChild(note(d.note,'warn'));
+  if(!runs.length){root.appendChild(emptyBox('No runs recorded','Recovery lists every run found in the audit journal. Start one from the Terminal or with:','jani run "your task"'));return root}
+  var label={recorded_model_complete:['good','Model completed'],recorded_model_failed:['bad','Model failed'],unknown_requires_reconciliation:['warn','Needs reconciliation']};
+  root.appendChild(tbl(['Run','Task','Outcome','Reason','Events','Denied','Last event','Safe to replay',''],runs.map(function(r){
+    var l=label[r.outcome]||['off',r.outcome];
+    var acts=el('div',{class:'rowacts'},btn('Open',function(){openRun(r.runId)}),btn('Evidence',function(){S.evRun=r.runId;goScreen('evidence')}));
+    return [runLink(r.runId),el('span',{class:'mono',text:short(r.taskId,18)}),pill(l[1],l[0]),r.reason,r.recordedEvents,r.deniedDecisions,fmtDay(r.lastTimestamp),pill(r.safeToAutoReplay?'Yes':'No',r.safeToAutoReplay?'warn':'off'),acts]
+  })));
+  root.appendChild(jsonBlock(d));
+  return root})}
+
+/* --- Policy --- */
+var KNOWN_ACTIONS=['repo.read','repo.list','repo.write','command.exec','native.read','native.control','skill.read','plugin.write','model.invoke'];
+function screenPolicy(){return api('/api/policy').then(function(d){
+  var root=el('div'),a=(S.ov&&S.ov.authority)||{};
+  root.appendChild(head('Policy and settings','What is allowed, and why. Everything here is read from the running process; changing it means restarting with different flags or a different signed policy.'));
+  var grid=el('div',{class:'cards'});
+  grid.appendChild(card('Effective policy',kv([['Summary',d.summary],['Revision',d.revision],['Mode',d.mode],['Tenant',d.tenant],['Default sandbox',d.defaultSandboxProfile],['Default network',d.defaultNetwork]])));
+  grid.appendChild(card('Authority at startup',kv([['Read',pill('Granted','good')],['Write',a.allowWrite?chips(a.writePaths):pill('Off','off')],['Commands',a.allowExec?chips(a.execPrograms.length?a.execPrograms:['any allowed by policy']):pill('Off','off')],['Sandbox',a.sandbox],['Network',a.network],['Permission rules',a.permissions||'none (flags and policy only)']])));
+  var dp=d.data||{};
+  grid.appendChild(card('Data egress',kv([['Model data classes',chips(dp.allowedModelClasses)],['Providers',chips(dp.allowedProviders)],['Purposes',chips(dp.allowedPurposes)],['Regions',chips(dp.allowedRegions)],['Restricted data to model',pill(dp.allowRestrictedEgress?'Allowed':'Blocked',dp.allowRestrictedEgress?'warn':'good')],['Inspect outputs',pill(dp.inspectOutputs?'On':'Off',dp.inspectOutputs?'good':'bad')],['Redact secrets',pill(dp.redactSecrets?'On':'Off',dp.redactSecrets?'good':'bad')],['Source default',dp.sourceDefault]])));
+  var b=d.budgets||{},lim=function(v,u){return v==null?'no limit':String(v)+(u||'')};
+  grid.appendChild(card('Budgets',kv([['Tool calls',lim(b.maxToolCalls)],['Spend',lim(b.maxUsd,' USD')],['Wall time',lim(b.maxWallSeconds,' s')],['Input price',b.pricing?'$'+b.pricing.usdPer1kInputTokens+' / 1k tokens':'—'],['Output price',b.pricing?'$'+b.pricing.usdPer1kOutputTokens+' / 1k tokens':'—']])));
+  root.appendChild(grid);
+  var rules=d.rules||[],denied=d.deniedActions||[];
+  root.appendChild(card('Organisation rules',rules.length?el('div',null,rules.map(function(r){return el('pre',{class:'mono ruleline',text:JSON.stringify(r)})})):note('No signed organisation rules. The baseline policy applies: reads in the worktree, writes and commands only with the startup grants.'),el('h4',{text:'Denied actions'}),chips(denied,'none')));
+  var st=d.settings||{};
+  root.appendChild(card('Settings',kv([['File',st.path||'none'],['Profile',st.profile],['Max steps',st.maxSteps],['Warnings',st.warnings&&st.warnings.length?st.warnings.join(' · '):'none']]),st.profiles&&st.profiles.length?tbl(['Profile','Model'],st.profiles.map(function(p){return [p.label,p.model]})):el('p',{class:'dim',text:'No model profiles in settings.'})));
+  /* checker */
+  var act=el('select',{class:'field',id:'pcAction','aria-label':'Action'},KNOWN_ACTIONS.map(function(x){return el('option',{value:x,text:x})}));
+  var res=el('input',{class:'field',id:'pcRes',value:'repo:README.md','aria-label':'Resource',style:'min-width:240px'});
+  var out=el('div',{class:'pcout'});
+  var run=btn('Check',function(){out.textContent='';api('/api/policy/check',{action:act.value,resource:res.value}).then(function(r){
+    var dec=String(r.decision||'').toLowerCase();var cls=dec==='permit'?'good':dec==='deny'?'bad':'warn';
+    out.appendChild(el('div',{class:'why '+cls},el('span',{class:'eyebrow',text:'Decision'}),pill(dec||'unknown',cls),' ',el('span',{class:'mono',text:r.reason_code||r.reasonCode||''})));out.appendChild(jsonBlock(r))}).catch(function(e){out.appendChild(failBox(e))})},'primary');
+  root.appendChild(card('Would this be allowed?',el('p',{class:'mute',text:'Evaluates one action against the policy loaded now, as this process\'s identity. It does not run anything or record a journal event.'}),el('div',{class:'formrow'},act,res,run),out));
+  root.appendChild(jsonBlock(d));
+  return root})}
+
+/* --- Evidence --- */
+function screenEvidence(){return Promise.all([api('/api/evidence/list'),api('/api/audit')]).then(function(r){
+  var rows=r[0],au=r[1],root=el('div');
+  root.appendChild(head('Evidence','Verified, audit-only receipts per run. A receipt shows what was recorded. It does not prove the work is correct.'));
+  var chain=el('div',{class:'chainrow'},pill(au.ok?'Chain verified':'Chain FAILED',au.ok?'good':'bad'),el('span',{class:'mono mute',text:plural(au.events||0,'event')+(au.last_digest?' · head '+short(au.last_digest,16):'')+(au.failure_line?' · failed at line '+au.failure_line:'')}));
+  var vb=btn('Verify again',function(){api('/api/audit').then(function(x){chain.textContent='';chain.appendChild(pill(x.ok?'Chain verified':'Chain FAILED',x.ok?'good':'bad'));chain.appendChild(el('span',{class:'mono mute',text:plural(x.events||0,'event')+(x.last_digest?' · head '+short(x.last_digest,16):'')}));chain.appendChild(vb);if(!x.ok)refreshOverview()}).catch(function(e){banner(e.message)})});
+  chain.appendChild(vb);root.appendChild(card('Audit journal integrity',chain,note('Verification recomputes every event digest and the chain between them. Anyone who can edit the file and recompute all digests can still forge a consistent journal; this detects accidental damage and naive edits.','warn')));
+  if(!rows.length){root.appendChild(emptyBox('No evidence yet','Receipts appear once a run has been recorded.','jani evidence RUN_ID'));return root}
+  root.appendChild(tbl(['Run','Model status','Events','Denials','Invocations','Head digest','Outcome verified',''],rows.map(function(x){
+    if(!x.receipt)return [runLink(x.runId),pill('No receipt','bad'),'','','','',x.error,''];
+    var rc=x.receipt,ms={recorded_model_complete:['good','Completed'],recorded_model_failed:['bad','Failed'],unknown_requires_reconciliation:['warn','Needs reconciliation']}[rc.modelStatus]||['off',rc.modelStatus];
+    var acts=el('div',{class:'rowacts'},btn('Download JSON',function(){api('/api/evidence?id='+encodeURIComponent(x.runId)).then(function(ex){download('jani-evidence-'+x.runId+'.json',ex)}).catch(function(e){banner(e.message)})},'primary'),btn('Open',function(){openRun(x.runId)}));
+    var tr=[runLink(x.runId),pill(ms[1],ms[0]),rc.auditEventCount,rc.decisionDenials,rc.observedInvocationIds,el('span',{class:'mono',text:short(rc.lastRunEventDigest,16)}),pill('No','off'),acts];
+    return tr})));
+  root.appendChild(note('"Outcome verified: No" is always shown. Jani records that a model finished, not that tests passed or effects were reconciled. Independent verification is a separate step.'));
+  return root})}
+
+/* --- Mirror --- */
+S.mirror={tab:'workflows',run:null,other:null};
+function findingCard(f){return el('div',{class:'finding'},el('div',{class:'frow'},sevPill(f.severity),el('b',{text:f.code}),pill(f.status||'proposed','off'),f.runId?runLink(f.runId):null),el('p',{text:f.observation}),el('p',{class:'mute',text:f.recommendation}),f.evidence&&f.evidence.length?el('div',{class:'dim mono',text:'evidence: '+f.evidence.join(', ')}):null)}
+function countsChips(o){return chips(Object.keys(o||{}).sort().map(function(k){return k+' × '+o[k]}),'none')}
+function runSelect(id,value,onchange){var s=el('select',{class:'field',id:id,'aria-label':id},[el('option',{value:'',text:'Choose a run…'})].concat(S.runs.map(function(r){return el('option',{value:r.runId,text:short(r.runId,22)+' · '+r.status+' · '+fmtTime(r.firstAt)})})));s.value=value||'';s.addEventListener('change',function(){onchange(s.value)});return s}
+function screenMirror(){
+  var m=S.mirror,root=el('div');
+  root.appendChild(head('Mirror','Deterministic, rule-based observations about recorded runs. These are heuristics, not proven causes, and nothing is applied automatically.'));
+  var tabs=el('div',{class:'seg',role:'tablist'},[['workflows','Workflows'],['recommendations','Recommendations'],['history','History'],['critique','Critique a run'],['compare','Compare runs']].map(function(t){var b=el('button',{type:'button',role:'tab','aria-selected':String(m.tab===t[0]),text:t[1]});b.addEventListener('click',function(){m.tab=t[0];goScreen('mirror',true)});return b}));
+  root.appendChild(el('div',{style:'margin:0 0 12px'},tabs));
+  var body=el('div');root.appendChild(body);
+  var q;
+  if(m.tab==='workflows')q='/api/mirror?sub=workflows';else if(m.tab==='recommendations')q='/api/mirror?sub=recommendations';else if(m.tab==='history')q='/api/mirror?sub=history';
+  else if(m.tab==='critique'){body.appendChild(card('Run',runSelect('mrRun',m.run,function(v){m.run=v||null;goScreen('mirror',true)})));if(!m.run){body.appendChild(el('p',{class:'dim',text:'Choose a run to see its critique.'}));return root}q='/api/mirror?sub=critique&run='+encodeURIComponent(m.run)}
+  else{body.appendChild(card('Runs to compare',el('div',{class:'formrow'},runSelect('mrA',m.run,function(v){m.run=v||null;goScreen('mirror',true)}),el('span',{class:'dim',text:'vs'}),runSelect('mrB',m.other,function(v){m.other=v||null;goScreen('mirror',true)}))));if(!m.run||!m.other){body.appendChild(el('p',{class:'dim',text:'Choose two runs.'}));return root}q='/api/mirror?sub=compare&run='+encodeURIComponent(m.run)+'&other='+encodeURIComponent(m.other)}
+  return api(q).then(function(d){
+    if(m.tab==='workflows'){
+      body.appendChild(el('div',{class:'stats'},stat('Runs considered',d.consideredRuns),stat('Completed',d.completed,'good'),stat('Failed',d.failed,d.failed?'bad':''),stat('Incomplete',d.incomplete,d.incomplete?'warn':'')));
+      body.appendChild(note(d.note,'warn'));
+      body.appendChild(card('Recurring findings',countsChips(d.recurringFindings)));
+      if(!d.runs.length){body.appendChild(emptyBox('No audited runs','Mirror reads the last 50 distinct agent runs from the journal.'));return root}
+      body.appendChild(tbl(['Run','Outcome','Events','Elapsed','Findings',''],d.runs.map(function(r){return [runLink(r.runId),pill(r.outcome,r.outcome==='completed'?'good':r.outcome==='failed'?'bad':'warn'),r.eventCount,r.elapsedObservedSeconds+' s',r.findings.length?el('div',{class:'chiprow'},r.findings.map(function(f){return sevPill(f.severity)})):'none',btn('Critique',function(){m.tab='critique';m.run=r.runId;goScreen('mirror',true)})]})));
+    }else if(m.tab==='recommendations'||m.tab==='history'){
+      if(d.note)body.appendChild(note(d.note,'warn'));
+      var list=d.recommendations||[];
+      if(!list.length)body.appendChild(emptyBox(m.tab==='history'?'No recorded recommendations':'No recommendations','Rules found nothing to flag in the recorded runs.'));
+      list.forEach(function(f){body.appendChild(findingCard(f))});
+    }else if(m.tab==='critique'){
+      body.appendChild(el('div',{class:'stats'},stat('Outcome',d.outcome,d.outcome==='completed'?'good':'warn'),stat('Events',d.eventCount),stat('Elapsed',d.elapsedObservedSeconds+' s'),stat('Findings',d.findings.length,d.findings.length?'warn':'good')));
+      body.appendChild(card('Actions',countsChips(d.actions)));body.appendChild(card('Decisions',countsChips(d.decisions)));
+      if(d.findings.length)d.findings.forEach(function(f){body.appendChild(findingCard(f))});else body.appendChild(note('No rule fired for this run.','good'));
+      if(d.timeline&&d.timeline.length)body.appendChild(card('Timeline',tbl(['Time','Action','Decision','Reason'],d.timeline.map(function(t){return [fmtTime(t.at),el('span',{class:'mono',text:t.action}),t.decision,t.reason]})),d.timelineTruncated?el('p',{class:'dim',text:'Timeline truncated.'}):null));
+    }else{
+      var side=function(x,label){return card(label+' · '+short(x.runId,16),kv([['Outcome',x.outcome],['Events',x.eventCount],['Elapsed',x.elapsedObservedSeconds+' s'],['Findings',x.findings.length]]),el('h4',{text:'Actions'}),countsChips(x.actions),el('h4',{text:'Decisions'}),countsChips(x.decisions))};
+      body.appendChild(el('div',{class:'stats'},stat('Event delta (B − A)',d.eventCountDeltaBMinusA),stat('Denial delta (B − A)',d.denialCountDeltaBMinusA)));
+      body.appendChild(note(d.interpretation,'warn'));
+      body.appendChild(el('div',{class:'cards'},side(d.a,'A'),side(d.b,'B')));
+    }
+    body.appendChild(jsonBlock(d));
+    return root});
+}
+
+/* --- Agents --- */
+function screenAgents(){return api('/api/attention').then(function(d){
+  var root=el('div'),ph={ready:'good',running:'info',sleeping:'off',paused:'warn',quarantined:'bad'};
+  root.appendChild(head('Agents and alerts','Local lifecycle and alert state. An alert is data, not an instruction or a permission grant, and a wake hint is not authentication.',[btn('Refresh',function(){goScreen('agents',true)})]));
+  var pend=d.alerts.filter(function(a){return a.phase==='pending'}).length;
+  root.appendChild(el('div',{class:'stats'},stat('Agents',d.agents.length),stat('Alerts',d.alerts.length),stat('Pending',pend,pend?'warn':'good')));
+  if(!d.agents.length)root.appendChild(emptyBox('No agents registered','Register an agent to give it an inbox and a lifecycle.','jani agent register worker-01 --state-dir .jani'));
+  else root.appendChild(card('Agents',tbl(['Agent','Phase','Generation','Wake requested','Updated'],d.agents.map(function(a){return [el('span',{class:'mono',text:a.agentId}),pill(a.phase,ph[a.phase]||'off'),a.generation,a.wakeRequested?pill('Yes','warn'):'No',fmtDay(a.updatedAt)]}))));
+  if(d.alerts.length)root.appendChild(card('Alerts',tbl(['Alert','Recipient','Event','Source','Reference','Severity','Phase','Attempts','Next attempt','Evidence'],d.alerts.map(function(a){return [el('span',{class:'mono',text:short(a.id,16)}),a.recipient,a.event,a.source,a.reference,pill(a.severity,{critical:'bad',high:'warn',normal:'info',info:'off'}[a.severity]||'off'),pill(a.phase,{pending:'warn',leased:'info',accepted:'info',resolved:'good'}[a.phase]||'off'),a.attempts,fmtDay(a.nextAttemptAt),a.evidence||'—']}))));
+  root.appendChild(note('This screen is read-only. Registering agents and sending, claiming or resolving alerts stay on the command line so each is attributed to a verified identity.'));
+  return root})}
+
+/* --- Lab --- */
+S.lab={run:null};
+function screenLab(){var l=S.lab;return api('/api/lab'+(l.run?'?run='+encodeURIComponent(l.run):'')).then(function(d){
+  var root=el('div');
+  root.appendChild(head('Lab','Evidence-linked hypotheses and comparison of independently signed trial results. Advisory only.'));
+  root.appendChild(note('Lab cannot run trials, sign evidence, approve patches or deploy. A hypothesis here is a question to test, not a fix to apply.','warn'));
+  root.appendChild(card('Propose hypotheses from a run',el('div',{class:'formrow'},runSelect('labRun',l.run,function(v){l.run=v||null;goScreen('lab',true)}))));
+  if(d.proposal){
+    var ps=d.proposal.proposals||[];
+    if(!ps.length)root.appendChild(note('No findings for this run, so there is nothing to hypothesise about.','good'));
+    ps.forEach(function(p){root.appendChild(el('div',{class:'finding'},el('div',{class:'frow'},el('b',{text:p.code}),pill('hypothesis only','warn'),pill('not applied','off')),el('p',{text:p.observation}),el('p',{class:'mute',text:p.hypothesis}),el('p',{class:'dim',text:'Needs '+p.requiredComparisons+' comparisons: '+p.evaluation}),p.evidence&&p.evidence.length?el('div',{class:'dim mono',text:'evidence: '+p.evidence.join(', ')}):null))});
+    root.appendChild(jsonBlock(d.proposal));
+  }
+  root.appendChild(card('Evaluate signed trials',kv([['Trusted lab keys',d.labKeysConfigured?String(d.labKeysConfigured):pill('none configured','warn')]]),el('p',{class:'mute',text:d.evaluation}),el('code',{class:'mono',text:'jani lab evaluate trial-pair.json --lab-key verifier:ED25519_PUBLIC_KEY_HEX --state-dir .jani'})));
+  return root})}
+
+/* --- System --- */
+function screenSystem(){return api('/api/system').then(function(d){
+  var root=el('div');
+  root.appendChild(head('System','Confinement backends, plugins, MCP governance and trusted keys. Support here is reported, not certified.'));
+  var sb=d.sandbox,bk=(sb.doctor&&sb.doctor.backends)||[];
+  root.appendChild(card('Sandbox',kv([['Configured mode',sb.configured],['Network policy',sb.network],['Host',(sb.doctor.os||'')+' '+(sb.doctor.arch||'')]]),tbl(['Backend','Available','Confines filesystem','Confines network','Version'],bk.map(function(b){return [b.name,pill(b.available?'Yes':'No',b.available?'good':'off'),pill(b.confinesFilesystem?'Yes':'No',b.confinesFilesystem?'good':'warn'),pill(b.confinesNetwork?'Yes':'No',b.confinesNetwork?'good':'warn'),b.version||'—']})),el('h4',{text:'Can each profile be satisfied right now?'}),tbl(['Profile','Backend','Result'],((sb.check&&sb.check.profiles)||[]).map(function(p){return [p.profile,p.backend||'—',p.ok?pill('OK','good'):el('span',{class:'mute',text:p.error})]})),note('"Windows Job Objects are not filesystem or network confinement" and macOS has no sandbox backend. Read the Confines columns, not just Available.','warn')));
+  var pl=d.plugins;
+  if(pl.error)root.appendChild(card('Plugins',note(pl.error,'bad')));
+  else{var list=(pl.list&&pl.list.plugins)||[];root.appendChild(card('Plugins',list.length?el('div',null,list.map(function(p){return el('pre',{class:'mono ruleline',text:JSON.stringify(p)})})):el('p',{class:'dim',text:'No plugins configured. Executable plugins are not implemented; manifests are verified only.'}),kv([['Verification',pill(pl.verify&&pl.verify.ok?'OK':'Not OK',pl.verify&&pl.verify.ok?'good':'bad')]])))}
+  var mc=d.mcp;
+  root.appendChild(card('MCP governance',kv([['Contract',mc.contract||'none'],['Delegation',mc.delegation||'none'],['Agent',mc.agent],['Contract keys',mc.contractKeys],['Delegation keys',mc.delegationKeys],['Receipt keys',mc.receiptKeys]]),el('p',{class:'dim',text:'Verifying and authorising MCP calls is done with `jani mcp verify|authorize|call`.'})));
+  root.appendChild(card('Trusted keys',kv([['Policy keys',d.keys.policyKeys],['Plugin keys',d.keys.pluginKeys],['Lab keys',d.keys.labKeys]]),el('p',{class:'dim',text:'Counts only. Key material is never displayed.'})));
+  root.appendChild(jsonBlock(d));
+  return root})}
+
+/* --- Native tools --- */
+function screenNative(){return api('/api/native').then(function(cat){
+  var root=el('div');
+  root.appendChild(head('Native tools','Twelve bounded operations with no network client and no source writer. Read-only operations can be run here; anything that changes state stays on the command line.'));
+  var grid=el('div',{class:'cards'});
+  cat.forEach(function(t){
+    var c=card(t.tool);c.appendChild(el('p',{class:'mute',text:t.summary}));
+    t.operations.forEach(function(o){
+      var row=el('div',{class:'oprow'},el('code',{class:'mono',text:o.name+(o.args?' '+o.args:'')}));
+      if(o.runnable){
+        var inp=o.args?el('input',{class:'field',placeholder:o.args,'aria-label':t.tool+' '+o.name+' arguments'}):null;
+        var out=el('div',{class:'opout'});
+        var go=btn('Run',function(){out.textContent='';var args=inp&&inp.value.trim()?inp.value.trim().split(/\s+/):[];api('/api/native/run',{tool:t.tool,op:o.name,args:args}).then(function(r){out.appendChild(el('pre',{class:'mono rawpre',text:JSON.stringify(r,null,2)}))}).catch(function(e){out.appendChild(failBox(e))})});
+        if(inp)row.appendChild(inp);row.appendChild(go);c.appendChild(row);c.appendChild(out);
+      }else{row.appendChild(pill(o.privileged?'operator only':'changes state','warn'));row.appendChild(el('span',{class:'dim mono',text:'jani native '+t.tool+' '+o.name}));c.appendChild(row)}
+    });
+    grid.appendChild(c);
+  });
+  root.appendChild(grid);
+  root.appendChild(note('Every run, including a read-only one, goes through policy and identity and records started and completed events in the audit journal.','warn'));
+  return root})}
+
+/* --- Updates --- */
+function screenUpdates(){return api('/api/updates').then(function(u){
+  var root=el('div');
+  root.appendChild(head('Updates','Verified release-channel delivery for this and other local agent binaries.'));
+  root.appendChild(card('This installation',kv([['Version',u.version],['Executable',u.executable],['Release source',u.source||pill('not configured','warn')],['Targets',u.targets.length?chips(u.targets):'this binary only']]),el('p',{class:'dim',text:u.note})));
+  var out=el('div');
+  var b=btn('Check for updates',function(){b.disabled=true;out.textContent='';out.appendChild(el('p',{class:'dim',text:'Contacting '+u.source+'…'}));api('/api/updates/check',{}).then(function(r){out.textContent='';out.appendChild(note(r.updateAvailable?'Update available: '+r.latestVersion+' ('+r.tag+').':'Up to date at '+r.latestVersion+'.',r.updateAvailable?'warn':'good'));out.appendChild(kv([['Latest',r.latestVersion],['Tag',r.tag],['Commit',r.commit],['Platform',r.platform],['Built',r.builtAt],['Artifact',r.artifact&&r.artifact.sha256?short(r.artifact.sha256,24):'—']]));out.appendChild(jsonBlock(r))}).catch(function(e){out.textContent='';out.appendChild(failBox(e))}).then(function(){b.disabled=false})},'primary');
+  if(!u.source)b.disabled=true;
+  root.appendChild(card('Check',el('p',{class:'mute',text:'This contacts the release source above. It is the only screen that makes an outbound request, and only when you press the button.'}),b,out));
+  return root})}
+
+var SCREEN_FN={recovery:screenRecovery,policy:screenPolicy,evidence:screenEvidence,mirror:screenMirror,agents:screenAgents,lab:screenLab,system:screenSystem,native:screenNative,updates:screenUpdates};
+function renderNav(){var n=$('#nav');n.textContent='';SCREENS.forEach(function(s){var b=el('button',{type:'button','data-s':s[0],text:s[1],'aria-current':String(S.screen===s[0]?'page':'false')});if(S.screen!==s[0])b.removeAttribute('aria-current');b.addEventListener('click',function(){goScreen(s[0])});n.appendChild(b)})}
+function goScreen(id,force){
+  if(!SCREEN_FN[id]&&id!=='workspace')id='workspace';
+  var changed=S.screen!==id;S.screen=id;APP.setAttribute('data-screen',id);
+  renderNav();
+  if(id==='workspace'){PAGE.hidden=true;if(changed){S.fit=true;setTimeout(function(){if(S.view==='graph')fit()},0)}}
+  else{PAGE.hidden=false;mount(id,SCREEN_FN[id])}
+  try{if(location.hash.slice(1)!==id)history.replaceState(null,'','#'+id)}catch(e){}
+  if(changed||force)window.scrollTo(0,0);
+}
+window.addEventListener('hashchange',function(){var h=location.hash.slice(1);if(h&&h!==S.screen)goScreen(h)});
+
 /* ---------- theme and boot ---------- */
 $('#themeBtn').addEventListener('click',function(){
   var r=document.documentElement,cur=r.getAttribute('data-theme');
@@ -967,6 +1304,7 @@ $('#themeBtn').addEventListener('click',function(){
 window.addEventListener('resize',function(){if(S.fit&&S.view==='graph')fit()});
 new ResizeObserver(function(){if(S.fit&&S.view==='graph')fit()}).observe(board);
 grow();renderTerm();
+goScreen(location.hash.slice(1)||'workspace');
 refreshOverview().then(refreshAll).then(function(){pollSession();setInterval(refreshAll,4000);setInterval(refreshOverview,15000)});
 })();
 

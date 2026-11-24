@@ -31,6 +31,11 @@ pub fn command(cfg: &Config) -> JResult<()> {
 }
 
 fn check(cfg: &Config) -> JResult<()> {
+    print_json(&check_report(cfg)?)
+}
+
+/// The same report `jani update check` prints, returned for other front ends.
+pub fn check_report(cfg: &Config) -> JResult<serde_json::Value> {
     let source = source(cfg)?;
     let release = fetch_release(&source)?;
     let current_exe = current_exe();
@@ -50,7 +55,7 @@ fn check(cfg: &Config) -> JResult<()> {
         "updateAvailable": update_available,
         "targets": states.iter().map(TargetState::json).collect::<Vec<_>>(),
     });
-    print_json(&report)
+    Ok(report)
 }
 
 fn install(cfg: &Config) -> JResult<()> {

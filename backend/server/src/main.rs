@@ -268,23 +268,48 @@ fn plugins_command(cfg: &Config) -> JResult<()> {
     }
 }
 
-fn policy_command(cfg: &Config) -> JResult<()> {
+pub(crate) fn policy_explain(cfg: &Config) -> JResult<serde_json::Value> {
     let engine = PolicyEngine::load(cfg)?;
+    let bundle = engine.effective.bundle.as_ref();
+    Ok(json!({
+        "summary": engine.describe(),
+        "revision": engine.effective.revision,
+        "tenant": engine.effective.tenant,
+        "defaultSandboxProfile": engine.default_sandbox_profile().as_str(),
+        "defaultNetwork": engine.default_network().as_str(),
+        "data": engine.data_policy(),
+        "budgets": engine.budget_limits(),
+        "rules": bundle.map(|bundle| bundle.spec.rules.clone()).unwrap_or_default(),
+        "deniedActions": bundle.map(|bundle| bundle.spec.denied_actions.clone()).unwrap_or_default(),
+    }))
+}
+
+pub(crate) fn policy_check(
+    cfg: &Config,
+    action: &str,
+    resource: &str,
+) -> JResult<serde_json::Value> {
+    let engine = PolicyEngine::load(cfg)?;
+    let identity = identity::load(cfg)?;
+    let (effect, risk) = action_profile(action);
+    let request = ActionRequest {
+        task_id: cfg.task_id.clone().unwrap_or_else(|| new_id("task")),
+        invocation_id: new_id("inv"),
+        tenant_id: identity.tenant.clone(),
+        principal_id: identity.principal.clone(),
+        action: action.to_string(),
+        resource: resource.to_string(),
+        effect,
+        risk,
+        arguments_digest: "policy-check".into(),
+        idempotency_key: None,
+    };
+    serde_json::to_value(engine.evaluate(cfg, &request)).map_err(|e| e.to_string())
+}
+
+fn policy_command(cfg: &Config) -> JResult<()> {
     match cfg.sub.as_deref() {
-        Some("explain") | None => {
-            let bundle = engine.effective.bundle.as_ref();
-            print_json(&json!({
-                "summary": engine.describe(),
-                "revision": engine.effective.revision,
-                "tenant": engine.effective.tenant,
-                "defaultSandboxProfile": engine.default_sandbox_profile().as_str(),
-                "defaultNetwork": engine.default_network().as_str(),
-                "data": engine.data_policy(),
-                "budgets": engine.budget_limits(),
-                "rules": bundle.map(|bundle| bundle.spec.rules.clone()).unwrap_or_default(),
-                "deniedActions": bundle.map(|bundle| bundle.spec.denied_actions.clone()).unwrap_or_default(),
-            }))
-        }
+        Some("explain") | None => print_json(&policy_explain(cfg)?),
         Some("check") => {
             let action = cfg
                 .action
@@ -294,23 +319,7 @@ fn policy_command(cfg: &Config) -> JResult<()> {
                 .resource
                 .as_ref()
                 .ok_or("policy check requires --resource")?;
-            let identity = identity::load(cfg)?;
-            let (effect, risk) = action_profile(action);
-            let request = ActionRequest {
-                task_id: cfg.task_id.clone().unwrap_or_else(|| new_id("task")),
-                invocation_id: new_id("inv"),
-                tenant_id: identity.tenant.clone(),
-                principal_id: identity.principal.clone(),
-                action: action.clone(),
-                resource: resource.clone(),
-                effect,
-                risk,
-                arguments_digest: "policy-check".into(),
-                idempotency_key: None,
-            };
-            print_json(
-                &serde_json::to_value(engine.evaluate(cfg, &request)).map_err(|e| e.to_string())?,
-            )
+            print_json(&policy_check(cfg, action, resource)?)
         }
         Some(other) => Err(format!("unknown policy subcommand '{other}'")),
     }

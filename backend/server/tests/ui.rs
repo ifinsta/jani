@@ -27,6 +27,31 @@ impl Drop for Ui {
     }
 }
 
+fn start_with_state(root: &std::path::Path) -> Ui {
+    let mut child = support::jani()
+        .args(["ui", "--port", "0", "--repo"])
+        .arg(root.join("repo"))
+        .arg("--state-dir")
+        .arg(root.join("state"))
+        .env("JANI_API_KEY", "test-key")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let url = line.split("http://127.0.0.1:").nth(1).expect(&line);
+    let (port, token) = url.trim().split_once("/#token=").expect(&line);
+    Ui {
+        port: port.parse().unwrap(),
+        token: token.to_string(),
+        child,
+        root: root.to_path_buf(),
+        _stdout: stdout,
+    }
+}
+
 fn start(extra: &[&str]) -> Ui {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -273,4 +298,189 @@ fn a_tampered_journal_is_refused_not_displayed() {
     assert_eq!(run.status, 409, "{}", run.body);
     assert!(run.body.contains("refusing to show unverified events"));
     assert!(!run.body.contains("forged"));
+}
+
+#[test]
+fn read_only_screens_answer_on_a_fresh_state_directory() {
+    let ui = start(&[]);
+    for path in [
+        "/api/policy",
+        "/api/system",
+        "/api/native",
+        "/api/updates",
+        "/api/recovery",
+        "/api/attention",
+        "/api/mirror?sub=workflows",
+        "/api/mirror?sub=recommendations",
+        "/api/mirror?sub=history",
+        "/api/lab",
+        "/api/audit",
+        "/api/evidence/list",
+        "/api/approvals",
+        "/api/budgets",
+    ] {
+        let reply = get(&ui, path);
+        assert_eq!(reply.status, 200, "{path}: {}", reply.body);
+    }
+    let policy = get(&ui, "/api/policy").json();
+    assert_eq!(policy["revision"], "local-baseline");
+    assert_eq!(policy["settings"]["profiles"], json!([]));
+    let native = get(&ui, "/api/native").json();
+    assert_eq!(native.as_array().unwrap().len(), 12);
+    let system = get(&ui, "/api/system").json();
+    assert!(system["sandbox"]["doctor"]["backends"].is_array());
+}
+
+#[test]
+fn views_refuse_what_the_command_line_keeps_to_itself() {
+    let ui = start(&[]);
+    // `mirror record` persists a recommendation; it is not offered.
+    let record = get(&ui, "/api/mirror?sub=record&run=run-1");
+    assert_eq!(record.status, 422, "{}", record.body);
+    // State-changing and operator-only native operations stay on the CLI.
+    for (tool, op) in [
+        ("index", "build"),
+        ("planner", "verify"),
+        ("workspace", "rollback"),
+    ] {
+        let reply = post(
+            &ui,
+            "/api/native/run",
+            json!({"tool": tool, "op": op, "args": []}),
+        );
+        assert_eq!(reply.status, 422, "{tool} {op}: {}", reply.body);
+        assert!(reply.body.contains(&format!("jani native {tool} {op}")));
+    }
+    let unknown = post(&ui, "/api/native/run", json!({"tool": "nope", "op": "x"}));
+    assert_eq!(unknown.status, 422);
+    // Bad identifiers never reach the subsystem.
+    assert_eq!(get(&ui, "/api/evidence?id=..%2F..%2Fetc").status, 422);
+    assert_eq!(get(&ui, "/api/mirror?sub=critique&run=a%20b").status, 422);
+    assert_eq!(get(&ui, "/api/approval?id=approval-missing").status, 404);
+    // Updates make no request unless a source is configured.
+    let update = post(&ui, "/api/updates/check", json!({}));
+    assert_eq!(update.status, 422);
+    assert!(update.body.contains("no update source configured"));
+}
+
+#[test]
+fn policy_check_evaluates_without_running_anything() {
+    let ui = start(&[]);
+    let allowed = post(
+        &ui,
+        "/api/policy/check",
+        json!({"action": "repo.read", "resource": "repo:README.md"}),
+    );
+    assert_eq!(allowed.status, 200, "{}", allowed.body);
+    assert_eq!(allowed.json()["decision"], "permit");
+    let write = post(
+        &ui,
+        "/api/policy/check",
+        json!({"action": "repo.write", "resource": "repo:out/x.txt"}),
+    );
+    assert_eq!(write.status, 200);
+    assert_ne!(
+        write.json()["decision"],
+        "permit",
+        "no write grant at startup"
+    );
+    assert_eq!(
+        post(&ui, "/api/policy/check", json!({"action": ""})).status,
+        422
+    );
+}
+
+#[test]
+fn journal_paging_filtering_and_run_grouping_use_real_events() {
+    let ui = start(&[]);
+    // A read-only native operation is governed and writes started/completed.
+    let ran = post(
+        &ui,
+        "/api/native/run",
+        json!({"tool": "evidence", "op": "list", "args": []}),
+    );
+    assert_eq!(ran.status, 200, "{}", ran.body);
+    let all = get(&ui, "/api/journal").json();
+    assert!(all["total"].as_u64().unwrap() >= 2, "{all}");
+    let one = get(&ui, "/api/journal?limit=1").json();
+    assert_eq!(one["events"].as_array().unwrap().len(), 1);
+    assert_eq!(one["hasMore"], true);
+    assert_eq!(one["events"][0]["seq"], one["total"], "newest event last");
+    let completed = get(&ui, "/api/journal?decision=completed").json();
+    assert!(completed["matched"].as_u64().unwrap() >= 1);
+    assert!(completed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["decision"] == "completed"));
+    let none = get(&ui, "/api/journal?q=zzzz-no-such-thing").json();
+    assert_eq!(none["matched"], 0);
+    let older = get(
+        &ui,
+        &format!("/api/journal?before={}", one["events"][0]["seq"]),
+    )
+    .json();
+    assert!(older["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["seq"].as_u64().unwrap() < one["events"][0]["seq"].as_u64().unwrap()));
+    // Operations that share the journal are not runs: there is no agent.run.
+    let runs = get(&ui, "/api/runs").json();
+    assert!(runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["runId"] != "native-tool"));
+    // Their events are still in the verified journal and in an evidence export.
+    assert_eq!(get(&ui, "/api/audit").json()["ok"], true);
+}
+
+#[test]
+fn registered_agents_and_alerts_are_listed_read_only() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let state =
+        std::env::temp_dir().join(format!("jani-ui-agents-{}-{stamp:x}", std::process::id()));
+    let repo = state.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        vec!["agent", "register", "worker-1"],
+        vec![
+            "alerts",
+            "send",
+            "worker-1",
+            "payment.failed",
+            "banking",
+            "case-1",
+            "high",
+            "key-1",
+        ],
+    ] {
+        let status = support::jani()
+            .args(&args)
+            .arg("--repo")
+            .arg(&repo)
+            .arg("--state-dir")
+            .arg(state.join("state"))
+            .env("JANI_API_KEY", "test-key")
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "{}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+    let mut ui = start_with_state(&state);
+    let view = get(&ui, "/api/attention").json();
+    assert_eq!(view["agents"][0]["agentId"], "worker-1");
+    assert_eq!(view["agents"][0]["phase"], "ready");
+    assert_eq!(view["alerts"][0]["severity"], "high");
+    assert_eq!(view["alerts"][0]["phase"], "pending");
+    // Nothing on this screen can change that state.
+    assert_eq!(post(&ui, "/api/attention", json!({})).status, 404);
+    ui.root = state;
 }

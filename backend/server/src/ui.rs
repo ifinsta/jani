@@ -29,12 +29,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
+mod views;
+
 const INDEX_HTML: &str = include_str!("ui/index.html");
 const MAX_BODY: usize = 64 * 1024;
 const MAX_HEADERS: usize = 64;
 const MAX_LINE: usize = 8 * 1024;
 const MAX_CONNECTIONS: usize = 32;
-const JOURNAL_PAGE: usize = 500;
 const TRANSCRIPT_CAP: usize = 2000;
 
 enum Job {
@@ -402,6 +403,7 @@ fn respond(
         405 => "Method Not Allowed",
         409 => "Conflict",
         413 => "Payload Too Large",
+        422 => "Unprocessable Entity",
         415 => "Unsupported Media Type",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
@@ -521,6 +523,16 @@ fn server_error(message: String) -> (u16, String) {
     (500, message)
 }
 
+/// A subsystem refusal (bad input, denied by policy, nothing to show) is a 422
+/// with the subsystem's own words, not a server fault.
+fn view(result: JResult<Value>) -> Reply {
+    result.map(|v| (200, v)).map_err(|e| (422, e))
+}
+
+fn json_body(request: &Request) -> Result<Value, (u16, String)> {
+    serde_json::from_slice(&request.body).map_err(|_| (400, "body must be JSON".to_string()))
+}
+
 fn route(shared: &Shared<'_>, request: &Request) -> Reply {
     let cfg = shared.cfg;
     match (request.method.as_str(), request.path.as_str()) {
@@ -533,16 +545,76 @@ fn route(shared: &Shared<'_>, request: &Request) -> Reply {
                 .ok_or((400, "id is required".to_string()))?;
             run_detail(cfg, id)
         }
-        ("GET", "/api/journal") => journal_page(cfg).map(|v| (200, v)).map_err(server_error),
+        ("GET", "/api/journal") => journal_page(cfg, &request.query),
+        ("GET", "/api/approval") => approval_detail(cfg, &request.query),
+        ("GET", "/api/policy") => view(views::policy(cfg)),
+        ("POST", "/api/policy/check") => view(views::policy_check(cfg, &json_body(request)?)),
+        ("GET", "/api/audit") => view(views::audit(cfg)),
+        ("GET", "/api/evidence") => {
+            let id = request
+                .query
+                .get("id")
+                .ok_or((400, "id is required".to_string()))?;
+            view(views::evidence_export(cfg, id))
+        }
+        ("GET", "/api/evidence/list") => {
+            let ids: Vec<String> = runs(cfg)
+                .map_err(server_error)?
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|r| r["runId"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok((200, views::evidence_list(cfg, &ids)))
+        }
+        ("GET", "/api/mirror") => {
+            let sub = request
+                .query
+                .get("sub")
+                .map(String::as_str)
+                .unwrap_or("workflows");
+            view(views::mirror(
+                cfg,
+                sub,
+                request.query.get("run").map(String::as_str),
+                request.query.get("other").map(String::as_str),
+            ))
+        }
+        ("GET", "/api/lab") => view(views::lab(
+            cfg,
+            request.query.get("run").map(String::as_str),
+        )),
+        ("GET", "/api/attention") => view(crate::attention::overview(cfg)),
+        ("GET", "/api/system") => Ok((200, views::system(cfg))),
+        ("GET", "/api/native") => Ok((200, views::native_catalog())),
+        ("POST", "/api/native/run") => view(views::native_run(cfg, &json_body(request)?)),
+        ("GET", "/api/updates") => Ok((200, views::updates_info(cfg))),
+        ("POST", "/api/updates/check") => view(views::updates_check(cfg)),
         ("GET", "/api/approvals") => {
             let store = approvals::ApprovalStore::open(&cfg.state_dir).map_err(server_error)?;
             Ok((200, store.to_json()))
         }
         ("POST", "/api/approvals/decide") => decide(shared, request),
         ("GET", "/api/budgets") => Ok((200, budgets(cfg))),
-        ("GET", "/api/recovery") => recovery::status(&cfg.state_dir)
-            .map(|v| (200, v))
-            .map_err(server_error),
+        ("GET", "/api/recovery") => {
+            if !cfg.state_dir.join(journal::JOURNAL_FILE).is_file() {
+                return Ok((
+                    200,
+                    json!({
+                        "schemaVersion": "jani.recovery-status/v1",
+                        "journalChainVerified": true,
+                        "unreconciledRuns": 0,
+                        "runs": [],
+                        "note": "No audit journal exists yet, so no run has been recorded.",
+                    }),
+                ));
+            }
+            recovery::status(&cfg.state_dir)
+                .map(|v| (200, v))
+                .map_err(server_error)
+        }
         ("GET", "/api/session") => Ok((200, session(shared, request))),
         ("POST", "/api/session/send") => send(shared, request),
         ("POST", "/api/session/cancel") => {
@@ -671,8 +743,17 @@ fn runs(cfg: &Config) -> Result<Value, String> {
             };
         }
     }
+    // Only agent runs are runs. Governed operations that share the journal
+    // (native tools, for example) have no completion record and would
+    // otherwise be shown as unfinished work.
+    let agent_runs: std::collections::BTreeSet<String> = events
+        .iter()
+        .filter(|e| e["action"] == "agent.run")
+        .filter_map(|e| e["run_id"].as_str().map(str::to_string))
+        .collect();
     let mut list: Vec<Value> = map
         .into_iter()
+        .filter(|(id, _)| agent_runs.contains(id))
         .map(|(id, r)| {
             json!({
                 "runId": id, "taskId": r.task, "firstAt": r.first, "lastAt": r.last,
@@ -699,15 +780,82 @@ fn run_detail(cfg: &Config, id: &str) -> Reply {
     ))
 }
 
-fn journal_page(cfg: &Config) -> Result<Value, String> {
-    let all = load_events(cfg).map_err(|e| e.1)?;
+fn journal_page(cfg: &Config, query: &BTreeMap<String, String>) -> Reply {
+    let all = load_events(cfg)?;
     let total = all.len();
-    let skip = total.saturating_sub(JOURNAL_PAGE);
-    Ok(json!({
-        "total": total,
-        "firstShown": skip + 1,
-        "events": all.into_iter().skip(skip).collect::<Vec<_>>(),
-    }))
+    let limit = query
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(1, 1000);
+    let before = query
+        .get("before")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
+    let needle = query
+        .get("q")
+        .map(|q| q.to_lowercase())
+        .filter(|q| !q.is_empty());
+    let field = |event: &Value, key: &str| event[key].as_str().unwrap_or("").to_string();
+    let mut matched: Vec<Value> = Vec::new();
+    for (index, mut event) in all.into_iter().enumerate() {
+        let seq = index + 1;
+        if seq >= before {
+            break;
+        }
+        let keep = ["run", "decision", "action"].iter().all(|k| {
+            let want = query.get(*k).map(String::as_str).unwrap_or("");
+            let key = if *k == "run" { "run_id" } else { k };
+            want.is_empty() || field(&event, key) == want
+        }) && needle.as_ref().is_none_or(|n| {
+            [
+                "run_id",
+                "action",
+                "decision",
+                "reason_code",
+                "actor_id",
+                "invocation_id",
+                "event_digest",
+            ]
+            .iter()
+            .any(|k| field(&event, k).to_lowercase().contains(n.as_str()))
+        });
+        if keep {
+            event["seq"] = json!(seq);
+            matched.push(event);
+        }
+    }
+    let matched_count = matched.len();
+    let skip = matched_count.saturating_sub(limit);
+    let events: Vec<Value> = matched.into_iter().skip(skip).collect();
+    Ok((
+        200,
+        json!({
+            "total": total,
+            "matched": matched_count,
+            "hasMore": skip > 0,
+            "oldestSeq": events.first().and_then(|e| e["seq"].as_u64()),
+            "events": events,
+        }),
+    ))
+}
+
+fn approval_detail(cfg: &Config, query: &BTreeMap<String, String>) -> Reply {
+    let id = query.get("id").ok_or((400, "id is required".to_string()))?;
+    let store = approvals::ApprovalStore::open(&cfg.state_dir).map_err(server_error)?;
+    let request = store
+        .find(id)
+        .ok_or((404, format!("unknown approval '{id}'")))?;
+    let mut value = serde_json::to_value(request).unwrap_or(Value::Null);
+    // The nonce is a replay guard, not something an operator needs on screen.
+    if let Some(map) = value.as_object_mut() {
+        map.remove("nonce");
+    }
+    let related: Vec<Value> = load_events(cfg)?
+        .into_iter()
+        .filter(|e| e["approval_id"] == id.as_str())
+        .collect();
+    Ok((200, json!({"approval": value, "events": related})))
 }
 
 fn budgets(cfg: &Config) -> Value {

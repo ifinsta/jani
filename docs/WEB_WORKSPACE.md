@@ -17,18 +17,30 @@ Jani workspace: http://127.0.0.1:41873/#token=…
 
 `--port N` selects a fixed port; the default is an ephemeral one.
 
-## What each view reads
+## Screens
 
-| View | Source | Notes |
+A tab strip switches between ten screens. **Workspace** is the run graph, inspector, terminal and the approvals, journal and budget docks. The other nine are full-page views, each backed by the subsystem the matching command already uses, run with this process's own configuration, identity and policy.
+
+| Screen | Same data as | What it adds |
 | --- | --- | --- |
-| Runs, graph, Events | `journal.jsonl`, grouped by `run_id` and `invocation_id` | The journal chain is verified on every read. A chain that fails verification is refused, not shown. |
-| Receipt | `jani evidence RUN_ID` | Carries the same caveat: audit integrity is not independent proof that the outcome is correct. |
-| Approvals | the approval store in `--state-dir` | Shows capability, resource digest, risk, requester, required role, status and expiry. |
-| Budget | one ledger per task under `budgets/` | Tool calls, tokens and spend against the persisted limits. |
-| Authority, model, identity | the process's own configuration | The API key is never returned; only whether one is configured. |
-| Terminal | one live agent session | The same slash commands as the terminal UI: `/help`, `/status`, `/model`, `/skills`, `/inspect`, `/budget`, `/approvals`, `/approval ID`, `/new`, `/exit`. |
+| Workspace | `inspect`, `evidence`, `approvals`, `budget`, bare `jani` | Run graph of broker decisions, per-node journal events, approvals with detail rows, a searchable journal (by text, decision, run; pageable to 1,000 events), budget meters, a live session. |
+| Recovery | `recovery status` | Runs that did not finish cleanly and why none is ever "safe to replay". |
+| Policy | `policy explain`, `policy check`, settings | Effective policy, data-egress rules, budgets, rules, model profiles, and a "would this be allowed?" checker that evaluates without running or journaling anything. |
+| Evidence | `evidence RUN_ID`, `audit verify` | Receipts for the latest 30 runs, chain verification, and a JSON export of the receipt plus the run's events. |
+| Mirror | `mirror workflows`, `recommendations`, `history`, `critique`, `compare` | Rule-based findings, per-run critique with timeline, and descriptive run comparison. `mirror record` is not offered. |
+| Agents | `agent status`, `alerts list` | Agents with lifecycle phase and the alert queue. Read-only. |
+| Lab | `lab propose` | Hypotheses linked to evidence. `lab evaluate` stays on the command line because it needs an independently signed file. |
+| System | `sandbox doctor`/`check`, `plugins`, MCP and key configuration | What each confinement backend actually confines, plugin verification, key counts (never key material). |
+| Native tools | `native TOOL OPERATION` | The twelve tools and their operations. Only operations that neither change state nor are operator-only can be run. |
+| Updates | `update check` | Release source and version. The check is an outbound request and runs only when you press the button. |
 
-Journal events record a resource **digest**, not the path or command text, so the graph shows digests and reason codes. It does not reconstruct file names the journal never stored. The journal has no per-call model events, so the agent node reports tool calls and the model node reports profile switches.
+Journal events record a resource **digest**, not the path or command text, so the graph shows digests and reason codes. It does not reconstruct file names the journal never stored. The journal has no per-call model events, so the agent node reports tool calls and the model node reports profile switches. Operations that share the journal but never start an agent run (native tools, for example) are not listed as runs.
+
+Even a read-only native operation is governed: it passes policy and identity and records `started` and `completed` events in the journal.
+
+## What stays on the command line
+
+The browser never offers: `mirror record`, native operations that change state (`index build`, `context pin`/`assemble`, `planner create`/`report`, `pruner run`, `checkpoint create`, `workspace snapshot`, `evidence record`), operator-only operations (`planner verify`, `workspace rollback`, `verifier run`), agent registration and alert send/claim/resolve, `lab evaluate`, `update install`, and anything that would change authority or policy.
 
 ## Authority is the process's authority
 
@@ -58,5 +70,5 @@ Anyone who can read the printed URL, or who can run code as your user on the sam
 
 - No authentication beyond the token; no TLS; no remote or multi-user mode.
 - One agent session per process. A turn that is already waiting on the model cannot be preempted; Esc cancels cooperatively between model calls and tool calls.
-- The graph shows the latest 40 tool calls of a run. The journal view shows the latest 500 events.
-- Verification: `backend/server/tests/ui.rs` covers the trust boundary and the real session wiring. Browser behaviour was exercised by hand against a scripted local model provider; no live-provider engineering session is recorded.
+- The graph shows 40 tool calls at a time with a pager for earlier ones. The journal view loads 200 events at a time, up to 1,000 matches; narrow with the filters beyond that.
+- Verification: `backend/server/tests/ui.rs` covers the trust boundary, the refusals above, paging and filtering, and the real session wiring. Browser behaviour was exercised by hand against a scripted local model provider, in light and dark, at desktop and 400 px width. Not exercised: Windows, macOS, a live model provider, enterprise mode with a signed policy bundle, and an executable plugin (none exist).
