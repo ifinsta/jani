@@ -20,6 +20,15 @@ This page records what changed and what it means for compatibility. It is a deve
 - `releases/` is a commit-based channel, not a tagged release feed. `releases/agent/windows/v0.1.2/` contains the Windows binary built from commit `c2b8b60` with clean build inputs (SHA-256 `5c11ec31…`, 9,818,112 bytes); the installed copy at `%LOCALAPPDATA%\Jani\bin\jani.exe` has the same digest.
 - This page describes commit `c2b8b60` (2026-10-27). Later documentation, probe and evidence changes are listed under Unreleased.
 
+## Unreleased: turns end in a deliverable, not in a cutoff
+
+- **A spent step allowance is a handoff, not a failure.** Before, a turn that used all its steps failed with "model stopped after 20 turns without a final answer" and the conversation was rolled back to the last successful turn, discarding everything the agent had read. Now Jani asks the model, with tools forbidden, for a handoff (done and verified, not done, next steps), records the turn as completed (`step_checkpoint`), keeps the conversation, and "continue" resumes.
+- **The default allowance is 100 steps** (was 20) and the settings ceiling is 400 (was 80). It is a backstop; real limits remain the token and tool-call budgets, cancellation, and the approval gates.
+- **Runway warning:** four turns before the end the model is told to stop exploring, finish and verify.
+- **Repeat detection:** the same call with the same arguments three times in a turn gets a note in its result; six ends the turn with a handoff (`repeated_calls`).
+- The system prompt now says to work toward a deliverable, not a number of calls.
+- Mirror still reports `step_budget_exhausted` for checkpointed runs.
+
 ## Short tool names and rendered hash-led tables — `c2b8b60`
 
 - The model-facing workspace tools are now `list`, `read`, `write` and `command` (previously `workspace_list`, `workspace_read`, `workspace_write` and `workspace_command`); `skill_read` and `native_tool` keep their names. The transcript shows the short names. Journals are unaffected because they record actions such as `repo.read`, and project permission rules still map through `Read`, `Write` and `Bash`; the broker rejects the old names as unknown.

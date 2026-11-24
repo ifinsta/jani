@@ -167,14 +167,16 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
             .rev()
             .filter(|e| {
                 e.action == jani_core::tools::action::AGENT_RUN
-                    && e.decision == jani_core::journal::decision::FAILED
+                    && (e.decision == jani_core::journal::decision::FAILED
+                        || e.reason_code == jani_core::journal::reason::CHECKPOINT)
             })
             .take(1)
             .map(|e| e.event_id.clone())
             .collect();
         let step_limit = relevant.iter().any(|e| {
             e.action == jani_core::tools::action::AGENT_RUN
-                && e.reason_code == jani_core::journal::reason::STEP_LIMIT
+                && (e.reason_code == jani_core::journal::reason::STEP_LIMIT
+                    || e.reason_code == jani_core::journal::reason::CHECKPOINT)
         });
         let code = if step_limit {
             "step_budget_exhausted"
@@ -182,7 +184,7 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
             "failed_run"
         };
         let reason = if step_limit {
-            "The run exhausted its configured step limit without a final answer."
+            "The run used its whole step allowance and had to be closed with a handoff instead of finishing."
         } else {
             "Jani recorded a failed run; the audit trail alone does not establish root cause."
         };

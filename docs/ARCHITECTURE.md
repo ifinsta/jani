@@ -76,7 +76,12 @@ narrow the ones above it but never widen them.
    operator or an external workflow observes; Jani does not assert coordination
    state it does not own.
 
-The turn loop is bounded by `--max-steps` and by the policy/contract budget.
+The turn loop is bounded by `--max-steps` (default 100, ceiling 400), by the token and tool-call budgets, and by repeat detection. Those are safety backstops; the loop is built to end in a deliverable, not in a number:
+
+- The model is told, four turns before the end, to stop exploring and finish and verify what it is changing.
+- The same call with the same arguments three times in one turn gets a note in its result; the sixth ends the turn.
+- When the allowance runs out, or a repeat stops the turn, Jani makes one more model request with tools forbidden (`tool_choice: none`) and asks for a handoff: what is done and verified, what is not, and the next steps. The turn is recorded as **completed** with reason `step_checkpoint` or `repeated_calls`, the conversation is **kept**, and replying "continue" resumes from where it stopped. Nothing is rolled back.
+- If even that request fails (budget gone, provider down), the turn fails as before with reason `step_limit` and the usual rollback.
 
 ## Skills and collaboration
 

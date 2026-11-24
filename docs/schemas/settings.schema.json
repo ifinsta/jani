@@ -62,7 +62,7 @@
     "maxSteps": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 80
+      "maximum": 400
     },
     "permissions": {
       "$ref": "#/definitions/permissions"

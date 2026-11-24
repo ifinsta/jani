@@ -21,6 +21,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_HISTORY_BYTES: usize = 256 * 1024;
 const MAX_TOOL_OUTPUT_BYTES: usize = 64_000;
+/// Model turns before the allowance ends at which the model is told to wrap up.
+const RUNWAY_WARNING_STEPS: usize = 4;
+/// The same tool call with the same arguments, this many times in one turn,
+/// earns a note in its result; at the second threshold the turn is closed.
+const REPEAT_NOTE_AT: u32 = 3;
+const REPEAT_STOP_AT: u32 = 6;
 
 pub struct Agent<'a> {
     cfg: &'a Config,
@@ -280,6 +286,7 @@ Rules:
 7. High-impact or external actions may require a human approval. If a tool reports approval_required, stop that action and describe the approval ID to the operator.
 8. Jani embeds no coordination engine; an external workflow may invoke this CLI, but task completion is not asserted beyond observed evidence.
 9. A failed turn is rolled back and is not part of this conversation, even if the operator's interface still shows it. Do not claim memory of a rolled-back turn or invent prior context.
+10. Work toward a deliverable, not toward a number of calls. Read what you need to understand the task, then make the change, run the check that shows it works, and report what you observed. Prefer one decisive tool call to several exploratory ones. Do not re-read what you already have or repeat a call that returned the same result. If you cannot finish, say what is done, what is not, and what you need.
 
 Worktree: {root}
 Discovered skill names: {skills}"#,
@@ -411,8 +418,18 @@ Discovered skill names: {skills}"#,
         let gateway = ModelGateway::new(cfg, &self.model, &self.governance)?;
         let tool_defs = specs();
 
+        // The step allowance is a safety backstop, not the way a task is meant to
+        // end. Running into it closes the turn with a handoff (below) and keeps
+        // the conversation, so "continue" resumes instead of starting over.
+        let mut repeats: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut stalled = false;
         for step in 0..cfg.max_steps {
             ensure_active(cancelled, &run_meta, &mut self.journal)?;
+            if cfg.max_steps > 8 && cfg.max_steps - step == RUNWAY_WARNING_STEPS {
+                self.messages.push(json!({"role": "user", "content": format!(
+                    "[jani runtime] {RUNWAY_WARNING_STEPS} model turns remain in this turn. Stop exploring. Finish the change you are making, run the check that proves it, and leave the worktree consistent. If the task is not finished, you will be asked for a handoff, so keep track of what is done and what is not."
+                )}));
+            }
             trim_messages(&mut self.messages, MAX_HISTORY_BYTES);
             if let Some(sink) = events.as_mut() {
                 sink(TurnEvent::Step {
@@ -530,6 +547,22 @@ Discovered skill names: {skills}"#,
                         format!("invalid tool arguments: {error}")
                     )),
                 };
+                let mut response = response;
+                let seen = repeats.entry(format!("{name}\u{0}{raw}")).or_insert(0);
+                *seen += 1;
+                if *seen >= REPEAT_NOTE_AT {
+                    if let Some(object) = response.as_object_mut() {
+                        object.insert(
+                            "runtime_note".into(),
+                            json!(format!(
+                                "You have now made this identical call {seen} times in this turn with the same arguments. Repeating it will not change the result. Change approach, or stop and report what is blocking you."
+                            )),
+                        );
+                    }
+                }
+                if *seen >= REPEAT_STOP_AT {
+                    stalled = true;
+                }
                 if let Some(sink) = events.as_mut() {
                     sink(TurnEvent::ToolFinished {
                         name: name.to_string(),
@@ -546,13 +579,59 @@ Discovered skill names: {skills}"#,
                     "content": clipped(response),
                 }));
             }
+            if stalled {
+                break;
+            }
         }
 
-        let _ = run_meta.record(&mut self.journal, decision::FAILED, reason::STEP_LIMIT);
-        Err(format!(
-            "model stopped after {} turns without a final answer",
-            cfg.max_steps
-        ))
+        let (why, code, banner) = if stalled {
+            (
+                "You kept repeating the same call without making progress.".to_string(),
+                reason::STALLED,
+                "Paused: the model kept repeating one call. The work so far is kept.".to_string(),
+            )
+        } else {
+            (
+                format!("You have used the {} model turns allowed for this turn.", cfg.max_steps),
+                reason::CHECKPOINT,
+                format!(
+                    "Checkpoint: used the {} model turns allowed for one request. The work so far is kept; reply \"continue\" to carry on.",
+                    cfg.max_steps
+                ),
+            )
+        };
+        self.messages.push(json!({"role": "user", "content": format!(
+            "[jani runtime] {why} Tools are now unavailable. Reply with a handoff for the operator: (1) what is done and verified, naming the files you changed and the results you actually observed; (2) what is unfinished or unverified; (3) the exact next steps. Do not claim anything you did not observe."
+        )}));
+        let closing = gateway.complete_without_tools(&self.messages, &tool_defs, &mut self.budget);
+        let body = match closing {
+            Ok(message) => message
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            Err(error) => {
+                let _ = run_meta.record(&mut self.journal, decision::FAILED, reason::STEP_LIMIT);
+                return Err(format!(
+                    "stopped after {} model turns and could not ask for a handoff: {error}",
+                    cfg.max_steps
+                ));
+            }
+        };
+        let body = if body.is_empty() {
+            "The model gave no handoff. Inspect the worktree and the audit journal for what was done.".to_string()
+        } else {
+            body
+        };
+        // Keep the turn in the conversation as an ordinary, tool-free answer.
+        self.messages
+            .push(json!({"role": "assistant", "content": body}));
+        let inspected = self
+            .governance
+            .inspect_model_output(&body, "final-answer")?;
+        run_meta.record(&mut self.journal, decision::COMPLETED, code)?;
+        Ok(format!("{banner}\n\n{inspected}"))
     }
 }
 

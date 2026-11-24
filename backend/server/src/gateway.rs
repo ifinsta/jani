@@ -115,11 +115,32 @@ impl<'a> ModelGateway<'a> {
         tools: &[Value],
         budget: &mut BudgetLedger,
     ) -> JResult<Value> {
+        self.complete_choosing(messages, tools, "auto", budget)
+    }
+
+    /// The closing handoff of a turn: same governance, budget and egress checks,
+    /// but the model may not call tools.
+    pub fn complete_without_tools(
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+        budget: &mut BudgetLedger,
+    ) -> JResult<Value> {
+        self.complete_choosing(messages, tools, "none", budget)
+    }
+
+    fn complete_choosing(
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+        tool_choice: &str,
+        budget: &mut BudgetLedger,
+    ) -> JResult<Value> {
         budget.check_model_budget()?;
         let (redacted, envelopes) = self.governance.prepare_model_request(messages)?;
         self.governance
             .authorize_model_egress(&envelopes, &self.sink)?;
-        let reply = self.model.complete(&redacted, tools)?;
+        let reply = self.model.complete_with(&redacted, tools, tool_choice)?;
         budget.record_usage(reply.prompt_tokens, reply.completion_tokens)?;
         let mut message = reply.message;
         if let Some(content) = message.get("content").and_then(Value::as_str) {

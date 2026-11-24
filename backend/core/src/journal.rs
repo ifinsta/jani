@@ -36,6 +36,10 @@ pub mod reason {
     pub const EMPTY_ANSWER: &str = "empty_answer";
     pub const FINAL_ANSWER: &str = "final_answer";
     pub const STEP_LIMIT: &str = "step_limit";
+    /// A turn used its step allowance, or the model kept repeating one call, and
+    /// was closed with a handoff instead of being thrown away. Recorded as completed.
+    pub const CHECKPOINT: &str = "step_checkpoint";
+    pub const STALLED: &str = "repeated_calls";
     pub const OK: &str = "ok";
     pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
     pub const EXECUTION_FAILED: &str = "execution_failed";

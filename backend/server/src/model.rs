@@ -111,13 +111,29 @@ impl ChatModel {
             .map_err(|e| format!("model request failed: {e}"))
     }
 
-    pub fn complete(&self, messages: &[Value], tools: &[Value]) -> JResult<ModelReply> {
+    /// `tool_choice` is "auto" for normal turns and "none" for the closing
+    /// handoff of a turn, where the model must answer in words. The tool
+    /// definitions stay in the request because providers reject a history that
+    /// contains tool calls when no tools are declared.
+    pub fn complete_with(
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+        tool_choice: &str,
+    ) -> JResult<ModelReply> {
         let request = match self.protocol {
             ModelProtocol::OpenAi => {
-                json!({"model": self.model, "messages": messages, "tools": tools, "tool_choice": "auto"})
+                json!({"model": self.model, "messages": messages, "tools": tools, "tool_choice": tool_choice})
             }
             ModelProtocol::Anthropic => {
-                anthropic_request(&self.model, self.max_output_tokens, messages, tools)?
+                let mut request =
+                    anthropic_request(&self.model, self.max_output_tokens, messages, tools)?;
+                if tool_choice == "none" && !tools.is_empty() {
+                    if let Some(object) = request.as_object_mut() {
+                        object.insert("tool_choice".into(), json!({"type": "none"}));
+                    }
+                }
+                request
             }
         };
         let mut attempt = 0u64;

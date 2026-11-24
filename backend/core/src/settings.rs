@@ -21,7 +21,7 @@ use std::path::Path;
 const SETTINGS_VERSION: u32 = 1;
 const MAX_SETTINGS_BYTES: u64 = 128 * 1024;
 const MAX_PROFILES: usize = 32;
-pub const MAX_STEPS: usize = 80;
+pub const MAX_STEPS: usize = 400;
 const MAX_KEY_BYTES: usize = 8192;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_URL_BYTES: usize = 2048;
@@ -565,9 +565,9 @@ mod tests {
         assert!(error.contains("unsupported settings version"), "{error}");
         fs::remove_dir_all(dir).unwrap();
 
-        let (dir, path) = write_settings(r#"{"version":1,"maxSteps":81}"#);
+        let (dir, path) = write_settings(r#"{"version":1,"maxSteps":401}"#);
         let error = Settings::load(&path).unwrap_err();
-        assert!(error.contains("maxSteps must be 1..80"), "{error}");
+        assert!(error.contains("maxSteps must be 1..400"), "{error}");
         fs::remove_dir_all(dir).unwrap();
     }
 

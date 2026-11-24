@@ -59,7 +59,7 @@ Enterprise deployments require valid signed identity and an organization policy 
 |---|---|---|
 | \`run_incomplete\` | No trusted terminal run event | Inspect crash/termination and recovery evidence |
 | \`failed_run\` | Trusted run failure | Inspect failure reason, receipt and model/provider context |
-| \`step_budget_exhausted\` | Failure with \`step_limit\` reason | Evaluate a smaller task plan or controlled budget |
+| \`step_budget_exhausted\` | Run ended on its step allowance: \`step_limit\` failure, or a \`step_checkpoint\` handoff | Evaluate a smaller task plan or controlled budget |
 | \`repeated_denial\` | Same action and reason denied at least twice | Stop unauthorized retries, request approval or change plan |
 | \`verification_evidence_gap\` | Recorded repository write and no permitted \`command.exec\` in same run | Locate any independent test evidence; do not claim untested work is verified |
 

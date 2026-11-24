@@ -591,3 +591,139 @@ fn exhausted_provider_failures_fail_the_run_with_a_clear_error() {
         .any(|event| event["action"] == "agent.run" && event["decision"] == "failed"));
     let _ = std::fs::remove_dir_all(root);
 }
+
+fn read_call(id: usize, extra: &str) -> String {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
+            "id": format!("call-{id}"),
+            "type": "function",
+            "function": {"name": "read", "arguments": format!("{{\"path\":\"src/one.txt\",\"note\":\"{extra}\"}}")}
+        }]}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 4}
+    })
+    .to_string()
+}
+
+fn text_reply(text: &str) -> String {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": text}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 4}
+    })
+    .to_string()
+}
+
+/// Runs one `--print` turn against a scripted provider and returns stdout/stderr.
+fn print_turn(root: &Path, state: &Path, base: &str, max_steps: &str) -> std::process::Output {
+    let child = support::jani()
+        .args([
+            "--print",
+            "audit the repository",
+            "--repo",
+            root.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--max-steps",
+            max_steps,
+        ])
+        .env("JANI_API_KEY", "test-provider-secret")
+        .env("JANI_API_BASE", base)
+        .env("JANI_MODEL", "test-model")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_POLICY")
+        .env_remove("JANI_IDENTITY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jani");
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn running_out_of_steps_ends_in_a_handoff_not_a_failure() {
+    let root = temp_root();
+    let state = root.join("state");
+    // Nine tool turns use the whole allowance; the tenth request is the handoff.
+    let mut script: Vec<String> = (0..9).map(|i| read_call(i, &format!("n{i}"))).collect();
+    script.push(text_reply(
+        "Read the file nine times. Nothing was changed. Next: write the report.",
+    ));
+    let (base, bodies, provider) = start_provider(script);
+
+    let output = print_turn(&root, &state, &base, "9");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a spent allowance is a handoff, not an error: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Checkpoint"), "{stdout}");
+    assert!(stdout.contains("reply \"continue\""), "{stdout}");
+    assert!(
+        stdout.contains("Next: write the report."),
+        "the model's handoff is shown: {stdout}"
+    );
+    provider.join().unwrap();
+
+    let requests = bodies.lock().unwrap().clone();
+    assert_eq!(requests.len(), 10);
+    // The model is told the allowance is nearly spent, four turns before the end.
+    assert!(!requests[4].contains("model turns remain"));
+    assert!(
+        requests[5].contains("4 model turns remain in this turn"),
+        "runway warning"
+    );
+    // The last request asks for a handoff and forbids tools.
+    let last: Value = serde_json::from_str(&requests[9]).unwrap();
+    assert_eq!(last["tool_choice"], "none");
+    assert!(requests[9].contains("Tools are now unavailable"));
+    assert!(requests[9].contains("used the 9 model turns"));
+    // Earlier requests allowed tools.
+    let first: Value = serde_json::from_str(&requests[0]).unwrap();
+    assert_eq!(first["tool_choice"], "auto");
+
+    // Journaled as completed with its own reason, so it is neither hidden nor a failure.
+    let events = journal_events(&state);
+    let run_end = events
+        .iter()
+        .rev()
+        .find(|e| e["action"] == "agent.run" && e["decision"] != "started")
+        .unwrap();
+    assert_eq!(run_end["decision"], "completed");
+    assert_eq!(run_end["reason_code"], "step_checkpoint");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn repeating_one_call_is_called_out_and_then_stopped() {
+    let root = temp_root();
+    let state = root.join("state");
+    // The same call six times: a note at the third, a handoff after the sixth.
+    let mut script: Vec<String> = (0..6).map(|i| read_call(i, "same")).collect();
+    script.push(text_reply(
+        "I kept re-reading one file. Blocked on: the task needs a file I cannot find.",
+    ));
+    let (base, bodies, provider) = start_provider(script);
+
+    let output = print_turn(&root, &state, &base, "50");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("kept repeating one call"), "{stdout}");
+    assert!(stdout.contains("Blocked on:"), "{stdout}");
+    provider.join().unwrap();
+
+    let requests = bodies.lock().unwrap().clone();
+    assert_eq!(requests.len(), 7, "stopped long before the step allowance");
+    // The note rides on the third call's result, so the fourth request carries it; the second does not.
+    assert!(!requests[2].contains("identical call"));
+    assert!(requests[3].contains("identical call 3 times"));
+    let events = journal_events(&state);
+    let run_end = events
+        .iter()
+        .rev()
+        .find(|e| e["action"] == "agent.run" && e["decision"] != "started")
+        .unwrap();
+    assert_eq!(run_end["decision"], "completed");
+    assert_eq!(run_end["reason_code"], "repeated_calls");
+    let _ = std::fs::remove_dir_all(root);
+}

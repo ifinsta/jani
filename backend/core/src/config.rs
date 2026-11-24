@@ -14,7 +14,7 @@ pub mod defaults {
     pub const MODEL: &str = "gpt-5";
     pub const API_BASE: &str = "https://api.openai.com/v1";
     pub const MAX_OUTPUT_TOKENS: usize = 4096;
-    pub const MAX_STEPS: usize = 20;
+    pub const MAX_STEPS: usize = 100;
     pub const TENANT: &str = "local";
     pub const PRINCIPAL: &str = "local-operator";
     pub const PURPOSE: &str = "SOFTWARE_DEV";
