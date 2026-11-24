@@ -1,8 +1,8 @@
 use crate::types::{new_id, now_unix, sha256_hex, AuditEvent, Classification};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::path::Path;
 
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
@@ -54,7 +54,6 @@ pub mod reason {
 
 pub struct Journal {
     file: File,
-    path: PathBuf,
     previous_digest: String,
 }
 
@@ -90,7 +89,6 @@ impl Journal {
             .map_err(|e| format!("cannot open audit journal {}: {e}", path.display()))?;
         Ok(Self {
             file,
-            path,
             previous_digest,
         })
     }
@@ -112,7 +110,10 @@ impl Journal {
     }
 
     fn append_locked(&mut self, input: EventInput<'_>) -> Result<AuditEvent, String> {
-        self.previous_digest = last_digest(&self.path)?;
+        // Re-read the tail through the handle that holds the lock. Opening a
+        // second handle here fails on Windows, where file locks are mandatory:
+        // the read is rejected with ERROR_LOCK_VIOLATION while the lock is held.
+        self.previous_digest = last_digest_from(&mut self.file)?;
         let mut event = AuditEvent {
             event_version: "1.0".into(),
             event_id: new_id("evt"),
@@ -169,9 +170,21 @@ fn last_digest(path: &Path) -> Result<String, String> {
     if !path.is_file() {
         return Ok(String::new());
     }
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    lock_shared(&file)?;
+    let result = last_digest_from(&mut file);
+    let _ = file.unlock();
+    result
+}
+
+/// Read the digest of the final event. The caller must own a lock on `file`
+/// (exclusive for appends, shared for inspection) so the tail cannot move
+/// between the read and the next write.
+fn last_digest_from(file: &mut File) -> Result<String, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("cannot seek audit journal: {e}"))?;
     let mut last = None;
-    for line in BufReader::new(file).lines() {
+    for line in BufReader::new(&mut *file).lines() {
         let line = line.map_err(|e| e.to_string())?;
         if !line.trim().is_empty() {
             last = Some(line);
@@ -187,11 +200,26 @@ fn last_digest(path: &Path) -> Result<String, String> {
     }
 }
 
+fn lock_shared(file: &File) -> Result<(), String> {
+    match file.lock_shared() {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Ok(()),
+        Err(e) => Err(format!("cannot lock audit journal: {e}")),
+    }
+}
+
 pub fn read_events(path: &Path) -> Result<Vec<AuditEvent>, String> {
     if !path.is_file() {
         return Err(format!("journal not found: {}", path.display()));
     }
     let file = File::open(path).map_err(|e| e.to_string())?;
+    lock_shared(&file)?;
+    let result = read_events_from(&file);
+    let _ = file.unlock();
+    result
+}
+
+fn read_events_from(file: &File) -> Result<Vec<AuditEvent>, String> {
     let mut events = Vec::new();
     for (index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|e| e.to_string())?;
