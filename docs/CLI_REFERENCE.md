@@ -29,6 +29,7 @@ Use this page to find the command family or safety switch you need. It is an ent
 | `repl`, bare `jani` | Open an interactive session that keeps conversation across turns under one task; bare `jani` does this only when stdin is a terminal, otherwise it prints help |
 | `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `evidence RUN_ID`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect configuration, unfinished runs, audited evidence and safety state |
 | `agent`, `alerts`, `wake` | Operate local attention state; neither alerts nor wake automatically invokes a model |
+| `ui` | Serve the local web workspace on loopback: run graph, approvals, journal, budgets and an interactive terminal; see [Web workspace](WEB_WORKSPACE.md) |
 | `mirror` | Produce deterministic critique and evidence-linked proposals from recorded runs |
 | `mcp` | Access governed MCP sources under signed contracts and task delegation |
 | `native TOOL OPERATION` | Run bounded indexing, planning, context, evidence, workspace and simulation operations |

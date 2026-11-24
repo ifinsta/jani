@@ -172,6 +172,7 @@ pub struct Config {
     pub update_force: bool,
     pub update_interval_seconds: u64,
     pub update_cycles: u64,
+    pub ui_port: u16,
 }
 
 fn default_command(interactive: bool) -> &'static str {
@@ -240,6 +241,7 @@ USAGE:
   jani mcp verify|authorize|call|validate-response OP RESOURCE [OPTIONS]
   jani native TOOL OPERATION [ARGUMENTS] [--task TASK] [OPTIONS]
   jani update check|install|watch [OPTIONS]   Verified release-channel delivery
+  jani ui [--port N] [OPTIONS]        Local web workspace (loopback only, token required)
 
 Jani has no embedded coordination engine. It works directly in a Git
 worktree. Skills are advisory. Every tool call passes through a Rust
@@ -520,6 +522,7 @@ impl Config {
             update_force: false,
             update_interval_seconds: defaults::UPDATE_INTERVAL_SECONDS,
             update_cycles: 0,
+            ui_port: 0,
         }
     }
 
@@ -862,7 +865,7 @@ impl Config {
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
                 | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
-                | "mcp" | "native" | "lab" | "update" => {
+                | "mcp" | "native" | "lab" | "update" | "ui" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -999,6 +1002,11 @@ impl Config {
                             "--interval must be 1..{MAX_UPDATE_INTERVAL_SECONDS}"
                         ));
                     }
+                }
+                "--port" => {
+                    cfg.ui_port = take_value(args, &mut i, a)?
+                        .parse()
+                        .map_err(|_| "--port must be 0..65535".to_string())?;
                 }
                 "--cycles" => {
                     cfg.update_cycles = take_value(args, &mut i, a)?

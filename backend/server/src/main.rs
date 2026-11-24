@@ -18,6 +18,7 @@ mod repl;
 mod sandbox;
 mod skills;
 mod tui;
+mod ui;
 mod update;
 mod workspace;
 
@@ -100,6 +101,7 @@ fn run() -> JResult<()> {
             Ok(())
         }
         "repl" => repl::run(&cfg, &catalog),
+        "ui" => ui::command(&cfg, &catalog),
         "sandbox" => match cfg.sub.as_deref() {
             Some("doctor") | None => print_json(&sandbox::doctor()),
             Some("check") => print_json(&sandbox::check(&cfg)),

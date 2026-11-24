@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>Jani Workspace</title>
+<style nonce="__NONCE__">
+/* Layout: one-screen operator console. Left rail (runs, authority), centre grid canvas of the run, right inspector, bottom dock (approvals, journal, budget). */
+:root{
+  --font-body:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  --bg:#E9EDEF; --surface:#F6F8F8; --surface-2:#EDF0F1; --tile:#E2E7E9;
+  --grid:rgba(18,32,40,.06);
+  --line:#CFD6DA; --line-strong:#A9B4BA;
+  --text:#121A1F; --mute:#47545C; --dim:#5D6A72;
+  --accent:#2447C9; --accent-bg:#DDE5FA; --accent-ink:#17338F;
+  --good:#17704A; --good-bg:#DAEFE4;
+  --warn:#9A5400; --warn-bg:#F8E6C8; --warn-line:#D9A24E;
+  --bad:#B3261E; --bad-bg:#F8DDDA;
+  --add-bg:#DAEFE4; --del-bg:#F8DDDA;
+  --shadow:0 2px 8px rgba(18,26,31,.08);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F1519; --surface:#161E23; --surface-2:#1B252B; --tile:#222E35;
+  --grid:rgba(190,215,230,.055);
+  --line:#2B3841; --line-strong:#43535E;
+  --text:#E4ECF0; --mute:#A3B2BB; --dim:#8797A1;
+  --accent:#7C97F5; --accent-bg:#1E2A55; --accent-ink:#B9C8FA;
+  --good:#5FC795; --good-bg:#14352A;
+  --warn:#EDB157; --warn-bg:#3D2C0E; --warn-line:#7D5A22;
+  --bad:#F0867E; --bad-bg:#40191A;
+  --add-bg:#14352A; --del-bg:#40191A;
+  --shadow:0 2px 10px rgba(0,0,0,.4);
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F1519; --surface:#161E23; --surface-2:#1B252B; --tile:#222E35;
+  --grid:rgba(190,215,230,.055);
+  --line:#2B3841; --line-strong:#43535E;
+  --text:#E4ECF0; --mute:#A3B2BB; --dim:#8797A1;
+  --accent:#7C97F5; --accent-bg:#1E2A55; --accent-ink:#B9C8FA;
+  --good:#5FC795; --good-bg:#14352A;
+  --warn:#EDB157; --warn-bg:#3D2C0E; --warn-line:#7D5A22;
+  --bad:#F0867E; --bad-bg:#40191A;
+  --add-bg:#14352A; --del-bg:#40191A;
+  --shadow:0 2px 10px rgba(0,0,0,.4);
+  color-scheme:dark}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:400 13px/18px var(--font-body);
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:32px 32px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--font-mono);font-size:11.5px}
+.dim{color:var(--dim)} .mute{color:var(--mute)}
+.eyebrow{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:600}
+
+.app{height:100%;display:grid;grid-template-columns:252px minmax(0,1fr) 340px;grid-template-rows:auto minmax(0,1fr) 236px;
+  grid-template-areas:"top top top" "rail canvas insp" "rail dock dock";padding-left:max(0px,env(safe-area-inset-left,0px));padding-right:max(0px,env(safe-area-inset-right,0px))}
+
+/* top bar */
+.top{grid-area:top;display:flex;align-items:center;gap:14px;padding:8px 14px;background:var(--surface);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;letter-spacing:-.01em}
+.brand svg{display:block}
+.crumb{display:flex;align-items:center;gap:6px;min-width:0;color:var(--mute)}
+.chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:var(--surface-2);font-size:12px;white-space:nowrap}
+.chip.mono{font-size:11.5px}
+.chip b{font-weight:600}
+.grow{flex:1}
+.mode{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-ink);font-weight:600}
+.example{border-style:dashed;color:var(--dim)}
+.iconbtn{height:24px;width:28px;border:1px solid var(--line);background:var(--surface-2);border-radius:4px;display:inline-grid;place-items:center;padding:0}
+
+/* left rail */
+.rail{grid-area:rail;background:var(--surface);border-right:1px solid var(--line);overflow:auto;display:flex;flex-direction:column;min-height:0}
+.sect{padding:12px 12px 10px;border-bottom:1px solid var(--line)}
+.sect h2{margin:0 0 8px;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.runs{display:flex;flex-direction:column;gap:2px}
+.run{display:grid;grid-template-columns:8px 1fr auto;gap:8px;align-items:center;padding:7px 8px;border-radius:4px;border:1px solid transparent}
+.run[aria-current="true"]{background:var(--accent-bg);border-color:var(--accent)}
+.run .t{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run .s{font-size:11px;color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--line-strong)}
+.dot.live{background:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.dot.ok{background:var(--good)} .dot.bad{background:var(--bad)}
+.scope{display:grid;grid-template-columns:1fr auto;gap:2px 8px;padding:7px 0;border-top:1px solid var(--line)}
+.scope:first-of-type{border-top:0}
+.scope .n{font-weight:600}
+.scope .d{grid-column:1/-1;color:var(--mute);font-size:12px}
+.pill{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:3px;font-size:11px;font-weight:600;border:1px solid transparent;white-space:nowrap}
+.pill.good{background:var(--good-bg);color:var(--good)}
+.pill.warn{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.pill.info{background:var(--accent-bg);color:var(--accent-ink)}
+.pill.off{background:var(--tile);color:var(--mute)}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;padding:7px 8px;border:1px solid var(--line);border-radius:4px;background:var(--surface-2);width:100%;text-align:left}
+.switch .track{width:30px;height:16px;border-radius:8px;background:var(--line-strong);position:relative;flex:none;transition:background .15s}
+.switch .track::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--surface);transition:transform .15s}
+.switch[aria-checked="true"] .track{background:var(--accent)}
+.switch[aria-checked="true"] .track::after{transform:translateX(14px)}
+.egress{font-family:var(--font-mono);font-size:11px;color:var(--mute);display:flex;flex-direction:column;gap:3px}
+.egress div{display:flex;justify-content:space-between;gap:8px}
+
+/* canvas */
+.canvas-section{grid-area:canvas;display:flex;flex-direction:column;min-width:0;min-height:0}
+.canvas-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:6px 12px;background:var(--surface);border-bottom:1px solid var(--line)}
+.canvas-head h1{margin:0;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}
+.find{height:26px;width:230px;max-width:100%;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:var(--surface-2)}
+.boardwrap{position:relative;flex:1;min-height:0}
+.board{position:absolute;inset:0;overflow:auto;cursor:grab}
+.board.drag{cursor:grabbing}
+.stage{position:relative}
+.plane{position:absolute;left:0;top:0;transform-origin:0 0}
+.plane svg.edges{position:absolute;inset:0;overflow:visible;pointer-events:none}
+.lane{position:absolute;top:6px;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:600}
+.node{position:absolute;width:176px;min-height:62px;padding:8px 10px 8px 14px;text-align:left;background:var(--surface);border:1px solid var(--line-strong);border-radius:4px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:2px;transition:opacity .15s,box-shadow .15s}
+.node::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--stripe,var(--line-strong))}
+.node .k{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600}
+.node .nm{font-weight:600;font-size:13px;line-height:16px}
+.node .sub{font-family:var(--font-mono);font-size:10.5px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node[data-state="allowed"]{--stripe:var(--good)}
+.node[data-state="pending"]{--stripe:var(--warn);border-color:var(--warn-line)}
+.node[data-state="denied"]{--stripe:var(--bad)}
+.node[data-state="core"]{--stripe:var(--accent)}
+.node[data-state="applied"]{--stripe:var(--good)}
+.node[aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:2px}
+.node.dim{opacity:.28}
+.node.off{display:none}
+.node .badge{position:absolute;top:6px;right:6px}
+.canvas-controls{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:3;display:flex;align-items:center;gap:3px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:4px;box-shadow:var(--shadow);white-space:nowrap}
+.canvas-controls button{height:26px;min-width:28px;padding:0 8px;border:1px solid transparent;background:transparent;border-radius:3px}
+.canvas-controls button:hover{background:var(--tile)}
+.canvas-controls button[aria-pressed="true"]{background:var(--accent-bg);color:var(--accent-ink)}
+.canvas-controls output{min-width:44px;text-align:center;font-family:var(--font-mono);font-size:11px;color:var(--mute)}
+.sep{width:1px;height:16px;background:var(--line);margin:0 3px}
+.toolrail{position:absolute;right:12px;top:12px;z-index:3;display:flex;flex-direction:column;gap:3px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:4px;box-shadow:var(--shadow)}
+.toolrail button{height:28px;padding:0 8px;border:1px solid transparent;background:transparent;border-radius:3px;text-align:left;font-size:12px;display:flex;gap:6px;align-items:center}
+.toolrail button[aria-pressed="true"]{background:var(--accent-bg);color:var(--accent-ink)}
+.toolrail button[aria-pressed="false"]{color:var(--dim)}
+.hint{position:absolute;right:14px;bottom:18px;font-size:11px;color:var(--dim);pointer-events:none;z-index:2}
+.legend{position:absolute;left:12px;bottom:14px;z-index:2;display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mute);background:color-mix(in srgb,var(--surface) 88%,transparent);padding:6px 8px;border:1px solid var(--line);border-radius:4px}
+.legend span{display:flex;align-items:center;gap:6px}
+
+/* inspector */
+.insp{grid-area:insp;background:var(--surface);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+.tabs button{flex:1;height:32px;border:0;background:transparent;border-bottom:2px solid transparent;color:var(--mute);font-weight:500}
+.tabs button[aria-selected="true"]{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+.tabbody{padding:12px;overflow:auto;min-height:0;flex:1}
+.insp h2{margin:0 0 2px;font-size:16px;font-weight:600;line-height:20px}
+.kv{display:grid;grid-template-columns:96px 1fr;gap:6px 10px;margin:12px 0}
+.kv dt{color:var(--dim);font-size:12px}
+.kv dd{margin:0;font-family:var(--font-mono);font-size:11.5px;overflow-wrap:anywhere}
+.why{padding:8px 10px;border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--surface-2);border-radius:3px;margin:10px 0}
+.why.warn{border-left-color:var(--warn)} .why.bad{border-left-color:var(--bad)} .why.good{border-left-color:var(--good)}
+.why .eyebrow{display:block;margin-bottom:2px}
+.actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.btn{height:28px;padding:0 12px;border-radius:4px;border:1px solid var(--line-strong);background:var(--surface-2);font-weight:600}
+.btn:hover{background:var(--tile)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+:root[data-theme="dark"] .btn.primary{color:#0B1230}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .btn.primary{color:#0B1230}}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.diff{font-family:var(--font-mono);font-size:11px;line-height:16px;border:1px solid var(--line);border-radius:3px;overflow:auto;margin:8px 0;background:var(--surface-2)}
+.diff div{padding:0 8px;white-space:pre}
+.diff .h{color:var(--dim);background:var(--tile)}
+.diff .a{background:var(--add-bg)} .diff .d{background:var(--del-bg)}
+
+/* dock */
+.dock{grid-area:dock;background:var(--surface);border-top:1px solid var(--line);border-left:0;display:flex;flex-direction:column;min-width:0;min-height:0}
+.dock .tabs{justify-content:flex-start;padding:0 8px;gap:2px}
+.dock .tabs button{flex:none;padding:0 12px}
+.count{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;margin-left:6px;border-radius:9px;background:var(--tile);font-size:11px;font-weight:600}
+.count.hot{background:var(--warn);color:#fff}
+.dockbody{flex:1;min-height:0;overflow:auto}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th{position:sticky;top:0;background:var(--surface);text-align:left;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:6px 10px;border-bottom:1px solid var(--line)}
+td{padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+td.m{font-family:var(--font-mono);font-size:11.5px;white-space:nowrap}
+tr.sel td{background:var(--accent-bg)}
+tbody tr{cursor:pointer}
+tbody tr:hover td{background:var(--surface-2)}
+tr.new td{animation:flash 1.4s ease-out}
+@keyframes flash{from{background:var(--accent-bg)}to{background:transparent}}
+.meters{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;padding:14px 16px}
+.meter .row{display:flex;justify-content:space-between;margin-bottom:4px}
+.meter .bar{height:8px;background:var(--tile);border-radius:2px;overflow:hidden}
+.meter .bar i{display:block;height:100%;background:var(--accent)}
+.meter .bar i.hot{background:var(--warn)}
+.empty{padding:22px 16px;color:var(--mute)}
+.wrapx{overflow-x:auto}
+
+@media (max-width:1100px){
+  .app{grid-template-columns:220px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto 236px;grid-template-areas:"top top" "rail canvas" "rail insp" "dock dock"}
+  .insp{border-left:0;border-top:1px solid var(--line);max-height:340px}
+}
+@media (max-width:760px){
+  html,body{height:auto}
+  body{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0}
+  .app{display:flex;flex-direction:column;height:auto;padding:0}
+  .top{padding-left:0;padding-right:0}
+  .rail{border-right:0;overflow:visible}
+  .canvas-section{height:480px;flex:none}
+  .insp{max-height:none;border-left:0}
+  .dock{height:300px;flex:none}
+  .hint{display:none}
+  .toolrail{top:auto;bottom:56px;right:8px;flex-direction:row}
+  .toolrail button .lbl{display:none}
+  .legend{display:none}
+  .sect{padding-left:0;padding-right:0}
+}
+/* view switch */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.seg button{height:26px;padding:0 12px;border:0;background:var(--surface-2);color:var(--mute);font-weight:500;display:flex;align-items:center}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-selected="true"]{background:var(--accent-bg);color:var(--accent-ink);font-weight:600}
+.head-l{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+
+/* terminal view: always dark, colours follow Jani's full-screen session */
+.term{--t-bg:#0A0B0D;--t-panel:#121418;--t-text:#E8EAEE;--t-dim:#8D94A2;--t-faint:#5C6573;--t-line:#2A2F37;--t-acc:#5ED0E6;--t-user:#F0B860;--t-err:#F06E6E;--t-code:#96D6AA;--t-sel:#1E242C;
+  flex:1;min-height:0;display:flex;flex-direction:column;background:var(--t-bg);color:var(--t-text);font:400 12.5px/19px var(--font-mono);color-scheme:dark}
+.t-title{display:flex;justify-content:space-between;gap:12px;padding:7px 14px 0;flex-wrap:wrap}
+.t-title b{color:var(--t-acc);font-weight:500}
+.t-dim{color:var(--t-dim)} .t-faint{color:var(--t-faint)} .t-acc{color:var(--t-acc)}
+.t-rule{height:1px;background:var(--t-line);margin:6px 14px 0}
+.t-scroll{flex:1;min-height:0;overflow:auto;padding:10px 14px;scrollbar-color:var(--t-faint) transparent}
+.t-row{display:grid;grid-template-columns:62px minmax(0,1fr);gap:0 12px;margin-bottom:9px}
+.t-lab{text-align:right;font-weight:500;color:var(--t-dim)}
+.k-you .t-lab{color:var(--t-user)} .k-jani .t-lab,.k-skills .t-lab{color:var(--t-acc)}
+.k-error .t-lab,.k-error .t-txt{color:var(--t-err)} .k-tools .t-lab{color:var(--t-code)}
+.k-command .t-lab,.k-command .t-txt,.k-think .t-lab{color:var(--t-faint)}
+.k-note .t-txt{color:var(--t-dim)}
+.t-txt{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.t-code{color:var(--t-code)}
+.t-fold{background:none;border:0;padding:0;color:var(--t-faint);font:inherit;cursor:pointer}
+.t-fold:hover{color:var(--t-dim)}
+.t-thought{color:var(--t-faint);margin-top:2px;font-style:italic}
+.t-tool{display:flex;gap:8px;white-space:pre-wrap}
+.t-tool .m{width:12px;flex:none}
+.t-tool.ok .m{color:var(--t-code)} .t-tool.no .m{color:var(--t-err)} .t-tool.hold .m{color:var(--t-user)}
+.t-tool .d{color:var(--t-dim)}
+.t-welcome{text-align:center;padding:26px 0 10px;display:flex;flex-direction:column;align-items:center;gap:4px}
+.t-wm{font:600 26px/30px var(--font-body);color:var(--t-text);letter-spacing:-.01em}
+.t-welcome p{margin:10px 0 6px}
+.t-starter{background:none;border:1px solid var(--t-line);border-radius:3px;color:var(--t-text);font:inherit;padding:3px 12px;width:min(320px,100%);text-align:left;margin-top:4px}
+.t-starter:hover{background:var(--t-sel)}
+.t-dock{position:relative;flex:none}
+.t-pal{position:absolute;left:10px;right:10px;bottom:100%;background:var(--t-panel);border:1px solid var(--t-line);border-radius:3px;padding:3px;max-height:210px;overflow:auto;z-index:4;box-shadow:0 -6px 20px rgba(0,0,0,.4)}
+.t-opt{display:grid;grid-template-columns:minmax(110px,170px) 1fr;gap:12px;padding:1px 8px;border-radius:2px;cursor:pointer}
+.t-opt[aria-selected="true"]{background:var(--t-sel)}
+.t-opt .n{color:var(--t-acc)}
+.t-opt .s{color:var(--t-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.t-comp{display:flex;gap:8px;padding:8px 12px;background:var(--t-panel);border-top:1px solid var(--t-line)}
+.t-comp:focus-within{border-top-color:var(--t-acc)}
+.t-prompt{color:var(--t-user);font-weight:500}
+.t-comp textarea{flex:1;min-width:0;resize:none;background:transparent;border:0;color:var(--t-text);font:inherit;outline:0;height:19px;max-height:114px;padding:0}
+.t-comp textarea::placeholder{color:var(--t-faint)}
+.t-meta{padding:2px 14px;background:var(--t-panel);color:var(--t-dim);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.t-keys{padding:0 14px 3px;background:var(--t-panel);color:var(--t-faint);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.t-keys b{color:var(--t-dim);font-weight:500}
+.t-status{display:flex;justify-content:space-between;gap:10px;padding:3px 14px;background:var(--t-sel);color:var(--t-dim);font-size:11.5px;border-top:1px solid var(--t-line)}
+.t-status .l{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.t-status .r{white-space:nowrap}
+.t-status .hot{color:var(--t-user);font-weight:600}
+@media (max-width:760px){.t-row{grid-template-columns:48px minmax(0,1fr);gap:0 8px}.t-keys{display:none}.t-opt{grid-template-columns:1fr}.t-opt .s{display:none}}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+[hidden]{display:none!important}
+.empty-canvas{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--mute)}
+.empty-canvas div{max-width:420px}
+.empty-canvas h2{margin:0 0 6px;font-size:16px;color:var(--text)}
+.empty-canvas code,.empty code{font-family:var(--font-mono);font-size:11.5px;background:var(--tile);padding:1px 5px;border-radius:3px}
+.note-bar{margin:8px 0 0;font-size:11.5px;color:var(--dim)}
+.banner{padding:6px 14px;background:var(--bad-bg);color:var(--bad);border-bottom:1px solid var(--bad);font-weight:600}
+.pill.good,.chip.good{color:var(--good)}
+.chip.bad{border-color:var(--bad);background:var(--bad-bg);color:var(--bad);font-weight:600}
+.chip.okc{border-color:var(--good);background:var(--good-bg);color:var(--good)}
+.runs .run{cursor:pointer;width:100%;text-align:left;background:transparent;font:inherit;color:inherit}
+.runs .run:hover{background:var(--surface-2)}
+.runs .run[aria-current="true"]:hover{background:var(--accent-bg)}
+.rtitle{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px}
+
+.banner{flex:0 0 100%;border:1px solid var(--bad);border-radius:4px;padding:5px 10px}
+</style></head><body>
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand" aria-label="Jani">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="1" width="20" height="20" rx="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 6v7.5a2.5 2.5 0 0 1-5 0M12 6h6M15 6v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" transform="translate(1.5 0)"/></svg>
+      Jani
+    </div>
+    <div class="crumb">
+      <span class="chip mono" title="Git worktree"><span class="dim">worktree</span> <b id="wt">…</b></span>
+      <span class="chip mono"><span class="dim">mode</span> <b id="modeVal">…</b></span>
+    </div>
+    <span class="grow"></span>
+    <span class="chip mode" id="authChip" title="Authority fixed when jani ui started">Authority: …</span>
+    <span class="chip" id="chainChip">Journal …</span>
+    <span class="chip" id="budgetChip"><span class="dim">Budget</span> <b class="mono" id="budgetTop">none</b></span>
+    <button class="iconbtn" id="themeBtn" type="button" aria-label="Toggle theme" title="Toggle theme">
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 1.8a5.2 5.2 0 0 1 0 10.4z" fill="currentColor"/></svg>
+    </button>
+    <div class="banner" id="banner" role="alert" hidden></div>
+  </header>
+
+  <aside class="rail" aria-label="Runs and authority">
+    <section class="sect">
+      <h2>Runs <span class="mono dim" id="runTotal"></span></h2>
+      <div class="runs" id="runs"></div>
+    </section>
+    <section class="sect">
+      <h2>Authority <span class="mono dim">frozen</span></h2>
+      <div id="scopes"></div>
+      <p class="note-bar">Scopes are fixed when <code class="mono">jani ui</code> starts. Restart it with <code class="mono">--allow-write</code> or <code class="mono">--allow-exec</code> to change them.</p>
+    </section>
+    <section class="sect">
+      <h2>Model and identity</h2>
+      <div class="egress" id="egress"></div>
+    </section>
+    <section class="sect" style="border-bottom:0">
+      <h2>Skills <span class="mono dim" id="skillCount"></span></h2>
+      <div id="skills" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+    </section>
+  </aside>
+
+  <section class="canvas-section" aria-label="Run workspace">
+    <div class="canvas-head">
+      <div class="head-l"><h1>Run workspace <span class="pill off" id="runState">No run</span></h1>
+        <div class="seg" role="tablist" id="viewTabs" aria-label="Workspace view">
+          <button type="button" role="tab" aria-selected="true" data-v="graph">Graph</button>
+          <button type="button" role="tab" aria-selected="false" data-v="term">Terminal<span class="count hot" id="termCount" style="margin-left:6px" hidden>0</span></button>
+        </div></div>
+      <input class="find" id="find" type="search" placeholder="Find action, decision or reason…" aria-label="Find on canvas">
+    </div>
+    <div class="boardwrap">
+      <div class="board" id="board" tabindex="0" role="region" aria-label="Run graph" aria-describedby="hint">
+        <div class="stage" id="stage"><div class="plane" id="plane"></div></div>
+      </div>
+      <div class="empty-canvas" id="emptyCanvas" hidden><div><h2>No runs recorded yet</h2><p>Send a task from the Terminal tab, or run <code>jani run "your task"</code> against this state directory. Every tool call and decision appears here.</p></div></div>
+      <span class="hint" id="hint">Drag to pan · + / − to zoom · F to fit</span>
+      <div class="toolrail" role="toolbar" aria-label="Canvas filters">
+        <button type="button" data-kind="read" aria-pressed="true"><span aria-hidden="true">◉</span><span class="lbl">Reads</span></button>
+        <button type="button" data-kind="write" aria-pressed="true"><span aria-hidden="true">✎</span><span class="lbl">Writes</span></button>
+        <button type="button" data-kind="command" aria-pressed="true"><span aria-hidden="true">▸</span><span class="lbl">Commands</span></button>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--good)" stroke-width="2"/></svg>Permitted</span>
+        <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--warn)" stroke-width="2" stroke-dasharray="5 3"/></svg>Needs approval</span>
+        <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--bad)" stroke-width="2" stroke-dasharray="2 3"/></svg>Denied</span>
+        <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--dim)" stroke-width="1.2"/></svg>Recorded</span>
+      </div>
+      <div class="canvas-controls" role="toolbar" aria-label="Canvas navigation">
+        <button type="button" id="zout" aria-label="Zoom out">−</button>
+        <output id="zval" aria-label="Zoom">100%</output>
+        <button type="button" id="zin" aria-label="Zoom in">+</button>
+        <span class="sep"></span>
+        <button type="button" id="zfit" aria-label="Fit to screen">Fit</button>
+        <button type="button" id="zreset" aria-label="Reset zoom">Reset</button>
+        <span class="sep"></span>
+        <button type="button" id="zfocus" aria-pressed="false" aria-label="Focus selected node and neighbours">Focus</button>
+      </div>
+    </div>
+    <div class="term" id="term" hidden>
+      <div class="t-title"><span><b>jani</b> <span class="t-dim">governed engineering agent</span></span><span class="t-faint" id="tTask"></span></div>
+      <div class="t-rule"></div>
+      <div class="t-scroll" id="tScroll" role="log" aria-label="Conversation transcript" tabindex="0"></div>
+      <div class="t-dock">
+        <div class="t-pal" id="tPal" role="listbox" aria-label="Commands" hidden></div>
+        <div class="t-comp"><span class="t-prompt" aria-hidden="true">›</span><textarea id="tIn" rows="1" spellcheck="false" autocomplete="off" aria-label="Message to Jani"></textarea></div>
+      </div>
+      <div class="t-meta" id="tMeta"></div>
+      <div class="t-keys"><b>Enter</b> send · <b>Shift+Enter</b> newline · <b>/</b> commands · <b>↑↓</b> history · <b>PgUp PgDn</b> scroll · <b>Ctrl+T</b> think · <b>Esc</b> cancel turn</div>
+      <div class="t-status"><span class="l" id="tStatL"></span><span class="r" id="tStatR"></span></div>
+    </div>
+  </section>
+
+  <aside class="insp" aria-label="Inspector">
+    <div class="tabs" role="tablist" id="inspTabs">
+      <button role="tab" aria-selected="true" data-t="detail">Detail</button>
+      <button role="tab" aria-selected="false" data-t="events">Events</button>
+      <button role="tab" aria-selected="false" data-t="receipt">Receipt</button>
+    </div>
+    <div class="tabbody" id="inspBody"></div>
+  </aside>
+
+  <section class="dock" aria-label="Approvals, journal and budget">
+    <div class="tabs" role="tablist" id="dockTabs">
+      <button role="tab" aria-selected="true" data-t="approvals">Approvals<span class="count" id="apCount">0</span></button>
+      <button role="tab" aria-selected="false" data-t="journal">Audit journal<span class="count" id="jCount">0</span></button>
+      <button role="tab" aria-selected="false" data-t="budget">Budget</button>
+    </div>
+    <div class="dockbody" id="dockBody"></div>
+  </section>
+</div>
+
+<script nonce="__NONCE__">
+(function(){
+'use strict';
+var $=function(s,r){return (r||document).querySelector(s)};
+var $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
+function el(tag,attrs){
+  var e=document.createElement(tag);
+  for(var k in (attrs||{})){var v=attrs[k];if(v==null)continue;if(k==='class')e.className=v;else if(k==='text')e.textContent=v;else e.setAttribute(k,v)}
+  (function add(list){for(var i=0;i<list.length;i++){var c=list[i];if(c==null)continue;if(Array.isArray(c)){add(c);continue}e.appendChild(typeof c==='string'?document.createTextNode(c):c)}})(Array.prototype.slice.call(arguments,2));
+  return e;
+}
+var SVGNS='http://www.w3.org/2000/svg';
+function svg(tag,attrs){var e=document.createElementNS(SVGNS,tag);for(var k in attrs)e.setAttribute(k,attrs[k]);return e}
+function pad2(n){return ('0'+n).slice(-2)}
+function fmtTime(u){if(!u)return '—';var d=new Date(u*1000);return pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds())}
+function fmtDay(u){if(!u)return '—';var d=new Date(u*1000);return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+' '+fmtTime(u)}
+function short(s,n){s=String(s==null?'':s);return s.length>(n||10)?s.slice(0,n||10):s}
+function plural(n,w){return n+' '+w+(n===1?'':'s')}
+
+/* ---------- api ---------- */
+var TOKEN='';
+(function(){
+  var m=location.hash.match(/token=([0-9a-f]+)/);
+  if(m){TOKEN=m[1];try{sessionStorage.setItem('jani.token',TOKEN)}catch(e){}try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}
+  else{try{TOKEN=sessionStorage.getItem('jani.token')||''}catch(e){}}
+})();
+function api(path,body){
+  var opt={headers:{'X-Jani-Token':TOKEN}};
+  if(body!==undefined){opt.method='POST';opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}
+  return fetch(path,opt).then(function(r){return r.json().catch(function(){return {}}).then(function(j){
+    if(!r.ok){var e=new Error(j.error||('HTTP '+r.status));e.status=r.status;throw e}return j})});
+}
+function banner(msg){var b=$('#banner');if(!msg){b.hidden=true;return}b.textContent=msg;b.hidden=false}
+
+/* ---------- state ---------- */
+var S={ov:null,runs:[],runId:null,run:null,runSig:'',approvals:[],journal:null,budgets:[],
+  sel:null,insp:'detail',dock:'approvals',zoom:1,fit:true,focus:false,query:'',
+  filters:{read:true,write:true,command:true},view:'graph',pinned:false};
+var G={nodes:[],edges:[],byId:{},PW:1130,PH:520};
+var NW=176,NH=62;
+
+/* ---------- classification ---------- */
+function actionInfo(a){
+  var m={'repo.read':['Read','read_file','read'],'repo.list':['Read','list_dir','read'],'skill.read':['Read','skill_read','read'],
+    'native.read':['Native tool','native_read','read'],'native.control':['Native tool','native_control','write'],
+    'repo.write':['Write','write_file','write'],'command.exec':['Command','run_command','command'],'plugin.write':['Write','plugin_write','write']};
+  if(m[a])return m[a];
+  if(a.indexOf('external.')===0||a.indexOf('connector.')===0)return ['External',a,'write'];
+  if(a==='tool.invalid_arguments')return ['Tool','invalid arguments','read'];
+  return ['Tool',a,'read'];
+}
+function invState(evs){
+  var st='allowed',last=evs[evs.length-1];
+  evs.forEach(function(e){if(e.decision==='deny')st='denied';else if(e.decision==='failed'&&st!=='denied')st='failed'});
+  if(st==='allowed'&&last&&last.decision==='approval_required')st='pending';
+  return st;
+}
+var REASON_TEXT={
+  allowed:'Permitted by policy and recorded as executed.',
+  denied:'Refused before anything ran. The reason code below says which control stopped it.',
+  failed:'Permitted, but execution failed. The journal keeps the failure.',
+  pending:'Held until a verified approver decides the approval request. Nothing has run.'
+};
+
+/* ---------- graph model ---------- */
+function buildGraph(){
+  var run=S.run,ov=S.ov||{};
+  var nodes=[],edges=[];
+  if(!run){G={nodes:[],edges:[],byId:{},PW:1130,PH:520};return}
+  var evs=run.events,groups={},order=[],switches=0,agentEv=[];
+  evs.forEach(function(e){
+    if(e.action==='agent.model')switches++;
+    if(e.action==='agent.run'||e.action==='agent.model'||e.action==='mirror.compare'){agentEv.push(e);return}
+    var id=e.invocation_id;if(!id||id==='run'){agentEv.push(e);return}
+    if(!groups[id]){groups[id]=[];order.push(id)}groups[id].push(e);
+  });
+  var hidden=Math.max(0,order.length-40);var shown=order.slice(hidden);
+  var PH=Math.max(520,40+shown.length*76+30);
+  var mid=shown.length?(40+(shown.length-1)*76)/2:230;
+  var cy=Math.max(120,mid);
+  var first=evs[0],last=evs[evs.length-1];
+  var auth=ov.authority||{};
+  var permits=0,denies=0,holds=0;
+  shown.forEach(function(id){var s=invState(groups[id]);if(s==='denied'||s==='failed')denies++;else if(s==='pending')holds++;else permits++});
+  var status=(S.runs.filter(function(r){return r.runId===run.runId})[0]||{}).status||'unreconciled';
+  nodes.push({id:'operator',lane:0,x:24,y:cy,k:'Operator',nm:ov.principal||'operator',sub:'tenant '+(ov.tenant||'—'),type:'core',state:'core',events:[],
+    facts:[['Principal',ov.principal||'—'],['Tenant',ov.tenant||'—'],['Mode',ov.mode||'—'],['Identity',ov.identity&&ov.identity.verified?'verified ('+ov.identity.issuer+')':'not verified']],
+    why:'You set the task and the authority when jani ui started. The browser cannot widen it.'});
+  nodes.push({id:'agent',lane:1,x:236,y:cy,k:'Agent loop',nm:'Run '+short(run.runId,10),sub:plural(order.length,'tool call'),type:'core',state:'core',events:agentEv,
+    facts:[['Run',run.runId],['Task',first.task_id],['Started',fmtDay(first.timestamp)],['Last event',fmtDay(last.timestamp)],['Tool calls',String(order.length)],['Status',status]],
+    why:'The loop proposes tool calls. Each one goes to the broker before anything runs.'});
+  nodes.push({id:'model',lane:2,x:448,y:Math.max(20,cy-150),k:'Model',nm:(ov.model&&ov.model.name)||'model',sub:(ov.model&&ov.model.endpointHost)||'',type:'core',state:'core',events:[],
+    facts:[['Model',(ov.model&&ov.model.name)||'—'],['Endpoint',(ov.model&&ov.model.endpointHost)||'—'],['Protocol',(ov.model&&ov.model.protocol)||'—'],['Profile switches',String(switches)],['Key',ov.model&&ov.model.keyConfigured?'configured':'missing']],
+    why:'The model only proposes. Its output is never an action until the broker permits it.'});
+  nodes.push({id:'broker',lane:2,x:448,y:cy,k:'Execution broker',nm:'Policy check',sub:'scope · approval · budget',type:'core',state:'core',events:[],
+    facts:[['Policy',ov.policy&&ov.policy.revision?ov.policy.revision:'—'],['Permitted',String(permits)],['Held',String(holds)],['Denied or failed',String(denies)],['Sandbox',auth.sandbox||'—'],['Network',auth.network||'—']],
+    why:'The broker checks scope, policy, data rules, approvals and budget for every call. When a control is missing it refuses.'});
+  shown.forEach(function(id,i){
+    var g=groups[id],info=actionInfo(g[0].action),st=invState(g);
+    var dec=g.map(function(e){return e.decision}).join(' → ');
+    var ev=g.filter(function(e){return e.approval_id})[0];
+    nodes.push({id:id,lane:3,x:690,y:40+i*76,k:info[0],nm:info[1],sub:short(g[0].resource_digest,12)+' · '+(g[g.length-1].reason_code||g[g.length-1].decision),type:'tool',kind:info[2],state:st,events:g,
+      approvalId:ev?ev.approval_id:null,
+      facts:[['Action',g[0].action],['Decisions',dec],['Reason',g[g.length-1].reason_code||'—'],['Invocation',id],['Resource',short(g[0].resource_digest,20)],['Data class',String(g[0].data_classification)],['Policy rev',g[0].policy_revision],['Approval',ev?ev.approval_id:'none'],['Sandbox receipt',g.filter(function(e){return e.sandbox_receipt_id})[0]?g.filter(function(e){return e.sandbox_receipt_id})[0].sandbox_receipt_id:'none']],
+      why:REASON_TEXT[st]});
+  });
+  var ok=S.ov&&S.ov.journal&&S.ov.journal.ok;
+  nodes.push({id:'journal',lane:4,x:930,y:cy,k:'Record',nm:'Audit journal',sub:'hash-chained',type:'core',state:'core',events:[],
+    facts:[['Events in run',String(evs.length)],['Head digest',short(last.event_digest,24)],['Chain',ok?'verified':'NOT verified'],['Export','jani evidence '+run.runId]],
+    why:'Every decision is appended, including the denied ones. The receipt records what happened, not that the outcome is correct.'});
+  nodes.forEach(function(n){G.byId[n.id]=n});
+  var byId={};nodes.forEach(function(n){byId[n.id]=n});
+  edges.push(['operator','agent','ok'],['agent','model','ok'],['agent','broker','ok']);
+  shown.forEach(function(id){edges.push(['broker',id,'tool'],[id,'journal','rec'])});
+  if(!shown.length)edges.push(['broker','journal','rec']);
+  G={nodes:nodes,edges:edges,byId:byId,PW:1130,PH:PH,hidden:hidden};
+}
+
+/* ---------- canvas ---------- */
+var plane=$('#plane'),stage=$('#stage'),board=$('#board');
+var laneNames=['Operator','Agent','Boundary','Tools','Record'],laneX=[24,236,448,690,930];
+function visible(n){return !(n.kind&&!S.filters[n.kind])}
+function edgeStyle(t){
+  if(t==='ok')return {c:'var(--good)',w:2,d:''};
+  if(t==='pending')return {c:'var(--warn)',w:2,d:'6 4'};
+  if(t==='denied')return {c:'var(--bad)',w:2,d:'2 4'};
+  return {c:'var(--dim)',w:1.2,d:''};
+}
+function neighbours(id){var s={};s[id]=1;G.edges.forEach(function(e){if(e[0]===id)s[e[1]]=1;if(e[1]===id)s[e[0]]=1});return s}
+function renderCanvas(){
+  plane.textContent='';
+  var empty=!G.nodes.length;
+  $('#emptyCanvas').hidden=!empty||S.view!=='graph';
+  if(empty){stage.style.width='0';stage.style.height='0';return}
+  plane.style.width=G.PW+'px';plane.style.height=G.PH+'px';
+  laneNames.forEach(function(l,i){plane.appendChild(el('div',{class:'lane',style:'left:'+laneX[i]+'px',text:l==='Tools'&&G.hidden?'Tools (latest 40 of '+(40+G.hidden)+')':l}))});
+  var sv=svg('svg',{class:'edges',width:G.PW,height:G.PH,'aria-hidden':'true'});sv.id='edgeSvg';plane.appendChild(sv);
+  G.nodes.forEach(function(n){
+    var b=el('button',{type:'button',class:'node','data-id':n.id,'aria-pressed':'false',style:'left:'+n.x+'px;top:'+n.y+'px'});
+    b.appendChild(el('span',{class:'k',text:n.k}));
+    b.appendChild(el('span',{class:'nm',text:n.nm}));
+    b.appendChild(el('span',{class:'sub',text:n.sub}));
+    b.addEventListener('click',function(){select(n.id)});
+    plane.appendChild(b);
+  });
+  paint();applyZoom();
+}
+function pillFor(n){
+  if(n.type!=='tool')return null;
+  return {allowed:['good','Permitted'],pending:['warn','Held'],denied:['bad','Denied'],failed:['bad','Failed']}[n.state]||null;
+}
+function paint(){
+  var sv=$('#edgeSvg');if(!sv)return;sv.textContent='';
+  var nb=S.focus&&S.sel?neighbours(S.sel):null;
+  var q=S.query.trim().toLowerCase(),matches={};
+  G.nodes.forEach(function(n){if(q&&(n.nm+' '+n.sub+' '+n.k+' '+n.state+' '+n.facts.map(function(f){return f[1]}).join(' ')).toLowerCase().indexOf(q)>-1)matches[n.id]=1});
+  G.edges.forEach(function(e){
+    var a=G.byId[e[0]],b=G.byId[e[1]];if(!a||!b||!visible(a)||!visible(b))return;
+    var t=e[2];
+    if(t==='tool'){var tool=b;t=tool.state==='allowed'?'ok':tool.state==='pending'?'pending':'denied'}
+    var x1=a.x+NW,y1=a.y+NH/2,x2=b.x,y2=b.y+NH/2;
+    if(b.x<a.x+NW-1){x1=a.x+NW/2;y1=a.y+(b.y>a.y?NH:0);x2=b.x+NW/2;y2=b.y+(b.y>a.y?0:NH)}
+    var dx=Math.max(40,(x2-x1)/2);
+    var d=(b.x<a.x+NW-1)?('M'+x1+' '+y1+' C'+x1+' '+(y1+(y2-y1)/2)+' '+x2+' '+(y1+(y2-y1)/2)+' '+x2+' '+y2):('M'+x1+' '+y1+' C'+(x1+dx)+' '+y1+' '+(x2-dx)+' '+y2+' '+x2+' '+y2);
+    var st=edgeStyle(t);
+    var p=svg('path',{d:d,fill:'none',stroke:st.c,'stroke-width':st.w,'stroke-linecap':'round'});
+    if(st.d)p.setAttribute('stroke-dasharray',st.d);
+    var dim=(nb&&!(nb[e[0]]&&nb[e[1]]))||(q&&!(matches[e[0]]||matches[e[1]]));
+    if(dim)p.setAttribute('opacity','.18');
+    sv.appendChild(p);sv.appendChild(svg('circle',{cx:x2,cy:y2,r:3.2,fill:st.c,opacity:dim?'.18':'1'}));
+  });
+  $$('.node',plane).forEach(function(b){
+    var n=G.byId[b.getAttribute('data-id')];if(!n)return;
+    b.setAttribute('data-state',n.state==='failed'?'denied':n.state);
+    b.setAttribute('aria-pressed',String(n.id===S.sel));
+    b.classList.toggle('off',!visible(n));
+    b.classList.toggle('dim',!!((nb&&!nb[n.id])||(q&&!matches[n.id])));
+    var old=$('.badge',b);if(old)old.remove();
+    var pf=pillFor(n);if(pf)b.appendChild(el('span',{class:'pill badge '+pf[0],text:pf[1]}));
+    b.setAttribute('aria-label',n.k+': '+n.nm+', '+n.sub+(pf?', '+pf[1]:''));
+  });
+}
+function applyZoom(){
+  plane.style.transform='scale('+S.zoom+')';
+  stage.style.width=(G.PW*S.zoom)+'px';stage.style.height=(G.PH*S.zoom)+'px';
+  $('#zval').textContent=Math.round(S.zoom*100)+'%';
+}
+function fit(){
+  var r=board.getBoundingClientRect();if(!r.width)return;
+  var z=Math.min((r.width-24)/G.PW,(r.height-72)/G.PH);
+  S.zoom=Math.max(.35,Math.min(1,z));S.fit=true;applyZoom();board.scrollLeft=0;board.scrollTop=0;
+}
+function setZoom(z){S.fit=false;S.zoom=Math.max(.35,Math.min(1.6,z));applyZoom()}
+$('#zin').addEventListener('click',function(){setZoom(S.zoom*1.2)});
+$('#zout').addEventListener('click',function(){setZoom(S.zoom/1.2)});
+$('#zfit').addEventListener('click',fit);
+$('#zreset').addEventListener('click',function(){setZoom(1)});
+$('#zfocus').addEventListener('click',function(e){S.focus=!S.focus;e.currentTarget.setAttribute('aria-pressed',String(S.focus));paint()});
+$$('.toolrail button').forEach(function(b){b.addEventListener('click',function(){var k=b.getAttribute('data-kind');S.filters[k]=!S.filters[k];b.setAttribute('aria-pressed',String(S.filters[k]));paint()})});
+$('#find').addEventListener('input',function(e){S.query=e.target.value;paint()});
+board.addEventListener('keydown',function(e){
+  if(e.key==='+'||e.key==='=')setZoom(S.zoom*1.2);else if(e.key==='-')setZoom(S.zoom/1.2);else if(e.key==='f'||e.key==='F')fit();else if(e.key==='0')setZoom(1);
+});
+(function(){var down=false,sx=0,sy=0,sl=0,st=0;
+  board.addEventListener('pointerdown',function(e){if(e.target.closest('.node'))return;down=true;sx=e.clientX;sy=e.clientY;sl=board.scrollLeft;st=board.scrollTop;board.classList.add('drag')});
+  window.addEventListener('pointermove',function(e){if(!down)return;board.scrollLeft=sl-(e.clientX-sx);board.scrollTop=st-(e.clientY-sy)});
+  window.addEventListener('pointerup',function(){down=false;board.classList.remove('drag')});
+})();
+
+/* ---------- inspector ---------- */
+function select(id){S.sel=id;S.pinned=true;paint();renderInsp()}
+function defaultSelection(){
+  var t=G.nodes.filter(function(n){return n.type==='tool'});
+  var p=t.filter(function(n){return n.state==='pending'})[0]||t.filter(function(n){return n.state==='denied'||n.state==='failed'})[0]||t[t.length-1];
+  return p?p.id:(G.byId.agent?'agent':null);
+}
+function stateLabel(n){return {core:['info','Trusted core'],allowed:['good','Permitted'],pending:['warn','Held for approval'],denied:['bad','Denied'],failed:['bad','Failed']}[n.state]||['off',n.state]}
+function approvalOf(id){return S.approvals.filter(function(a){return a.approvalId===id})[0]}
+function canDecide(){return !!(S.ov&&S.ov.identity&&S.ov.identity.verified)}
+function renderInsp(){
+  var body=$('#inspBody');body.textContent='';
+  $$('#inspTabs button').forEach(function(b){b.setAttribute('aria-selected',String(b.getAttribute('data-t')===S.insp))});
+  var n=S.sel&&G.byId[S.sel];
+  if(S.insp==='receipt'){
+    var ev=S.run&&S.run.evidence;
+    body.appendChild(el('div',{class:'eyebrow',text:'Receipt'}));
+    body.appendChild(el('h2',{text:S.run?'Run '+short(S.run.runId,12):'No run'}));
+    if(!ev){body.appendChild(el('div',{class:'empty',style:'padding-left:0',text:'No verified receipt for this run yet.'}));return}
+    body.appendChild(el('div',{class:'why '+(ev.journalChainVerified?'good':'bad')},el('span',{class:'eyebrow',text:'Chain'}),ev.journalChainVerified?'Journal chain verified.':'Journal chain failed verification.'));
+    var dl=el('dl',{class:'kv'});
+    [['Model status',ev.modelStatus],['Audit events',String(ev.auditEventCount)],['Denials',String(ev.decisionDenials)],['Invocations',String(ev.observedInvocationIds)],['Head digest',short(ev.lastRunEventDigest,24)],['Outcome verified',String(ev.outcomeVerified)],['Effects reconciled',String(ev.effectsReconciled)],['Safe to replay',String(ev.safeToAutoReplay)]].forEach(function(f){dl.appendChild(el('dt',{text:f[0]}));dl.appendChild(el('dd',{text:f[1]}))});
+    body.appendChild(dl);
+    body.appendChild(el('div',{class:'why warn'},el('span',{class:'eyebrow',text:'Caveat'}),ev.caveat));
+    return;
+  }
+  if(!n){body.appendChild(el('div',{class:'empty',style:'padding-left:0'},'Select a node on the graph to see why the broker decided as it did.'));return}
+  var sl=stateLabel(n);
+  if(S.insp==='events'){
+    body.appendChild(el('div',{class:'eyebrow',text:n.k}));body.appendChild(el('h2',{text:n.nm}));
+    if(!n.events.length)body.appendChild(el('div',{class:'empty',style:'padding-left:0',text:'Core components do not own journal events. Select a tool node, or the agent loop, to list events.'}));
+    n.events.forEach(function(e){
+      var c=e.decision==='deny'||e.decision==='failed'?'bad':e.decision==='approval_required'?'warn':'good';
+      body.appendChild(el('div',{class:'why '+c},el('span',{class:'eyebrow',text:fmtTime(e.timestamp)+' · '+e.decision}),el('span',{class:'mono',text:e.action+(e.reason_code?'  '+e.reason_code:'')}),el('br'),el('span',{class:'mono dim',text:'sha256:'+short(e.event_digest,24)})));
+    });
+    return;
+  }
+  body.appendChild(el('div',{class:'eyebrow',text:n.k}));
+  body.appendChild(el('h2',{text:n.nm}));
+  body.appendChild(el('div',{style:'margin-top:6px'},el('span',{class:'pill '+sl[0],text:sl[1]})));
+  var cls=n.state==='pending'?'warn':(n.state==='denied'||n.state==='failed')?'bad':n.state==='allowed'?'good':'';
+  body.appendChild(el('div',{class:'why '+cls},el('span',{class:'eyebrow',text:'Why'}),n.why));
+  var dl=el('dl',{class:'kv'});
+  n.facts.forEach(function(f){dl.appendChild(el('dt',{text:f[0]}));dl.appendChild(el('dd',{text:f[1]}))});
+  body.appendChild(dl);
+  if(n.state==='pending'&&n.approvalId){
+    var ap=approvalOf(n.approvalId);
+    if(ap&&ap.status==='pending')body.appendChild(approvalActions(ap));
+    else if(ap)body.appendChild(el('div',{class:'why'},el('span',{class:'eyebrow',text:'Approval'}),ap.approvalId+' is '+ap.status+'. Attach it in the session with /approval '+ap.approvalId+'.'));
+  }
+}
+function approvalActions(ap){
+  var wrap=el('div',{class:'actions'});
+  if(!canDecide()){wrap.appendChild(el('div',{class:'why warn',style:'width:100%'},el('span',{class:'eyebrow',text:'Needs a verified identity'}),'Decisions need a signed identity assertion. Start jani ui with --identity FILE and --policy-key, then reload.'));return wrap}
+  var yes=el('button',{class:'btn primary',type:'button',text:'Approve once'}),no=el('button',{class:'btn danger',type:'button',text:'Reject'});
+  yes.addEventListener('click',function(){decide(ap,true)});no.addEventListener('click',function(){decide(ap,false)});
+  wrap.appendChild(yes);wrap.appendChild(no);return wrap;
+}
+function decide(ap,approve){
+  banner('');
+  api('/api/approvals/decide',{id:ap.approvalId,approve:approve,role:ap.requiredRole||'approver'}).then(refreshAll).catch(function(e){banner('Decision refused: '+e.message)});
+}
+$$('#inspTabs button').forEach(function(b){b.addEventListener('click',function(){S.insp=b.getAttribute('data-t');renderInsp()})});
+
+/* ---------- rail and top ---------- */
+function renderOverview(){
+  var ov=S.ov;if(!ov)return;
+  $('#wt').textContent=ov.worktree;$('#modeVal').textContent=ov.mode;
+  var a=ov.authority,parts=['read'];
+  if(a.allowWrite)parts.push('write ('+a.writePaths.length+')');
+  if(a.allowExec)parts.push('run ('+(a.execPrograms.length||'any')+')');
+  $('#authChip').textContent='Authority: '+(parts.length===1?'read-only':parts.join(' · '));
+  var c=$('#chainChip'),j=ov.journal;
+  if(j.ok){c.className='chip okc';c.textContent='Journal verified · '+plural(j.events,'event')}
+  else{c.className='chip bad';c.textContent='Journal chain broken at line '+j.failure_line}
+  var sc=$('#scopes');sc.textContent='';
+  [['Read repository','Files inside this worktree, minus blocked paths.','Granted','good'],
+   ['Write files',a.allowWrite?'Paths: '+a.writePaths.join(', '):'Not granted. Edit tools are refused.',a.allowWrite?'Scoped':'Off',a.allowWrite?'warn':'off'],
+   ['Run commands',a.allowExec?'Programs: '+(a.execPrograms.join(', ')||'any allowed by policy'):'Not granted. Shell tools are refused.',a.allowExec?'Allowlist':'Off',a.allowExec?'warn':'off'],
+   ['Sandbox and network','Sandbox '+a.sandbox+'; network '+a.network+'.',a.network,'info']].forEach(function(r){
+    sc.appendChild(el('div',{class:'scope'},el('span',{class:'n',text:r[0]}),el('span',{class:'pill '+r[3],text:r[2]}),el('span',{class:'d',text:r[1]})));
+  });
+  var eg=$('#egress');eg.textContent='';
+  [['model',ov.model.name],['endpoint',ov.model.endpointHost],['api key',ov.model.keyConfigured?'configured':'missing'],['identity',ov.identity.verified?'verified':(ov.identity.error?'error':'not verified')],['policy',ov.policy.revision||'baseline']].forEach(function(r){
+    eg.appendChild(el('div',null,el('span',{text:r[0]}),el('span',{text:String(r[1])})));
+  });
+  $('#skillCount').textContent=ov.skills.length?String(ov.skills.length):'';
+  var sk=$('#skills');sk.textContent='';
+  if(!ov.skills.length)sk.appendChild(el('span',{class:'dim',text:'No SKILL.md files discovered'}));
+  ov.skills.forEach(function(s){sk.appendChild(el('span',{class:'chip mono',title:s.description,text:s.name}))});
+  if(ov.warnings&&ov.warnings.length)banner(ov.warnings[0]);
+}
+function renderRuns(){
+  var box=$('#runs');box.textContent='';
+  $('#runTotal').textContent=S.runs.length?String(S.runs.length):'';
+  if(!S.runs.length){box.appendChild(el('div',{class:'dim',style:'padding:4px 8px',text:'No runs yet.'}));return}
+  S.runs.slice(0,30).forEach(function(r){
+    var dot={completed:'ok',failed:'bad',unreconciled:'live'}[r.status]||'';
+    var b=el('button',{type:'button',class:'run','aria-current':String(r.runId===S.runId)},
+      el('span',{class:'dot '+dot}),
+      el('div',{style:'min-width:0'},el('div',{class:'rtitle',text:short(r.runId,18)}),el('div',{class:'s mono',text:r.status+' · '+plural(r.events,'event')+(r.denials?' · '+r.denials+' denied':'')})),
+      el('span',{class:'mono dim',text:fmtTime(r.firstAt)}));
+    b.addEventListener('click',function(){S.runId=r.runId;S.userPick=true;S.pinned=false;S.sel=null;S.runSig='';loadRun().then(function(){renderRuns()})});
+    box.appendChild(b);
+  });
+}
+function renderBudgetChip(){
+  var b=S.budgets[0];
+  $('#budgetTop').textContent=!b?'none':(b.ledger.maxToolCalls?b.ledger.toolCalls+'/'+b.ledger.maxToolCalls+' calls':(b.ledger.inputTokens+b.ledger.outputTokens)+' tokens');
+}
+function renderRunState(){
+  var p=$('#runState'),pend=G.nodes.some(function(n){return n.state==='pending'});
+  var r=S.runs.filter(function(x){return x.runId===S.runId})[0];
+  var txt='No run',cls='off';
+  if(T.busy){txt='Running';cls='info'}
+  else if(pend){txt='Awaiting approval';cls='warn'}
+  else if(r){txt={completed:'Completed',failed:'Failed',unreconciled:'Unreconciled'}[r.status]||r.status;cls={completed:'good',failed:'bad',unreconciled:'warn'}[r.status]||'off'}
+  p.textContent=txt;p.className='pill '+cls;
+}
+
+/* ---------- dock ---------- */
+function pendingForTask(){return S.approvals.filter(function(a){return a.status==='pending'&&a.expiresAt>Date.now()/1000&&(!T.taskId||a.taskId===T.taskId)})}
+function renderDock(){
+  var box=$('#dockBody');box.textContent='';
+  $$('#dockTabs button').forEach(function(b){b.setAttribute('aria-selected',String(b.getAttribute('data-t')===S.dock))});
+  var pend=S.approvals.filter(function(a){return a.status==='pending'}).length;
+  var c=$('#apCount');c.textContent=String(pend);c.classList.toggle('hot',pend>0);
+  $('#jCount').textContent=S.journal?String(S.journal.total):'0';
+  if(S.dock==='approvals'){
+    if(!S.approvals.length){box.appendChild(el('div',{class:'empty'},'Nothing is waiting. A tool call that needs approval appears here with its capability and resource.'));return}
+    var t=el('table');
+    t.appendChild(el('thead',null,el('tr',null,['Request','Risk','Requester','Role','Status','Expires','Decision'].map(function(h){return el('th',{text:h})}))));
+    var tb=el('tbody');
+    S.approvals.slice().reverse().forEach(function(a){
+      var tr=el('tr');
+      var st={pending:['warn','Waiting'],approved:['info','Approved, not attached'],rejected:['bad','Rejected'],expired:['off','Expired'],consumed:['good','Consumed']}[a.status]||['off',a.status];
+      var act=el('td');
+      if(a.status==='pending'){
+        if(canDecide()){
+          var y=el('button',{class:'btn primary',type:'button',text:'Approve',style:'margin-right:6px'}),n=el('button',{class:'btn danger',type:'button',text:'Reject'});
+          y.addEventListener('click',function(e){e.stopPropagation();decide(a,true)});n.addEventListener('click',function(e){e.stopPropagation();decide(a,false)});
+          act.appendChild(y);act.appendChild(n);
+        }else act.appendChild(el('span',{class:'dim',text:'Needs verified identity'}));
+      }else act.appendChild(el('span',{class:'dim',text:a.approver?'by '+a.approver:'—'}));
+      tr.appendChild(el('td',null,el('b',{text:a.capability}),el('div',{class:'mono dim',text:short(a.resource,48)+' · '+a.approvalId})));
+      tr.appendChild(el('td',null,el('span',{class:'pill off',text:a.risk})));
+      tr.appendChild(el('td',{class:'mono',text:a.requester}));
+      tr.appendChild(el('td',{class:'mono',text:a.requiredRole||'—'}));
+      tr.appendChild(el('td',null,el('span',{class:'pill '+st[0],text:st[1]})));
+      tr.appendChild(el('td',{class:'m',text:fmtDay(a.expiresAt)}));
+      tr.appendChild(act);tb.appendChild(tr);
+    });
+    t.appendChild(tb);box.appendChild(el('div',{class:'wrapx'},t));
+  }else if(S.dock==='journal'){
+    var j=S.journal;
+    if(!j||!j.events.length){box.appendChild(el('div',{class:'empty'},'The journal is created by the first run. Nothing has been recorded yet.'));return}
+    var t2=el('table');
+    t2.appendChild(el('thead',null,el('tr',null,['#','Time','Actor','Action','Decision','Reason','Run','Digest'].map(function(h){return el('th',{text:h})}))));
+    var tb2=el('tbody');
+    j.events.forEach(function(e,i){
+      var dc={permit:'good',executed:'good',completed:'good',started:'info',allowed:'good',deny:'bad',failed:'bad',approval_required:'warn'}[e.decision]||'off';
+      var tr=el('tr',{class:e.run_id===S.runId?'sel':''});
+      tr.appendChild(el('td',{class:'m dim',text:String(j.firstShown+i)}));
+      tr.appendChild(el('td',{class:'m',text:fmtTime(e.timestamp)}));
+      tr.appendChild(el('td',{text:e.actor_id}));
+      tr.appendChild(el('td',{class:'m',text:e.action}));
+      tr.appendChild(el('td',null,el('span',{class:'pill '+dc,text:e.decision})));
+      tr.appendChild(el('td',{class:'m mute',text:e.reason_code||'—'}));
+      tr.appendChild(el('td',{class:'m dim',text:short(e.run_id,12)}));
+      tr.appendChild(el('td',{class:'m dim',text:short(e.event_digest,10)}));
+      tr.addEventListener('click',function(){S.runId=e.run_id;S.userPick=true;S.pinned=false;S.sel=null;S.runSig='';loadRun().then(renderRuns)});
+      tb2.appendChild(tr);
+    });
+    t2.appendChild(tb2);box.appendChild(el('div',{class:'wrapx'},t2));
+    if(j.total>j.events.length)box.appendChild(el('div',{class:'dim',style:'padding:8px 10px',text:'Showing the latest '+j.events.length+' of '+j.total+' events.'}));
+    if(!S.dockScrolled){box.scrollTop=box.scrollHeight}
+  }else{
+    if(!S.budgets.length){box.appendChild(el('div',{class:'empty'},'No budget ledger yet. One is created per task when a run starts.'));return}
+    var m=el('div',{class:'meters'});
+    S.budgets.slice(0,6).forEach(function(b){
+      var l=b.ledger;
+      var rows=[['Tool calls',l.toolCalls,l.maxToolCalls,''],['Tokens in',l.inputTokens,null,''],['Tokens out',l.outputTokens,null,''],['Spend',l.usdSpent,l.maxUsd,'$']];
+      var card=el('div',{class:'meter'},el('div',{class:'row'},el('b',{class:'mono',text:short(l.taskId,22)}),el('span',{class:'mono dim',text:'updated '+fmtTime(l.updatedAt)})));
+      rows.forEach(function(r){
+        var used=r[1]||0,max=r[2],pct=max?Math.min(100,Math.round(used/max*100)):0;
+        var txt=r[3]==='$'?'$'+used.toFixed(4)+(max?' of $'+max:''):used+(max?' of '+max:'');
+        card.appendChild(el('div',{class:'row',style:'margin-top:8px'},el('span',{text:r[0]}),el('span',{class:'mono mute',text:txt})));
+        if(max)card.appendChild(el('div',{class:'bar'},el('i',{class:pct>80?'hot':'',style:'width:'+pct+'%'})));
+      });
+      if(l.maxWallSeconds)card.appendChild(el('div',{class:'dim',style:'margin-top:8px;font-size:11.5px',text:'Wall limit '+l.maxWallSeconds+' s'}));
+      m.appendChild(card);
+    });
+    box.appendChild(m);
+    box.appendChild(el('div',{class:'mute',style:'padding:0 16px 14px'},'The run stops when a limit is reached. Raising a limit needs a new grant from the operator.'));
+  }
+}
+$$('#dockTabs button').forEach(function(b){b.addEventListener('click',function(){S.dock=b.getAttribute('data-t');S.dockScrolled=false;renderDock()})});
+
+/* ---------- loading ---------- */
+function loadRun(){
+  if(!S.runId){S.run=null;buildGraph();renderCanvas();renderInsp();renderRunState();return Promise.resolve()}
+  return api('/api/run?id='+encodeURIComponent(S.runId)).then(function(r){
+    var sig=r.runId+':'+r.events.length+':'+(r.events.length?r.events[r.events.length-1].event_digest:'');
+    S.run=r;
+    if(sig===S.runSig){return}
+    S.runSig=sig;
+    buildGraph();
+    if(!S.sel||!G.byId[S.sel]||!S.pinned)S.sel=defaultSelection();
+    renderCanvas();if(S.fit)fit();renderInsp();renderRunState();
+  }).catch(function(e){banner(e.message)});
+}
+function refreshAll(){
+  return Promise.all([
+    api('/api/runs'),api('/api/approvals'),api('/api/journal'),api('/api/budgets')
+  ]).then(function(r){
+    S.runs=r[0];S.approvals=r[1];S.journal=r[2];S.budgets=r[3];
+    if(!S.ov||S.ov.journal.events!==S.journal.total)refreshOverview();
+    if(!S.runId||(!S.userPick&&S.runs.length))S.runId=S.runs.length?S.runs[0].runId:null;
+    if(S.runId&&!S.runs.some(function(x){return x.runId===S.runId}))S.runId=S.runs.length?S.runs[0].runId:null;
+    renderRuns();renderDock();renderBudgetChip();renderTermMeta();
+    return loadRun();
+  }).then(function(){renderRunState();renderInsp()}).catch(function(e){
+    if(e.status===401)banner('This page has no valid token. Open the URL printed by jani ui, including the part after #.');
+    else banner(e.message);
+  });
+}
+function refreshOverview(){return api('/api/overview').then(function(o){S.ov=o;renderOverview();if(S.run){S.runSig='';loadRun()}}).catch(function(e){banner(e.message)})}
+
+/* ---------- terminal ---------- */
+var CMDS=[['help','','Show this help'],['status','','Show frozen authority, task, model and history size'],['model','[NAME]','Switch model or settings profile for later turns'],['skills','','List discovered skills'],['inspect','[RUN_ID]','Show journal events (default: latest turn)'],['budget','','Show the persisted task budget'],['approvals','','List approval requests'],['approval','ID','Attach an approval a verified approver already decided'],['new','','Clear conversation history; task and budget continue'],['exit','','End the session'],['quit','','End the session (alias of /exit)']];
+var STARTERS=[['Inspect repository','Map modules and dependencies. Read only; do not edit files or execute commands.'],['Plan architecture work','Propose phased implementation and acceptance criteria. Do not edit files or execute commands.'],['Review open risks','Inspect security and quality risks with file evidence. Read only; do not make changes.'],['Inspect test coverage','Identify untested workflows and likely failures. Do not edit files or execute commands.']];
+var SPIN=['|','/','-','\\'];
+var T={entries:[],last:-1,busy:false,step:'',ended:false,turns:0,model:'',taskId:'',fault:null,hist:[],hi:-1,sel:0,follow:true,spin:0,open:{},cleared:0};
+var tScroll=$('#tScroll'),tIn=$('#tIn'),tPal=$('#tPal');
+var LABEL={you:'you',jani:'jani',note:'note',error:'error',command:'command',tools:'tools',think:'think'};
+function rich(txt,parent){String(txt).split('`').forEach(function(p,i){if(i%2)parent.appendChild(el('span',{class:'t-code',text:p}));else parent.appendChild(document.createTextNode(p))})}
+function grow(){tIn.style.height='19px';tIn.style.height=Math.max(19,Math.min(tIn.scrollHeight,114))+'px'}
+function renderTerm(){
+  var box=tScroll,keep=box.scrollTop;box.textContent='';
+  var list=T.entries.filter(function(e){return e.n>T.cleared});
+  if(!list.length){
+    var w=el('div',{class:'t-welcome'},el('div',{class:'t-wm',text:'jani'}),el('div',{class:'t-dim',text:'governed engineering agent'}),el('p',null,'Type a message to begin. ',el('span',{class:'t-acc',text:'/help'}),' lists commands.'));
+    STARTERS.forEach(function(s,i){var b=el('button',{type:'button',class:'t-starter'},el('span',{class:'t-acc',text:'F'+(i+1)}),' '+s[0]);b.addEventListener('click',function(){tIn.value=s[1];grow();tIn.focus()});w.appendChild(b)});
+    box.appendChild(w);
+  }
+  var i=0;
+  while(i<list.length){
+    var e=list[i];
+    if(e.kind==='tool'){
+      var recs=[];while(i<list.length&&list[i].kind==='tool'){recs.push(list[i]);i++}
+      var row=el('div',{class:'t-row k-tools'},el('span',{class:'t-lab',text:'tools'}));
+      var txt=el('div',{class:'t-txt'}),hid=Math.max(0,recs.length-3);
+      if(hid)txt.appendChild(el('div',{class:'t-faint',text:'+'+hid+' earlier'}));
+      recs.slice(hid).forEach(function(r){txt.appendChild(el('div',{class:'t-tool '+(r.ok?'ok':'no')},el('span',{class:'m',text:r.ok?'✓':'✗'}),el('span',null,r.text+'  ',el('span',{class:'d',text:(r.name||'')+(r.ms!=null?' · '+r.ms+' ms':'')}))))});
+      row.appendChild(txt);box.appendChild(row);continue;
+    }
+    i++;
+    var r2=el('div',{class:'t-row k-'+e.kind});
+    r2.appendChild(el('span',{class:'t-lab',text:LABEL[e.kind]||e.kind}));
+    var tx=el('div',{class:'t-txt'});
+    if(e.kind==='think'){
+      var open=!!T.open[e.n];
+      var b=el('button',{type:'button',class:'t-fold','aria-expanded':String(open),text:(open?'▾':'▸')+' think'});
+      b.addEventListener('click',function(){T.open[e.n]=!T.open[e.n];renderTerm()});
+      tx.appendChild(b);if(open)tx.appendChild(el('div',{class:'t-thought',text:e.text}));
+    }else if(e.kind==='jani'||e.kind==='you')rich(e.text,tx);else tx.textContent=e.text;
+    r2.appendChild(tx);box.appendChild(r2);
+  }
+  if(T.follow)box.scrollTop=box.scrollHeight;else box.scrollTop=keep;
+  renderTermMeta();
+}
+function renderTermMeta(){
+  var p=pendingForTask().length;
+  $('#tMeta').textContent=T.busy?SPIN[T.spin%4]+' '+(T.step||'working'):'authority frozen at startup: '+($('#authChip').textContent.replace('Authority: ',''))+' · model '+(T.model||'—');
+  tIn.placeholder=T.ended?'Session closed.':p?'Approvals are pending. Decide outside this session, then attach with /approval <id>.':'Type a message to begin. /help lists every command.';
+  tIn.disabled=T.ended;
+  $('#tTask').textContent=T.taskId?'task '+T.taskId:'';
+  $('#tStatL').textContent=(S.ov?S.ov.worktree:'')+(T.taskId?' · '+T.taskId:'');
+  var r=$('#tStatR');r.textContent='v'+(S.ov?S.ov.version:'')+' · '+plural(T.turns,'turn');
+  if(p)r.appendChild(el('span',{class:'hot',text:'  ·  ! '+p+' pending'}));
+  var c=$('#termCount');c.textContent=String(p);c.hidden=!p;
+}
+function palState(){
+  var v=tIn.value;if(v.charAt(0)!=='/'||v.indexOf('\n')>-1)return null;
+  var m=/^\/model\s+(.*)$/.exec(v);
+  if(m){var q=m[1].toLowerCase();var prof=(S.ov&&S.ov.model.profiles)||[];return {kind:'model',items:prof.filter(function(p){return p.label.toLowerCase().indexOf(q)===0}).map(function(p){return {fill:'/model '+p.label,name:p.label,sum:p.model}})}}
+  var q2=v.slice(1);if(/\s/.test(q2))return null;
+  return {kind:'cmd',items:CMDS.filter(function(c){return c[0].indexOf(q2)===0}).map(function(c){return {fill:'/'+c[0]+(c[1]?' ':''),name:'/'+c[0]+(c[1]?' '+c[1]:''),sum:c[2],arg:c[1]==='ID'}})};
+}
+function renderPal(){
+  var p=palState();tPal.textContent='';
+  if(!p||!p.items.length){tPal.hidden=true;return}
+  T.sel=Math.min(T.sel,p.items.length-1);tPal.hidden=false;
+  p.items.forEach(function(it,i){
+    var o=el('div',{class:'t-opt',role:'option','aria-selected':String(i===T.sel)},el('span',{class:'n',text:it.name}),el('span',{class:'s',text:it.sum}));
+    o.addEventListener('mousedown',function(e){e.preventDefault();T.sel=i;choose(p,it)});tPal.appendChild(o);
+  });
+}
+function fillTo(s){tIn.value=s;grow();T.sel=0;renderPal()}
+function choose(p,it){if(p.kind==='model'||!it.arg)submit(it.fill.trim());else fillTo(it.fill)}
+function submit(raw){
+  var text=raw.replace(/\s+$/,'');
+  if(!text||T.ended)return;
+  if(T.busy){banner('A turn is already running. Press Esc to cancel it.');return}
+  banner('');
+  if(text==='/new'){T.cleared=T.last}
+  tIn.value='';grow();T.sel=0;T.hi=-1;T.hist.push(text);renderPal();
+  T.busy=true;T.step='sending';T.follow=true;renderTermMeta();
+  api('/api/session/send',{text:text}).then(function(){pollSession()}).catch(function(e){T.busy=false;banner(e.message);renderTermMeta()});
+}
+tIn.addEventListener('input',function(){grow();T.sel=0;renderPal()});
+tIn.addEventListener('blur',function(){tPal.hidden=true});
+tIn.addEventListener('focus',renderPal);
+tIn.addEventListener('keydown',function(e){
+  var p=palState();
+  if(p&&p.items.length){
+    if(e.key==='ArrowDown'){e.preventDefault();T.sel=(T.sel+1)%p.items.length;renderPal();return}
+    if(e.key==='ArrowUp'){e.preventDefault();T.sel=(T.sel+p.items.length-1)%p.items.length;renderPal();return}
+    if(e.key==='Tab'){e.preventDefault();fillTo(p.items[T.sel].fill);return}
+    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();choose(p,p.items[T.sel]);return}
+  }
+  if(e.key==='Escape'){if(T.busy){api('/api/session/cancel',{}).catch(function(){})}tIn.value='';grow();renderPal();return}
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submit(tIn.value);return}
+  if((e.key==='ArrowUp'||e.key==='ArrowDown')&&tIn.value.indexOf('\n')===-1&&(!tIn.value||T.hi>-1)&&T.hist.length){
+    e.preventDefault();
+    if(e.key==='ArrowUp')T.hi=T.hi<0?T.hist.length-1:Math.max(0,T.hi-1);else T.hi=T.hi<T.hist.length-1?T.hi+1:-1;
+    tIn.value=T.hi<0?'':T.hist[T.hi];grow();renderPal();return;
+  }
+  if(e.key==='PageUp'){e.preventDefault();tScroll.scrollBy({top:-190});return}
+  if(e.key==='PageDown'){e.preventDefault();tScroll.scrollBy({top:190});return}
+  if(e.ctrlKey&&(e.key==='t'||e.key==='T')){e.preventDefault();for(var i=T.entries.length-1;i>=0;i--){if(T.entries[i].kind==='think'){T.open[T.entries[i].n]=!T.open[T.entries[i].n];renderTerm();break}}return}
+  if(!tIn.value&&/^F[1-4]$/.test(e.key)&&!T.entries.some(function(x){return x.n>T.cleared})){e.preventDefault();tIn.value=STARTERS[+e.key.slice(1)-1][1];grow()}
+});
+tScroll.addEventListener('scroll',function(){T.follow=tScroll.scrollHeight-tScroll.scrollTop-tScroll.clientHeight<8});
+var pollTimer=null,spinTimer=null;
+function pollSession(){
+  clearTimeout(pollTimer);
+  return api('/api/session?after='+T.last).then(function(s){
+    var wasBusy=T.busy,added=s.entries&&s.entries.length;
+    (s.entries||[]).forEach(function(e){T.entries.push(e);T.last=Math.max(T.last,e.n)});
+    T.busy=s.busy;T.step=s.step;T.ended=s.ended;T.turns=s.turns;T.model=s.model;T.taskId=s.taskId;T.fault=s.fault;
+    if(added||s.busy!==wasBusy){renderTerm()}else renderTermMeta();
+    if(wasBusy&&!s.busy){refreshAll()}
+    renderRunState();
+  }).catch(function(){}).then(function(){
+    pollTimer=setTimeout(pollSession,T.busy?400:(S.view==='term'?1200:3000));
+  });
+}
+setInterval(function(){if(T.busy){T.spin++;renderTermMeta()}},140);
+/* view switch */
+function setView(v){
+  S.view=v;var term=v==='term';
+  $('.boardwrap').hidden=term;$('#term').hidden=!term;$('#find').hidden=term;
+  $$('#viewTabs button').forEach(function(b){b.setAttribute('aria-selected',String(b.getAttribute('data-v')===v))});
+  if(term){renderTerm();grow();tIn.focus({preventScroll:true})}else{$('#emptyCanvas').hidden=!!G.nodes.length;fit()}
+}
+$$('#viewTabs button').forEach(function(b){b.addEventListener('click',function(){setView(b.getAttribute('data-v'))})});
+
+/* ---------- theme and boot ---------- */
+$('#themeBtn').addEventListener('click',function(){
+  var r=document.documentElement,cur=r.getAttribute('data-theme');
+  var dark=cur?cur==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;
+  r.setAttribute('data-theme',dark?'light':'dark');
+});
+window.addEventListener('resize',function(){if(S.fit&&S.view==='graph')fit()});
+new ResizeObserver(function(){if(S.fit&&S.view==='graph')fit()}).observe(board);
+grow();renderTerm();
+refreshOverview().then(refreshAll).then(function(){pollSession();setInterval(refreshAll,4000);setInterval(refreshOverview,15000)});
+})();
+
+</script></body></html>
