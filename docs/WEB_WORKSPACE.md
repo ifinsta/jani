@@ -17,6 +17,19 @@ Jani workspace: http://127.0.0.1:41873/#token=…
 
 `--port N` selects a fixed port; the default is an ephemeral one.
 
+## Layout
+
+The workspace follows the layout of a code editor. A **title bar** has menus (View, Go, Help), a command box, and toggles for the sidebar, panel, inspector and focus mode. An **activity bar** of icons on the left opens each screen as a closable **editor tab** beside the always-present *Run graph* and *Terminal* tabs. The **sidebar** (runs, authority, model and identity, skills; collapsible sections) and the right-hand **inspector** are optional, as is the bottom **panel** (approvals, audit journal, budget). A **status bar** shows the worktree, mode, authority, journal chain state and budget. Panes can be dragged to resize, and the arrangement is remembered in the browser.
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+Shift+P or Ctrl+K | Command palette: open any screen, switch run, toggle panes, run `/status` |
+| Ctrl+B | Sidebar |
+| Ctrl+J | Panel |
+| Ctrl+Shift+Z | Focus mode: hide everything but the editor |
+
+By default the sidebar, inspector and panel are closed so the graph and terminal have the screen: at 1919×884 the editor column is 89% of the window and the graph canvas 82%.
+
 ## Screens
 
 A tab strip switches between ten screens. **Workspace** is the run graph, inspector, terminal and the approvals, journal and budget docks. The other nine are full-page views, each backed by the subsystem the matching command already uses, run with this process's own configuration, identity and policy.

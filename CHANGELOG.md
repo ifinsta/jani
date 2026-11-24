@@ -28,6 +28,8 @@ This page records what changed and what it means for compatibility. It is a deve
 
 ## Unreleased
 
+- The workspace UI now follows a code-editor layout: title bar with menus, command box and layout toggles; an activity bar of icons; a collapsible sidebar; editor tabs for the graph, terminal and each screen; an optional inspector and panel; a status bar; and a command palette (Ctrl+Shift+P). Panes are optional, draggable and remembered. See `docs/WEB_WORKSPACE.md`.
+
 - jani-cloud now isolates each workspace's network (own namespace, outbound only through an allowlist proxy to the model provider), enforces per-person memory, process, CPU, file and disk limits, listens on per-user Unix sockets instead of loopback ports, and adds designated approvers: an operator-listed person can approve another person's held action through an approver page, using Jani's own approval store (separation of duties, role, expiry) with a hash-chained decision journal. cgroup v2, the Dockerfile and bubblewrap inside a container remain untested. See `cloud/README.md`.
 - `cloud/` adds jani-cloud, a prototype single-container Linux deployment: people sign in with ifinsta (`siwi` against `accounts`), and each gets a private worktree, journal and `jani ui` process, optionally under their own Unix user and bubblewrap, reached through an authenticated reverse proxy that keeps the workspace token server-side. `jani ui` gains a `proxied` flag in `/api/overview` and, when proxied, shows the signed-in account with Sign out and Sign out everywhere. 13 end-to-end tests run against a real `accounts-server`. The Dockerfile has not been built, and bubblewrap inside a container, TLS, Redis and a live model are unverified. See `cloud/README.md`.
 
