@@ -61,7 +61,7 @@ try:
                 p.keyboard.press('Control+b'); p.wait_for_timeout(200)
                 check('Ctrl+B collapses the sidebar to an icon strip and back', collapsed and p.eval_on_selector('#rail', 'e=>e.getBoundingClientRect().width') > 150)
                 p.click('#acctMenuBtn'); p.wait_for_timeout(150)
-                check('account menu offers theme, density and width', all(t in p.inner_text('#acctMenu') for t in ['Theme', 'Density', 'Conversation width']))
+                check('account menu offers theme, density and width', all(t in p.inner_text('#acctMenu').lower() for t in ['theme', 'density', 'conversation width']))
                 p.keyboard.press('Escape')
                 p.evaluate('location.hash="#work"'); p.wait_for_timeout(400)
                 w = p.eval_on_selector('#view', 'e=>e.getBoundingClientRect().width'); full = p.evaluate('innerWidth')
