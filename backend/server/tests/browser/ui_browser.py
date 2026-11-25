@@ -28,7 +28,7 @@ try:
             p.on('pageerror', lambda e: errs.append(str(e)))
             p.on('console', lambda m: errs.append(m.text) if m.type == 'error' else None)
             p.goto(url); p.wait_for_timeout(800)
-            nav = p.eval_on_selector_all('#rail .nav', 'a=>a.map(x=>x.getAttribute("href").slice(1))')
+            nav = p.eval_on_selector_all('#rail a.nav[href]', 'a=>a.map(x=>x.getAttribute("href").slice(1))')
             bad = []
             for n in nav:
                 p.evaluate('h=>location.hash=h', n); p.wait_for_timeout(500)
@@ -53,6 +53,21 @@ try:
                 txt = p.inner_text('#view'); check('Proof shows the record verified with changes and a decision', 'Record verified' in txt and 'changed a file' in txt.lower())
                 p.evaluate('location.hash="#map"'); p.wait_for_timeout(700)
                 check('How it fits shows the nodes', len(p.query_selector_all('.node[data-id]')) >= 5)
+                check('status bar shows the record, authority and model', all(t in p.inner_text('#status') for t in ['Record verified', 'Can edit files', 'scripted']))
+                p.keyboard.press('Control+k'); p.keyboard.type('proof'); p.keyboard.press('Enter'); p.wait_for_timeout(500)
+                check('the palette jumps to a page', p.evaluate('location.hash') == '#proof')
+                p.keyboard.press('Control+b'); p.wait_for_timeout(200)
+                collapsed = p.evaluate('document.documentElement.getAttribute("data-sidebar")') == 'collapsed' and p.eval_on_selector('#rail', 'e=>e.getBoundingClientRect().width') < 60
+                p.keyboard.press('Control+b'); p.wait_for_timeout(200)
+                check('Ctrl+B collapses the sidebar to an icon strip and back', collapsed and p.eval_on_selector('#rail', 'e=>e.getBoundingClientRect().width') > 150)
+                p.click('#acctMenuBtn'); p.wait_for_timeout(150)
+                check('account menu offers theme, density and width', all(t in p.inner_text('#acctMenu') for t in ['Theme', 'Density', 'Conversation width']))
+                p.keyboard.press('Escape')
+                p.evaluate('location.hash="#work"'); p.wait_for_timeout(400)
+                w = p.eval_on_selector('#view', 'e=>e.getBoundingClientRect().width'); full = p.evaluate('innerWidth')
+                check('the working area takes most of the screen', w / full > 0.8, f'{w:.0f} of {full}')
+                p.keyboard.press('Control+j'); p.wait_for_timeout(300)
+                check('Ctrl+J hides the details panel', p.eval_on_selector('#rctx', 'e=>getComputedStyle(e).display') == 'none')
         b.close()
 finally:
     ui.terminate(); fp.terminate()

@@ -195,6 +195,7 @@ describe("jani-cloud with ifinsta accounts", () => {
     const page = await signInByRedirect(context, USERS.bob);
     const cookie = (await context.cookies(stack.APP)).map((c) => `${c.name}=${c.value}`).join("; ");
     const before = janiPids().length;
+    await page.click("#acctMenuBtn");
     await page.click("#signout");
     await page.waitForFunction(() => document.querySelector("[data-testid=sign-in]"), null, { timeout: 20000 });
     const after = janiPids().length;
@@ -215,6 +216,7 @@ describe("jani-cloud with ifinsta accounts", () => {
   test("sign out everywhere ends the ifinsta session too", async () => {
     const context = await browser.newContext();
     const page = await signInByRedirect(context, USERS.alice);
+    await page.click("#acctMenuBtn");
     await page.click("#signoutAll");
     await page.waitForURL((u) => u.toString().startsWith(`${stack.ACCOUNTS}/oidc/logout`), { timeout: 20000 });
     await page.click("button:has-text('Sign out')");
@@ -642,7 +644,7 @@ describe("approvals by a designated approver", () => {
     assert.equal((await me(bob)).approver, true, "picked up without a restart");
     await bob.reload();
     await bob.waitForFunction(() => !document.querySelector("#apLink").hidden, null, { timeout: 20000 });
-    assert.match(await bob.textContent("#apLink"), /Approvals\s*\(1\)/, "a badge counts the waiting requests");
+    assert.match(await bob.textContent("#apLink"), /Approvals\s*1/, "a badge counts the waiting requests");
     await bob.click("#apLink");
     await bob.waitForSelector("[data-testid=approvals] table");
     const row = (await bob.locator("[data-testid=approvals] tbody tr").first().textContent()).replace(/\s+/g, " ");
