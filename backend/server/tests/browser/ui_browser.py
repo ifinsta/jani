@@ -63,7 +63,7 @@ try:
                 p.click('[data-ev]')
                 with p.expect_download() as dl:
                     p.click('#dlMenu [data-kind="csv"]')
-                csv_text = open(dl.value.path(), encoding='utf-8').read()
+                csv_text = open(dl.value.path(), encoding='utf-8', newline='').read()
                 check('the spreadsheet has a header and one row per step', csv_text.startswith('\ufefftime_utc,time_local,step,result') and len(csv_text.strip().split('\r\n')) >= 5 and dl.value.suggested_filename.endswith('-timeline.csv'), repr(csv_text[:120]) + ' | ' + dl.value.suggested_filename + ' | ' + str(len(csv_text.strip().split(chr(13) + chr(10)))))
                 p.click('[data-ev]')
                 with p.expect_download() as dl:
@@ -73,10 +73,12 @@ try:
                 p.click('[data-ev]')
                 with p.context.expect_page() as pg:
                     p.click('#dlMenu [data-kind="report"]')
-                rep = pg.value; rep.wait_for_load_state(); rep.wait_for_timeout(400)
-                check('the report opens as a readable, styled page with a print button', rep.query_selector('h1') is not None and rep.query_selector('#print') is not None and rep.eval_on_selector('body', 'e=>getComputedStyle(e).fontSize') == '14px' and 'Record of work' in rep.inner_text('body') and 'verified' in rep.inner_text('body'), str({'h1': rep.query_selector('h1') is not None, 'print': rep.query_selector('#print') is not None, 'fs': rep.eval_on_selector('body', 'e=>getComputedStyle(e).fontSize'), 'txt': rep.inner_text('body')[:150]}))
+                rep = pg.value; popup_log = []
+                rep.on('console', lambda m: popup_log.append(m.text)); rep.on('pageerror', lambda e: popup_log.append(str(e)))
+                rep.wait_for_load_state(); rep.wait_for_timeout(400)
+                check('the report opens as a readable, styled page with a print button', rep.query_selector('h1') is not None and rep.query_selector('#print') is not None and rep.eval_on_selector('body', 'e=>getComputedStyle(e).fontSize') == '14px' and 'record of work' in rep.inner_text('body').lower() and 'verified' in rep.inner_text('body').lower(), str({'h1': rep.query_selector('h1') is not None, 'print': rep.query_selector('#print') is not None, 'fs': rep.eval_on_selector('body', 'e=>getComputedStyle(e).fontSize'), 'txt': rep.inner_text('body')[:150]}))
                 rep.evaluate('window.__n=0;window.print=()=>{window.__n++}'); rep.click('#print')
-                check('the report’s print button opens the print dialog', rep.evaluate('window.__n') == 1)
+                check('the report’s print button opens the print dialog', rep.evaluate('window.__n') == 1, str(popup_log))
                 rep.close()
                 p.evaluate('location.hash="#map"'); p.wait_for_timeout(700)
                 check('How it fits shows the nodes', len(p.query_selector_all('.node[data-id]')) >= 5)
