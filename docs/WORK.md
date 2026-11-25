@@ -65,4 +65,4 @@ Why this is safe enough to ship: a note can say how the project builds; it canno
 - Resuming restores the *conversation*, not the world: files changed by the interrupted turn are in the worktree, and the agent is told to check.
 - History is still trimmed to ~256 KB, so a very long task forgets its earliest turns even when resumed.
 - There is no priority, scheduling, or concurrency limit beyond "one task per worker".
-- Questions from the agent that block a task (`blocked`, `jani work answer`) arrive with the ask tool; see [ASK.md](ASK.md) once present.
+- Questions from the agent that block a task (`blocked`, `jani work answer`) are described in [ASK.md](ASK.md).

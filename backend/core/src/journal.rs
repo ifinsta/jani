@@ -40,6 +40,9 @@ pub mod reason {
     /// was closed with a handoff instead of being thrown away. Recorded as completed.
     pub const CHECKPOINT: &str = "step_checkpoint";
     pub const STALLED: &str = "repeated_calls";
+    /// A turn ended because the agent asked the operator a question nobody could answer
+    /// yet. Recorded as completed: the question is the deliverable of that turn.
+    pub const NEEDS_INPUT: &str = "needs_input";
     /// Acceptance checks run by the host after a delivery attempt.
     pub const ACCEPTANCE_PASSED: &str = "acceptance_passed";
     pub const ACCEPTANCE_FAILED: &str = "acceptance_failed";

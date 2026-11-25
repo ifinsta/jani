@@ -735,6 +735,7 @@ fn route(shared: &Shared<'_>, request: &Request) -> Reply {
         ("GET", "/api/session") => Ok((200, session(shared, request))),
         ("POST", "/api/session/send") => send(shared, request),
         ("POST", "/api/consent") => answer_consent(shared, request),
+        ("POST", "/api/answer") => answer_question(shared, request),
         ("POST", "/api/session/cancel") => {
             shared.cancel.store(true, Ordering::SeqCst);
             shared.gate.cancel();
@@ -1058,6 +1059,11 @@ fn session(shared: &Shared<'_>, request: &Request) -> Value {
         "model": t.model,
         "taskId": t.task_id,
         "fault": t.fault,
+        "question": shared.gate.pending_question().map(|(id, q)| json!({
+            "id": id,
+            "text": q.text,
+            "options": q.options,
+        })),
         "consent": shared.gate.pending().map(|(id, q)| json!({
             "id": id,
             "argv": q.argv,
@@ -1066,6 +1072,31 @@ fn session(shared: &Shared<'_>, request: &Request) -> Value {
             "suggest": q.suggest.join(" "),
         })),
     })
+}
+
+/// The operator's reply to a question the agent asked: their words, or `text: null` to
+/// leave it for later (the turn then ends with the question).
+fn answer_question(shared: &Shared<'_>, request: &Request) -> Reply {
+    let body: Value = serde_json::from_slice(&request.body)
+        .map_err(|_| (400, "body must be JSON".to_string()))?;
+    let id = body["id"]
+        .as_u64()
+        .ok_or((400, "id is required".to_string()))?;
+    let text = match &body["text"] {
+        Value::Null => None,
+        Value::String(t) if t.chars().count() <= 4000 => Some(t.trim().to_string()),
+        _ => {
+            return Err((
+                400,
+                "text must be a string of at most 4000 characters, or null".into(),
+            ))
+        }
+    };
+    if shared.gate.answer_question(id, text) {
+        Ok((200, json!({"ok": true})))
+    } else {
+        Err((409, "that question is no longer waiting".into()))
+    }
 }
 
 /// The operator's answer to a "may I run this?" card.

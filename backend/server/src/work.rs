@@ -477,6 +477,7 @@ pub fn process(
         Ok(d) => {
             let (status, error) = match d.outcome {
                 Outcome::Verified | Outcome::Unverified => ("done", None),
+                Outcome::Blocked => ("blocked", None),
                 Outcome::Failed => (
                     "failed",
                     d.error
@@ -491,7 +492,7 @@ pub fn process(
                 branch: d.branch.clone(),
                 commit: d.commit.clone(),
                 error,
-                question: None,
+                question: d.question.clone(),
             }
         }
         Err(e) => Finish {

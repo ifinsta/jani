@@ -26,6 +26,7 @@ The documents below define Jani's implemented boundaries and forward-looking con
 - [DELIVERY — work that someone other than the model checked: branch, host-run acceptance, repair, report](DELIVERY.md)
 - [EVAL — measure whether the agent finishes the job: suites, hidden checks, pass@k](EVAL.md)
 - [WORK — durable work: leased queue, crash recovery, saved conversations, project memory](WORK.md)
+- [ASK — the agent asks instead of guessing: web card, terminal UI, line prompt, blocked tasks](ASK.md)
 - [RELEASE ACCEPTANCE](RELEASE_ACCEPTANCE.md)
 
 ## Core, security and lifecycle

@@ -755,3 +755,89 @@ fn cancelling_a_turn_answers_a_waiting_question_no() {
     }
     assert!(!ui.root.join("repo/never.txt").exists());
 }
+
+#[cfg(unix)]
+fn ask_call(question: &str, options: &[&str]) -> Value {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
+            "id": "call-1", "type": "function",
+            "function": {"name": "ask", "arguments": json!({"question": question, "options": options}).to_string()}
+        }]}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+    })
+}
+
+#[cfg(unix)]
+fn wait_for_question(ui: &Ui) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        let session = get(ui, "/api/session?after=-1").json();
+        if !session["question"].is_null() {
+            return session["question"].clone();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "the agent never asked: {}",
+        get(ui, "/api/session?after=-1").body
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_agent_asks_in_the_workspace_and_carries_on_with_the_answer() {
+    let base = scripted_provider(vec![
+        ask_call(
+            "Which database should the cache use?",
+            &["sqlite", "postgres"],
+        ),
+        say("Using sqlite, as you chose."),
+        ask_call("And the table name?", &[]),
+        say("Left it for later."),
+    ]);
+    let ui = start_with_env(
+        &[],
+        &[("JANI_API_BASE", base), ("JANI_MODEL", "scripted".into())],
+    );
+    post(&ui, "/api/session/send", json!({"text": "add a cache"}));
+    let question = wait_for_question(&ui);
+    assert_eq!(question["text"], "Which database should the cache use?");
+    assert_eq!(question["options"], json!(["sqlite", "postgres"]));
+    let id = question["id"].as_u64().unwrap();
+    // Wrong id, bad payload: refused, and the question stays open.
+    assert_eq!(
+        post(&ui, "/api/answer", json!({"id": id + 9, "text": "x"})).status,
+        409
+    );
+    assert_eq!(
+        post(&ui, "/api/answer", json!({"id": id, "text": 5})).status,
+        400
+    );
+    assert!(!get(&ui, "/api/session?after=-1").json()["question"].is_null());
+    assert_eq!(
+        post(&ui, "/api/answer", json!({"id": id, "text": "sqlite"})).status,
+        200
+    );
+    wait_for_entry(&ui, "Using sqlite, as you chose.");
+    assert!(get(&ui, "/api/session?after=-1").json()["question"].is_null());
+    assert_eq!(
+        post(&ui, "/api/answer", json!({"id": id, "text": "again"})).status,
+        409,
+        "answered once"
+    );
+
+    // Declining ends the turn on the question instead of hanging.
+    post(&ui, "/api/session/send", json!({"text": "and a table"}));
+    let second = wait_for_question(&ui);
+    assert_eq!(
+        post(
+            &ui,
+            "/api/answer",
+            json!({"id": second["id"], "text": null})
+        )
+        .status,
+        200
+    );
+    let note = wait_for_entry(&ui, "I need your input before I continue");
+    assert!(note["text"].as_str().unwrap().contains("table name"));
+}

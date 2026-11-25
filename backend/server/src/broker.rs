@@ -1,7 +1,7 @@
 use crate::approvals::{ApprovalStore, NewApproval};
 use crate::budget::BudgetLedger;
 use crate::config::{Config, ExecMode};
-use crate::consent::{Consent, ConsentAnswer, ConsentRequest};
+use crate::consent::{Consent, ConsentAnswer, ConsentRequest, Question};
 use crate::data::{redact_json, Governance};
 use crate::exec;
 use crate::execpolicy::{self, Basis, Verdict};
@@ -38,6 +38,8 @@ pub struct Broker<'a> {
     pub consent: Option<&'a dyn Consent>,
     /// Command prefixes the operator allowed "for this session".
     pub session_exec: &'a mut Vec<Vec<String>>,
+    /// Set when the agent asked a question nobody could answer yet; the turn ends on it.
+    pub asked: &'a mut Option<Question>,
 }
 
 struct Call {
@@ -55,6 +57,38 @@ fn get_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("missing string argument '{key}'"))
+}
+
+const MAX_QUESTION_CHARS: usize = 500;
+const MAX_OPTIONS: usize = 6;
+const MAX_OPTION_CHARS: usize = 100;
+
+fn question_from(args: &Value) -> Result<Question, String> {
+    let text = get_str(args, "question")?.trim().to_string();
+    if text.is_empty() || text.chars().count() > MAX_QUESTION_CHARS {
+        return Err(format!(
+            "the question must be 1..={MAX_QUESTION_CHARS} characters"
+        ));
+    }
+    let options: Vec<String> = match args.get("options") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty() && s.chars().count() <= MAX_OPTION_CHARS)
+                    .ok_or_else(|| format!("each option must be 1..={MAX_OPTION_CHARS} characters"))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("options must be a list of strings".into()),
+    };
+    if options.len() > MAX_OPTIONS {
+        return Err(format!(
+            "at most {MAX_OPTIONS} options; ask a narrower question"
+        ));
+    }
+    Ok(Question { text, options })
 }
 
 fn get_argv(value: &Value) -> Result<Vec<String>, String> {
@@ -149,6 +183,16 @@ impl<'a> Broker<'a> {
                         "native:{}:{}:{native}:{operation}",
                         self.identity.tenant, self.task_id
                     ),
+                })
+            }
+            Tool::Ask => {
+                question_from(args)?;
+                Ok(Call {
+                    action: action::AGENT_ASK,
+                    // Asking changes nothing: read-level, so it needs no write or exec grant.
+                    effect: Effect::Read,
+                    risk: RiskTier::R0,
+                    resource: "question".into(),
                 })
             }
             Tool::Remember => {
@@ -958,6 +1002,25 @@ impl<'a> Broker<'a> {
                 )?;
                 Ok((data, None, None))
             }
+            Tool::Ask => {
+                let question = question_from(args)?;
+                match self.consent.and_then(|c| c.ask_question(&question)) {
+                    Some(answer) => Ok((json!({"answer": answer}), None, None)),
+                    None => {
+                        // Nobody can answer now. The turn ends on the question and the
+                        // work continues when someone does.
+                        *self.asked = Some(question);
+                        Ok((
+                            json!({
+                                "status": "waiting_for_operator",
+                                "note": "Nobody is available to answer right now. Your question was recorded and this turn is ending. Do not guess: when the operator answers you will continue from here."
+                            }),
+                            None,
+                            None,
+                        ))
+                    }
+                }
+            }
             Tool::Remember => {
                 // Notes are secret-scrubbed like any model output before they are kept,
                 // and what is stored is what comes back, so the model sees the redaction.
@@ -1104,6 +1167,7 @@ mod tests {
         approvals: ApprovalStore,
         budget: BudgetLedger,
         session_exec: Vec<Vec<String>>,
+        asked: Option<Question>,
         consent: Option<Box<dyn Consent>>,
     }
 
@@ -1152,6 +1216,7 @@ mod tests {
                 approvals,
                 budget,
                 session_exec: Vec::new(),
+                asked: None,
                 consent: None,
             }
         }
@@ -1174,6 +1239,7 @@ mod tests {
                 approval_ids: &self.cfg.approval_ids,
                 consent: self.consent.as_deref(),
                 session_exec: &mut self.session_exec,
+                asked: &mut self.asked,
             }
         }
     }

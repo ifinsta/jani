@@ -445,6 +445,13 @@ details.sect:last-child{border-bottom:0}
 .ask-row button.deny{color:var(--t-err)}
 .ask-row kbd{opacity:.6;font:inherit;font-weight:400;margin-left:8px;font-size:11px}
 
+.t-q{border-left-color:var(--t-acc);background:#0F1A1E;border-top-color:#1F5560}
+.t-q .ask-badge{background:var(--t-acc);color:#06222A}
+.ask-q{margin:2px 0 10px;white-space:pre-wrap;color:var(--t-text)}
+.ask-form{margin-top:10px;align-items:center}
+.ask-in{flex:1;min-width:200px;height:28px;padding:0 9px;background:var(--t-bg);color:var(--t-text);border:1px solid var(--t-line);border-radius:4px;font:inherit}
+.ask-in:focus{border-color:var(--t-acc);outline:0}
+
 .banner{flex:0 0 100%;border:1px solid var(--bad);border-radius:4px;padding:5px 10px}
 .banner.warn{border-color:var(--warn-line)}
 </style></head><body>
@@ -537,6 +544,7 @@ details.sect:last-child{border-bottom:0}
       <div class="t-rule"></div>
       <div class="t-scroll" id="tScroll" role="log" aria-label="Conversation transcript" tabindex="0"></div>
       <div class="t-dock">
+        <div class="t-ask t-q" id="tQ" role="alertdialog" aria-labelledby="tQT" tabindex="-1" hidden></div>
         <div class="t-ask" id="tAsk" role="alertdialog" aria-labelledby="tAskT" tabindex="-1" hidden></div>
         <div class="t-pal" id="tPal" role="listbox" aria-label="Commands" hidden></div>
         <div class="t-comp"><span class="t-prompt" aria-hidden="true">›</span><textarea id="tIn" rows="1" spellcheck="false" autocomplete="off" aria-label="Message to Jani"></textarea></div>
@@ -1121,7 +1129,7 @@ function refreshOverview(){return api('/api/overview').then(function(o){S.ov=o;r
 var CMDS=[['help','','Show this help'],['status','','Show frozen authority, task, model and history size'],['model','[NAME]','Switch model or settings profile for later turns'],['skills','','List discovered skills'],['inspect','[RUN_ID]','Show journal events (default: latest turn)'],['budget','','Show the persisted task budget'],['approvals','','List approval requests'],['approval','ID','Attach an approval a verified approver already decided'],['new','','Clear conversation history; task and budget continue'],['exit','','End the session'],['quit','','End the session (alias of /exit)']];
 var STARTERS=[['Inspect repository','Map modules and dependencies. Read only; do not edit files or execute commands.'],['Plan architecture work','Propose phased implementation and acceptance criteria. Do not edit files or execute commands.'],['Review open risks','Inspect security and quality risks with file evidence. Read only; do not make changes.'],['Inspect test coverage','Identify untested workflows and likely failures. Do not edit files or execute commands.']];
 var SPIN=['|','/','-','\\'];
-var T={consent:null,entries:[],last:-1,busy:false,step:'',ended:false,turns:0,model:'',taskId:'',fault:null,hist:[],hi:-1,sel:0,follow:true,spin:0,open:{},cleared:-1};
+var T={question:null,consent:null,entries:[],last:-1,busy:false,step:'',ended:false,turns:0,model:'',taskId:'',fault:null,hist:[],hi:-1,sel:0,follow:true,spin:0,open:{},cleared:-1};
 var tScroll=$('#tScroll'),tIn=$('#tIn'),tPal=$('#tPal');
 var LABEL={you:'you',jani:'jani',note:'note',error:'error',command:'command',tools:'tools',think:'think'};
 function rich(txt,parent){String(txt).split('`').forEach(function(p,i){if(i%2)parent.appendChild(el('span',{class:'t-code',text:p}));else parent.appendChild(document.createTextNode(p))})}
@@ -1162,14 +1170,14 @@ function renderTerm(){
 }
 function renderTermMeta(){
   var p=pendingForTask().length;
-  $('#tMeta').textContent=T.consent?'waiting for your answer':T.busy?SPIN[T.spin%4]+' '+(T.step||'working'):'authority frozen at startup: '+($('#authChip').textContent.replace('Authority: ',''))+' · model '+(T.model||'—');
+  $('#tMeta').textContent=(T.consent||T.question)?'waiting for your answer':T.busy?SPIN[T.spin%4]+' '+(T.step||'working'):'authority frozen at startup: '+($('#authChip').textContent.replace('Authority: ',''))+' · model '+(T.model||'—');
   tIn.placeholder=T.ended?'Session closed.':p?'Approvals are pending. Decide outside this session, then attach with /approval <id>.':'Type a message to begin. /help lists every command.';
   tIn.disabled=T.ended;
   $('#tTask').textContent=T.taskId?'task '+T.taskId:'';
   $('#tStatL').textContent=(S.ov?(S.ov.proxied?'your workspace':S.ov.worktree):'')+(T.taskId?' · '+T.taskId:'');
   var r=$('#tStatR');r.textContent='v'+(S.ov?S.ov.version:'')+' · '+plural(T.turns,'turn');
   if(p)r.appendChild(el('span',{class:'hot',text:'  ·  ! '+p+' pending'}));
-  var c=$('#termCount');c.textContent=String(p+(T.consent?1:0));c.hidden=!(p||T.consent);
+  var c=$('#termCount');c.textContent=String(p+(T.consent?1:0)+(T.question?1:0));c.hidden=!(p||T.consent||T.question);
 }
 function palState(){
   var v=tIn.value;if(v.charAt(0)!=='/'||v.indexOf('\n')>-1)return null;
@@ -1259,6 +1267,36 @@ document.addEventListener('keydown',function(e){
   var k={y:'once',s:'session',a:'always',n:'deny'}[e.key.toLowerCase()];
   if(k){e.preventDefault();answerAsk(k)}
 });
+
+/* ---------- the agent asks a question instead of guessing ---------- */
+var tQ=$('#tQ'),qShown='';
+function answerQuestion(text){
+  var q=T.question;if(!q)return;
+  api('/api/answer',{id:q.id,text:text}).then(function(){T.question=null;renderQuestion();pollSession()}).catch(function(e){banner(e.message);pollSession()});
+}
+function renderQuestion(){
+  var q=T.question;
+  if(!q){tQ.hidden=true;if(qShown){tQ.textContent='';qShown='';renderTermMeta()}return}
+  if(qShown===String(q.id))return;
+  qShown=String(q.id);tQ.hidden=false;tQ.textContent='';
+  tQ.appendChild(el('div',{class:'ask-h'},el('span',{class:'ask-badge',text:'Question'}),el('span',{class:'ask-t',id:'tQT',text:'The agent would rather ask than guess'})));
+  tQ.appendChild(el('div',{class:'ask-q',text:q.text}));
+  var row=el('div',{class:'ask-row'});
+  (q.options||[]).forEach(function(o,i){
+    var b=el('button',{type:'button',title:'Answer: '+o,'data-option':String(i+1)},o,el('kbd',{text:String(i+1)}));
+    b.addEventListener('click',function(){answerQuestion(o)});row.appendChild(b)});
+  if(q.options&&q.options.length)tQ.appendChild(row);
+  var inp=el('input',{type:'text',class:'ask-in',id:'tQIn','aria-label':'Your answer',placeholder:q.options&&q.options.length?'…or answer in your own words, then Enter':'Your answer, then Enter',maxlength:'4000',autocomplete:'off'});
+  var send=el('button',{type:'button',class:'primary'},'Send answer'),later=el('button',{type:'button',class:'deny',title:'Leave it unanswered. The turn ends with the question and can be answered later.'},'Leave for later');
+  var form=el('div',{class:'ask-row ask-form'});form.appendChild(inp);form.appendChild(send);form.appendChild(later);tQ.appendChild(form);
+  function go(){var v=inp.value.trim();if(v)answerQuestion(v)}
+  send.addEventListener('click',go);later.addEventListener('click',function(){answerQuestion(null)});
+  inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();go()}e.stopPropagation()});
+  if(S.view!=='term')setView('term');
+  renderTermMeta();
+  setTimeout(function(){inp.focus()},0);
+  tScroll.scrollTop=tScroll.scrollHeight;
+}
 var pollTimer=null,spinTimer=null;
 function pollSession(){
   clearTimeout(pollTimer);
@@ -1267,7 +1305,7 @@ function pollSession(){
   return api('/api/session?after='+T.last).then(function(s){
     var wasBusy=T.busy,added=s.entries&&s.entries.length;
     (s.entries||[]).forEach(function(e){T.entries.push(e);T.last=Math.max(T.last,e.n)});
-    T.busy=s.busy;T.step=s.step;T.ended=s.ended;T.turns=s.turns;T.model=s.model;T.taskId=s.taskId;T.fault=s.fault;T.consent=s.consent||null;renderAsk();
+    T.busy=s.busy;T.step=s.step;T.ended=s.ended;T.turns=s.turns;T.model=s.model;T.taskId=s.taskId;T.fault=s.fault;T.consent=s.consent||null;T.question=s.question||null;renderAsk();renderQuestion();
     if(added||s.busy!==wasBusy){renderTerm()}else renderTermMeta();
     if(wasBusy&&!s.busy){refreshAll()}
     renderRunState();

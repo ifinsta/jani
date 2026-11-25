@@ -1,6 +1,6 @@
 use crate::agent::{Agent, TurnEvent};
 use crate::config::{Config, JResult, ModelChoice};
-use crate::consent::{ConsentAnswer, ConsentGate, ConsentRequest};
+use crate::consent::{ConsentAnswer, ConsentGate, ConsentRequest, Question};
 use crate::repl::{command_names, execute_command, Command, Flow, COMMANDS};
 use crate::skills::{Catalog, Skill};
 use ratatui::backend::CrosstermBackend;
@@ -336,7 +336,8 @@ fn run_turn(
                 state.apply(event);
             }
             state.ask = state.gate.pending();
-            if state.ask.is_some() {
+            state.question = state.gate.pending_question();
+            if state.ask.is_some() || state.question.is_some() {
                 if let Some(live) = state.live.as_mut() {
                     live.activity = "waiting for your answer".into();
                 }
@@ -365,6 +366,10 @@ fn run_turn(
                         } else if state.ask.is_some() {
                             // While the agent waits for an answer, keys answer it; nothing else is typed.
                             answer_ask(state, &key);
+                        } else if state.question.is_some() {
+                            if !answer_question_key(state, &key) {
+                                editor_key(state, key);
+                            }
                         } else {
                             editor_key(state, key);
                         }
@@ -383,6 +388,7 @@ fn run_turn(
     })?;
 
     state.ask = None;
+    state.question = None;
     let live = state.live.take().unwrap_or_default();
     match outcome.expect("turn outcome") {
         Ok(answer) => {
@@ -447,6 +453,45 @@ fn answer_ask(state: &mut State, key: &KeyEvent) {
         state.push(Entry::new(Kind::Note, format!("{label}: {subject}")));
         state.ask = None;
     }
+}
+
+/// Keys for a question from the agent: a digit picks that option (when nothing is
+/// typed), Enter sends what is typed, Esc leaves it for later. Everything else is
+/// ordinary typing into the composer, so the operator can answer in their own words.
+/// Returns whether the key was used.
+fn answer_question_key(state: &mut State, key: &KeyEvent) -> bool {
+    let Some((id, question)) = state.question.clone() else {
+        return false;
+    };
+    let reply: Option<Option<String>> = match key.code {
+        KeyCode::Esc => Some(None),
+        KeyCode::Enter => {
+            let typed = state.editor.text.trim().to_string();
+            if typed.is_empty() {
+                return true; // nothing to send; keep waiting
+            }
+            state.editor.clear();
+            Some(Some(typed))
+        }
+        KeyCode::Char(c @ '1'..='9')
+            if state.editor.is_empty() && key.modifiers == KeyModifiers::NONE =>
+        {
+            let index = c as usize - '1' as usize;
+            match question.options.get(index) {
+                Some(option) => Some(Some(option.clone())),
+                None => return false,
+            }
+        }
+        _ => return false,
+    };
+    if let Some(reply) = reply {
+        let shown = reply.clone().unwrap_or_else(|| "(left for later)".into());
+        if state.gate.answer_question(id, reply) {
+            state.push(Entry::new(Kind::Note, format!("you answered: {shown}")));
+            state.question = None;
+        }
+    }
+    true
 }
 
 fn starter_prompt(key: &KeyCode) -> Option<&'static str> {
@@ -661,6 +706,8 @@ struct State {
     gate: Arc<ConsentGate>,
     /// The question waiting for the operator, if any.
     ask: Option<(u64, ConsentRequest)>,
+    /// A question the agent put to the operator instead of guessing.
+    question: Option<(u64, Question)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -835,6 +882,7 @@ impl State {
             quit: false,
             gate: Arc::new(ConsentGate::default()),
             ask: None,
+            question: None,
         }
     }
 
@@ -1435,6 +1483,7 @@ fn draw(frame: &mut Frame, state: &mut State) {
     draw_input(frame, state, chunks[2]);
     draw_palette(frame, state, content, chunks[2]);
     draw_ask(frame, state, content, chunks[2]);
+    draw_question(frame, state, content, chunks[2]);
     draw_hints(frame, state, chunks[3]);
     if show_tips {
         draw_tip(frame, state, chunks[4]);
@@ -2039,6 +2088,63 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
 }
 
 /// The question the agent is waiting on, over the transcript just above the composer.
+fn draw_question(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
+    let Some((_, question)) = state.question.as_ref() else {
+        return;
+    };
+    let available = input.y.saturating_sub(content.y);
+    let width = content.width.min(100);
+    let height = 5 + question.options.len() as u16;
+    if available < height || width < 30 {
+        return;
+    }
+    let inner_width = usize::from(width.saturating_sub(4));
+    let area = Rect::new(
+        content.x + (content.width - width) / 2,
+        input.y - height,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(Span::styled(
+            " question · the agent would rather ask than guess ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(PANEL));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("  {}", clip(&question.text, inner_width.saturating_sub(2))),
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+    ];
+    for (i, option) in question.options.iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{}", i + 1),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("  {}", clip(option, inner_width.saturating_sub(6)))),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        if question.options.is_empty() {
+            "  type your answer below, Enter sends · Esc leaves it for later"
+        } else {
+            "  press a number, or type your own words below and press Enter · Esc leaves it for later"
+        },
+        Style::default().fg(DIM),
+    )));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The "may I run this?" question the agent is waiting on, over the transcript just above the composer.
 fn draw_ask(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
     let Some((_, request)) = state.ask.as_ref() else {
         return;
@@ -4453,5 +4559,85 @@ mod tests {
             // The agent's side received exactly that answer.
             assert_eq!(agent_side.join().unwrap(), expected);
         }
+    }
+
+    fn question_state(options: &[&str]) -> (State, std::thread::JoinHandle<Option<String>>) {
+        let mut state = State::new(meta(), 0, 0);
+        state.live = Some(LiveTurn::default());
+        state.busy = true;
+        let gate = state.gate.clone();
+        let options: Vec<String> = options.iter().map(|o| o.to_string()).collect();
+        let agent_side = std::thread::spawn(move || {
+            use crate::consent::Consent;
+            gate.ask_question(&Question {
+                text: "Which database should the cache use?".into(),
+                options,
+            })
+        });
+        while state.gate.pending_question().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        state.question = state.gate.pending_question();
+        (state, agent_side)
+    }
+
+    fn press(state: &mut State, code: KeyCode) -> bool {
+        answer_question_key(state, &KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn a_question_is_shown_with_its_numbered_options() {
+        let (mut state, agent_side) = question_state(&["sqlite", "postgres"]);
+        let screen = render(&mut state, 110, 34);
+        for want in [
+            "question",
+            "Which database should the cache use?",
+            "1  sqlite",
+            "2  postgres",
+            "own words",
+        ] {
+            assert!(screen.contains(want), "{want} missing:\n{screen}");
+        }
+        state.gate.cancel();
+        assert_eq!(agent_side.join().unwrap(), None);
+    }
+
+    #[test]
+    fn a_digit_picks_an_option_and_typed_words_are_sent_with_enter() {
+        // A digit with nothing typed picks that option.
+        let (mut state, agent_side) = question_state(&["sqlite", "postgres"]);
+        assert!(
+            !press(&mut state, KeyCode::Char('9')),
+            "a digit beyond the options is just typing"
+        );
+        assert!(press(&mut state, KeyCode::Char('2')));
+        assert_eq!(agent_side.join().unwrap().as_deref(), Some("postgres"));
+        assert!(state
+            .entries
+            .iter()
+            .any(|e| e.text.contains("you answered: postgres")));
+
+        // Once something is typed, digits are text, and Enter sends the words.
+        let (mut state, agent_side) = question_state(&["sqlite", "postgres"]);
+        state.editor.insert_str("use ");
+        assert!(
+            !press(&mut state, KeyCode::Char('2')),
+            "mid-sentence a digit is text"
+        );
+        state.editor.insert_str("duckdb");
+        assert!(press(&mut state, KeyCode::Enter));
+        assert_eq!(agent_side.join().unwrap().as_deref(), Some("use duckdb"));
+        assert!(state.editor.is_empty(), "the composer is cleared once sent");
+
+        // Enter with nothing typed keeps waiting; Esc leaves it for later.
+        let (mut state, agent_side) = question_state(&[]);
+        assert!(press(&mut state, KeyCode::Enter));
+        assert!(state.gate.pending_question().is_some(), "nothing to send");
+        assert!(press(&mut state, KeyCode::Esc));
+        assert_eq!(agent_side.join().unwrap(), None);
+        assert!(state
+            .entries
+            .iter()
+            .any(|e| e.text.contains("left for later")));
     }
 }

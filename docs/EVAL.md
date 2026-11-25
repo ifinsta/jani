@@ -49,7 +49,7 @@ Metrics:
 - **solved rate** (pass@1): mean over all runs.
 - **pass@n**: fraction of cases solved at least once across `--repeat`.
 - **clean**: solved without changing a test file.
-- **failure causes**: `visible_checks_failed`, `passed_visible_failed_hidden`, `harness_or_model_error`.
+- **failure causes**: `visible_checks_failed`, `passed_visible_failed_hidden`, `asked_instead_of_finishing` (the agent asked a question nobody could answer; see [ASK.md](ASK.md)), `harness_or_model_error`.
 
 The eval uses `--exec smart` unless you pass another mode. With no sandbox, builds and tests are *refused* (no operator to ask), which understates the model; the report says so. Use `--sandbox auto` where bubblewrap is available.
 

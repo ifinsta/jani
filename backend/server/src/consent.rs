@@ -26,10 +26,25 @@ pub enum ConsentAnswer {
     Deny,
 }
 
+/// A question the agent puts to the operator instead of guessing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Question {
+    pub text: String,
+    /// Suggested answers. The operator may always answer in their own words.
+    pub options: Vec<String>,
+}
+
 pub trait Consent: Send + Sync {
     /// Block until the operator decides. Returning `Deny` on timeout or
     /// cancellation is the safe default.
     fn ask(&self, request: &ConsentRequest) -> ConsentAnswer;
+
+    /// Block until the operator answers a question. `None` means nobody can
+    /// answer now (declined, cancelled, timed out): the turn then ends with the
+    /// question as its result, to be answered later.
+    fn ask_question(&self, _question: &Question) -> Option<String> {
+        None
+    }
 }
 
 pub type SharedConsent = Arc<dyn Consent>;
@@ -46,6 +61,9 @@ struct Gate {
     next: u64,
     pending: Option<(u64, ConsentRequest)>,
     answer: Option<ConsentAnswer>,
+    question: Option<(u64, Question)>,
+    /// `Some(None)` is "declined"; `None` is "not answered yet".
+    reply: Option<Option<String>>,
 }
 
 /// A one-question-at-a-time mailbox between the agent thread (which blocks in
@@ -77,6 +95,24 @@ impl ConsentGate {
         true
     }
 
+    pub fn pending_question(&self) -> Option<(u64, Question)> {
+        self.state.lock().ok()?.question.clone()
+    }
+
+    /// Record the operator's reply to question `id`: their words, or `None` to decline.
+    /// False when that question is not the one waiting.
+    pub fn answer_question(&self, id: u64, reply: Option<String>) -> bool {
+        let Ok(mut gate) = self.state.lock() else {
+            return false;
+        };
+        if gate.question.as_ref().map(|(n, _)| *n) != Some(id) || gate.reply.is_some() {
+            return false;
+        }
+        gate.reply = Some(reply.filter(|r| !r.trim().is_empty()));
+        self.changed.notify_all();
+        true
+    }
+
     /// Cancelling a turn answers any waiting question "no".
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -89,6 +125,31 @@ impl ConsentGate {
 }
 
 impl Consent for ConsentGate {
+    fn ask_question(&self, question: &Question) -> Option<String> {
+        let Ok(mut gate) = self.state.lock() else {
+            return None;
+        };
+        gate.next += 1;
+        let id = gate.next;
+        gate.question = Some((id, question.clone()));
+        gate.reply = None;
+        let started = Instant::now();
+        let result = loop {
+            if let Some(reply) = gate.reply.take() {
+                break reply;
+            }
+            if self.cancelled.load(Ordering::SeqCst) || started.elapsed() >= WAIT_LIMIT {
+                break None;
+            }
+            gate = match self.changed.wait_timeout(gate, Duration::from_millis(250)) {
+                Ok((gate, _)) => gate,
+                Err(_) => return None,
+            };
+        };
+        gate.question = None;
+        result
+    }
+
     fn ask(&self, request: &ConsentRequest) -> ConsentAnswer {
         let Ok(mut gate) = self.state.lock() else {
             return ConsentAnswer::Deny;
@@ -158,6 +219,20 @@ impl TerminalConsent {
 }
 
 impl Consent for TerminalConsent {
+    fn ask_question(&self, question: &Question) -> Option<String> {
+        let mut err = io::stderr();
+        match Self::open_tty() {
+            Ok(tty) => {
+                let mut reader = io::BufReader::new(tty);
+                question_with(question, &mut |line| reader.read_line(line), &mut err)
+            }
+            Err(_) if io::stdin().is_terminal() => {
+                question_with(question, &mut |line| io::stdin().read_line(line), &mut err)
+            }
+            Err(_) => None,
+        }
+    }
+
     fn ask(&self, request: &ConsentRequest) -> ConsentAnswer {
         let mut err = io::stderr();
         match Self::open_tty() {
@@ -177,6 +252,45 @@ impl Consent for TerminalConsent {
             }
         }
     }
+}
+
+/// Put a question and read one answer: a number picks that option, anything else
+/// is the operator's own words, and an empty line or end of input leaves it
+/// unanswered (the turn then ends with the question).
+fn question_with(
+    question: &Question,
+    read_line: &mut dyn FnMut(&mut String) -> io::Result<usize>,
+    out: &mut dyn Write,
+) -> Option<String> {
+    let _ = writeln!(out, "\njani: the agent has a question\n  {}", question.text);
+    for (i, option) in question.options.iter().enumerate() {
+        let _ = writeln!(out, "  [{}] {option}", i + 1);
+    }
+    let _ = write!(
+        out,
+        "{}",
+        if question.options.is_empty() {
+            "answer (Enter to leave it for later): "
+        } else {
+            "number or your own words (Enter to leave it for later): "
+        }
+    );
+    let _ = out.flush();
+    let mut line = String::new();
+    match read_line(&mut line) {
+        Ok(0) | Err(_) => return None,
+        Ok(_) => {}
+    }
+    let text = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{1a}');
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(n) = text.parse::<usize>() {
+        if (1..=question.options.len()).contains(&n) {
+            return Some(question.options[n - 1].clone());
+        }
+    }
+    Some(text.to_string())
 }
 
 /// The question and the parsing of the answer, apart from where they travel.
@@ -330,5 +444,102 @@ mod tests {
         assert!(shown.contains("answer y, s, a or n"));
         // A typo followed by an answer within three tries still counts.
         assert_eq!(ask_with("yy\ns\n").0, ConsentAnswer::Session);
+    }
+
+    fn question() -> Question {
+        Question {
+            text: "Which database?".into(),
+            options: vec!["sqlite".into(), "postgres".into()],
+        }
+    }
+
+    fn answer_line(input: &str) -> (Option<String>, String) {
+        let mut reader = input.as_bytes();
+        let mut out = Vec::new();
+        let reply = super::question_with(&question(), &mut |line| reader.read_line(line), &mut out);
+        (reply, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn the_line_question_takes_a_number_or_free_words_and_leaves_blank_for_later() {
+        let (reply, shown) = answer_line("2\n");
+        assert_eq!(reply.as_deref(), Some("postgres"));
+        assert!(
+            shown.contains("Which database?")
+                && shown.contains("[1] sqlite")
+                && shown.contains("[2] postgres"),
+            "{shown}"
+        );
+        assert_eq!(
+            answer_line("sqlite, in memory\n").0.as_deref(),
+            Some("sqlite, in memory")
+        );
+        assert_eq!(
+            answer_line("7\n").0.as_deref(),
+            Some("7"),
+            "a number outside the options is the operator's own words"
+        );
+        assert_eq!(
+            answer_line("1\r\n").0.as_deref(),
+            Some("sqlite"),
+            "console line endings"
+        );
+        assert_eq!(answer_line("\n").0, None);
+        assert_eq!(answer_line("").0, None, "end of input leaves it for later");
+    }
+
+    #[test]
+    fn the_gate_carries_a_question_to_the_interface_and_the_reply_back() {
+        let gate = Arc::new(ConsentGate::default());
+        let asker = {
+            let gate = gate.clone();
+            std::thread::spawn(move || gate.ask_question(&question()))
+        };
+        let (id, shown) = loop {
+            if let Some(pending) = gate.pending_question() {
+                break pending;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(shown, question());
+        assert!(!gate.answer_question(id + 1, Some("x".into())));
+        assert!(gate.answer_question(id, Some("  sqlite ".into())));
+        assert!(
+            !gate.answer_question(id, Some("again".into())),
+            "answered once"
+        );
+        assert_eq!(asker.join().unwrap().as_deref(), Some("  sqlite "));
+        assert!(gate.pending_question().is_none());
+
+        // Declining, and a blank reply, both come back as "not answered".
+        for reply in [None, Some("   ".to_string())] {
+            let asker = {
+                let gate = gate.clone();
+                std::thread::spawn(move || gate.ask_question(&question()))
+            };
+            let (id, _) = loop {
+                if let Some(pending) = gate.pending_question() {
+                    break pending;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            assert!(gate.answer_question(id, reply));
+            assert_eq!(asker.join().unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn cancelling_leaves_a_waiting_question_unanswered() {
+        let gate = Arc::new(ConsentGate::default());
+        let asker = {
+            let gate = gate.clone();
+            std::thread::spawn(move || gate.ask_question(&question()))
+        };
+        while gate.pending_question().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        gate.cancel();
+        assert_eq!(asker.join().unwrap(), None);
+        gate.rearm();
     }
 }

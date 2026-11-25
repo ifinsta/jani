@@ -18,15 +18,16 @@ class Provider:
                 body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
                 kind, val = outer.replies[outer.n]; outer.n += 1
                 msg = {"role": "assistant", "content": None}
-                if kind == "tool":
-                    msg["tool_calls"] = [{"id": "c1", "type": "function", "function": {"name": "command", "arguments": json.dumps({"argv": val, "timeout_secs": 20})}}]
+                if kind in ("tool", "ask"):
+                    name, args = ("command", {"argv": val, "timeout_secs": 20}) if kind == "tool" else ("ask", {"question": val[0], "options": val[1]})
+                    msg["tool_calls"] = [{"id": "c1", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]
                 else:
                     msg["content"] = val
                 usage = {"prompt_tokens": 5, "completion_tokens": 2}
                 if body.get("stream"):
                     self.send_response(200); self.send_header("content-type", "text/event-stream"); self.end_headers()
                     w = lambda o: self.wfile.write(f"data: {json.dumps(o)}\n\n".encode())
-                    if kind == "tool":
+                    if kind in ("tool", "ask"):
                         w({"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0, **msg["tool_calls"][0]}]}}]})
                     else:
                         w({"choices":[{"index":0,"delta":{"role":"assistant","content":val}}]})
@@ -107,6 +108,22 @@ def s_repl(c):
 ctx, out = run(["repl"], [("tool", ["touch", "made.txt"]), ("text", "first done"), ("tool", ["touch", "made.txt"]), ("text", "second done")], s_repl)
 check("repl: both turns finished", "first done" in out and "second done" in out)
 check("repl: journal has the session grant", "exec_session_grant" in open(ctx["d"] + "/state/journal.jsonl").read())
+
+# --- --print asks a question on the terminal: a number picks an option
+def s_question(c):
+    check("--print puts the question", c["wait_for"]("the agent has a question"))
+    check("--print lists options", b"[1] sqlite" in c["buf"][0] and b"[2] postgres" in c["buf"][0])
+    os.write(c["master"], b"2\n"); c["pump"](1.0)
+ctx, out = run(["--print", "add a cache"], [("ask", ("Which database should the cache use?", ["sqlite", "postgres"])), ("text", "going with postgres")], s_question)
+check("--print question: the answer reached the model", "going with postgres" in out)
+check("--print question: journal has agent.ask", "agent.ask" in open(ctx["d"] + "/state/journal.jsonl").read())
+
+# --- Enter leaves it for later: the turn ends on the question
+def s_later(c):
+    check("--print asks again", c["wait_for"]("the agent has a question"))
+    os.write(c["master"], b"\n"); c["pump"](1.0)
+ctx, out = run(["--print", "add a cache"], [("ask", ("Which database should the cache use?", ["sqlite", "postgres"])), ("text", "never reached")], s_later)
+check("Enter leaves it unanswered: the turn ends on the question", "I need your input before I continue" in out and "never reached" not in out)
 
 # --- piped stdin (CI/scripts): not asked, refused with instructions
 prov = Provider([("tool", ["touch", "made.txt"]), ("text", "reported")])

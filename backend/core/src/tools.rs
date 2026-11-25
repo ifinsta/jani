@@ -19,6 +19,8 @@ pub mod action {
     pub const COMMAND_EXEC: &str = "command.exec";
     /// The agent saving a durable note about the project (see `memory.rs`).
     pub const MEMORY_WRITE: &str = "memory.write";
+    /// The agent asking the operator a question instead of guessing.
+    pub const AGENT_ASK: &str = "agent.ask";
     /// Prefix families and the internal model-call action.
     pub const EXTERNAL_PREFIX: &str = "external.";
     pub const CONNECTOR_PREFIX: &str = "connector.";
@@ -51,6 +53,7 @@ pub enum Tool {
     Command,
     NativeTool,
     Remember,
+    Ask,
 }
 
 impl Tool {
@@ -62,6 +65,7 @@ impl Tool {
         Self::Command,
         Self::NativeTool,
         Self::Remember,
+        Self::Ask,
     ];
 
     pub fn name(self) -> &'static str {
@@ -73,6 +77,7 @@ impl Tool {
             Self::Command => "command",
             Self::NativeTool => "native_tool",
             Self::Remember => "remember",
+            Self::Ask => "ask",
         }
     }
 

@@ -47,6 +47,9 @@ pub enum Outcome {
     Verified,
     Unverified,
     Failed,
+    /// The agent asked a question nobody could answer yet. Nothing is committed or
+    /// checked; the worktree and conversation are kept for when someone does.
+    Blocked,
 }
 
 impl Outcome {
@@ -55,6 +58,7 @@ impl Outcome {
             Self::Verified => "verified",
             Self::Unverified => "unverified",
             Self::Failed => "failed",
+            Self::Blocked => "blocked",
         }
     }
 
@@ -63,6 +67,7 @@ impl Outcome {
             Self::Verified => reason::DELIVERY_VERIFIED,
             Self::Unverified => reason::DELIVERY_UNVERIFIED,
             Self::Failed => reason::DELIVERY_FAILED,
+            Self::Blocked => reason::NEEDS_INPUT,
         }
     }
 }
@@ -146,6 +151,8 @@ pub struct Delivery {
     pub test_files_changed: Vec<String>,
     pub pushed: bool,
     pub pr: Option<String>,
+    /// What the agent is waiting to be told, when `outcome` is `Blocked`.
+    pub question: Option<(String, Vec<String>)>,
     pub agent_task_id: String,
     pub tokens: (u64, u64),
 }
@@ -518,6 +525,7 @@ pub fn deliver(
         task_prompt(spec)
     };
     let mut passed = false;
+    let mut question: Option<(String, Vec<String>)> = None;
     let never = std::sync::atomic::AtomicBool::new(false);
     let cancel: &std::sync::atomic::AtomicBool = spec.cancel.as_deref().unwrap_or(&never);
     for round in 0..=spec.repair_rounds {
@@ -532,6 +540,10 @@ pub fn deliver(
                 error = Some(format!("the agent's turn failed: {e}"));
                 break;
             }
+        }
+        if let Some(q) = agent.take_question() {
+            question = Some((q.text, q.options));
+            break;
         }
         if spec.accept.is_empty() {
             break;
@@ -574,7 +586,9 @@ pub fn deliver(
         }
     }
 
-    let outcome = if error.is_some() {
+    let outcome = if question.is_some() && error.is_none() {
+        Outcome::Blocked
+    } else if error.is_some() {
         Outcome::Failed
     } else if spec.accept.is_empty() {
         Outcome::Unverified
@@ -607,7 +621,7 @@ pub fn deliver(
             }
         }
         let mut commit_id = None;
-        if spec.commit && !changed.is_empty() {
+        if spec.commit && !changed.is_empty() && outcome != Outcome::Blocked {
             let mut add = vec!["add", "--"];
             add.extend(scope.iter().map(String::as_str));
             git_ok(&run_cfg.root, hooks, &add)?;
@@ -714,6 +728,7 @@ pub fn deliver(
         test_files_changed,
         pushed,
         pr,
+        question,
         agent_task_id: agent_task,
         tokens,
     };
@@ -746,11 +761,19 @@ fn write_report(
         Outcome::Verified => "VERIFIED: every acceptance check the host ran passed.",
         Outcome::Unverified => "UNVERIFIED: no acceptance checks were declared. The agent's report below is its own word.",
         Outcome::Failed => "FAILED: the work was not accepted.",
+        Outcome::Blocked => "BLOCKED: the agent asked a question and is waiting for an answer. Nothing was checked or committed; the worktree and conversation are kept.",
     };
     let mut md = format!("# Delivery {}\n\n**{headline}**\n\n", d.id);
     md.push_str(&format!("Task: {}\n\n", spec.prompt));
     if let Some(error) = &d.error {
         md.push_str(&format!("Problem: {error}\n\n"));
+    }
+    if let Some((text, options)) = &d.question {
+        md.push_str(&format!("**The agent asks:** {text}\n\n"));
+        for (i, option) in options.iter().enumerate() {
+            md.push_str(&format!("{}. {option}\n", i + 1));
+        }
+        md.push('\n');
     }
     md.push_str("## Acceptance\n\n");
     if d.checks.is_empty() {
@@ -822,6 +845,7 @@ fn write_report(
         "pushed": d.pushed,
         "pullRequest": d.pr,
         "error": d.error,
+        "question": d.question.as_ref().map(|(q, o)| json!({"text": q, "options": o})),
         "agentTask": d.agent_task_id,
         "tokens": {"input": d.tokens.0, "output": d.tokens.1},
         "auditChainVerified": chain_ok,
@@ -854,6 +878,7 @@ impl Delivery {
             "testFilesChanged": self.test_files_changed,
             "report": self.report_dir.join("report.md"),
             "error": self.error,
+            "question": self.question.as_ref().map(|(q, o)| json!({"text": q, "options": o})),
         })
     }
 }
@@ -877,6 +902,10 @@ pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
             eprintln!("jani: UNVERIFIED: no --accept checks were declared, so nothing but the agent's word says the task is done");
             Ok(())
         }
+        Outcome::Blocked => Err(
+            "blocked: the agent asked a question nobody could answer. Run it through `jani work` to answer later, or with a terminal attached to answer now"
+                .into(),
+        ),
         Outcome::Failed => Err(delivery
             .error
             .clone()

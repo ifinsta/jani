@@ -278,6 +278,7 @@ impl RunResult {
         }
         Some(match (self.outcome.as_str(), self.hidden_passed) {
             ("error", _) => "harness_or_model_error",
+            ("blocked", _) => "asked_instead_of_finishing",
             (_, Some(false)) if self.visible_passed => "passed_visible_failed_hidden",
             _ => "visible_checks_failed",
         })

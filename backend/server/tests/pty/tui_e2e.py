@@ -1,6 +1,7 @@
 """Drives the real `jani` in a pseudo-terminal to check the consent prompts. Not part of
 `cargo test` (needs python3 and a built binary): run `cargo build`, then
 `python3 backend/server/tests/pty/tui_e2e.py`. JANI_BIN overrides the binary."""
+import re
 import os as _os
 JANI = _os.environ.get("JANI_BIN") or _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "../../../../target/debug/jani")
 import os, pty, select, subprocess, sys, tempfile, threading, time, json, fcntl, termios, struct, re
@@ -12,17 +13,23 @@ replies = [
     ("tool", ["touch", "other.txt"]),
     ("text", "understood, not made"),
     ("tool", ["touch", "third.txt"]),
+    ("ask", ("Which database should the cache use?", ["sqlite", "postgres"])),
+    ("text", "going with your pick"),
+    ("ask", ("What should the table be called?", [])),
+    ("text", "using your words"),
 ]
+seen = []
 n = [0]
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("content-length", 0)))
+        seen.append(self.rfile.read(int(self.headers.get("content-length", 0))).decode())
         kind, val = replies[n[0]]; n[0] += 1
         self.send_response(200); self.send_header("content-type", "text/event-stream"); self.end_headers()
         def send(o): self.wfile.write(f"data: {json.dumps(o)}\n\n".encode())
-        if kind == "tool":
-            send({"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"command","arguments":json.dumps({"argv":val,"timeout_secs":20})}}]}}]})
+        if kind in ("tool", "ask"):
+            name, args = ("command", {"argv": val, "timeout_secs": 20}) if kind == "tool" else ("ask", {"question": val[0], "options": val[1]})
+            send({"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":name,"arguments":json.dumps(args)}}]}}]})
             send({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]})
         else:
             send({"choices":[{"index":0,"delta":{"role":"assistant","content":val}}]})
@@ -87,6 +94,20 @@ clear(); send("\x03")  # Ctrl+C while the agent waits
 check("ctrl+c closes the question and the turn ends", wait_for("cancel", 15) or wait_for("jani:", 5))
 pump(1)
 check("cancelled command not run", not os.path.exists(d + "/repo/third.txt"))
+# --- the agent asks a question instead of guessing
+clear(); time.sleep(0.5)
+send("pick a store"); time.sleep(0.2); send("\r")
+check("question shown", wait_for("would rather ask than guess"))
+check("question lists the options", b"sqlite" in buf and b"postgres" in buf)
+clear(); send("2")
+check("a digit answers with that option", wait_for("going with your pick"))
+check("model received the chosen option", bool(re.search(r'answer\\+"\s*:\s*\\+"postgres', seen[-1])))
+clear(); time.sleep(0.5)
+send("name the table"); time.sleep(0.2); send("\r")
+check("second question shown", wait_for("would rather ask than guess"))
+send("events_v2"); time.sleep(0.3); send("\r")
+check("typed words answer it", wait_for("using your words"))
+check("model received the typed words", "events_v2" in seen[-1])
 send("/exit\r"); pump(1)
 try: p.wait(timeout=5)
 except Exception: p.kill()
