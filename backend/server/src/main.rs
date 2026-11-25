@@ -14,6 +14,7 @@ mod gateway;
 mod http;
 mod lab;
 mod mcp;
+mod memory;
 mod mirror;
 mod model;
 mod native;
@@ -24,6 +25,7 @@ mod skills;
 mod tui;
 mod ui;
 mod update;
+mod work;
 mod workspace;
 
 use config::{Config, JResult};
@@ -121,6 +123,8 @@ fn run() -> JResult<()> {
         "exec" => exec_command(&cfg),
         "deliver" => deliver::command(&cfg, &catalog),
         "eval" => eval::command(&cfg, &catalog),
+        "memory" => memory_command(&cfg),
+        "work" => work::command(&cfg, &catalog),
         "audit" => audit_command(&cfg),
         "inspect" => inspect_command(&cfg),
         "approvals" => approvals_command(&cfg),
@@ -414,6 +418,42 @@ fn exec_command(cfg: &Config) -> JResult<()> {
             }))
         }
         Some(other) => Err(format!("unknown exec subcommand '{other}'")),
+    }
+}
+
+/// `jani memory list | add TOPIC NOTE | forget ID`
+fn memory_command(cfg: &Config) -> JResult<()> {
+    let note_json = |n: &memory::Note| serde_json::json!({"id": n.id, "topic": n.topic, "note": n.note, "by": n.by, "ts": n.ts});
+    match cfg.sub.as_deref() {
+        Some("list") | None => print_json(&serde_json::json!({
+            "file": cfg.state_dir.join("memory.jsonl"),
+            "notes": memory::load(&cfg.state_dir).iter().map(note_json).collect::<Vec<_>>(),
+        })),
+        Some("add") => {
+            let topic = cfg
+                .positional
+                .first()
+                .ok_or("usage: jani memory add TOPIC NOTE")?;
+            let note = cfg
+                .positional
+                .get(1)
+                .ok_or("usage: jani memory add TOPIC NOTE")?;
+            print_json(&note_json(&memory::add(
+                &cfg.state_dir,
+                topic,
+                note,
+                "operator",
+            )?))
+        }
+        Some("forget") => {
+            let id = cfg
+                .positional
+                .first()
+                .and_then(|n| n.parse().ok())
+                .ok_or("usage: jani memory forget ID")?;
+            print_json(&note_json(&memory::forget(&cfg.state_dir, id)?))
+        }
+        Some(other) => Err(format!("unknown memory subcommand '{other}'")),
     }
 }
 

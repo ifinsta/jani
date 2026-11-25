@@ -80,6 +80,12 @@ pub struct Spec {
     pub open_pr: bool,
     /// An id to reuse (a queued task's), otherwise one is made.
     pub id: Option<String>,
+    /// Continue an interrupted delivery: reuse its worktree and saved conversation.
+    pub resume: bool,
+    /// Extra context for the agent, such as the operator's answers to its questions.
+    pub context: Option<String>,
+    /// Set from elsewhere (the work queue's heartbeat) to stop at the next safe point.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Spec {
@@ -105,6 +111,9 @@ impl Spec {
             push_remote: cfg.push_remote.clone(),
             open_pr: cfg.open_pr,
             id: None,
+            resume: false,
+            context: None,
+            cancel: None,
         })
     }
 }
@@ -283,6 +292,25 @@ fn prepare_workspace(
         .trim_end_matches('/')
         .to_string();
     let tree = report_dir.join("tree");
+    // An interrupted delivery comes back to the worktree it left, not a fresh one.
+    if spec.resume && tree.is_dir() {
+        if let Some(saved) = std::fs::read_to_string(report_dir.join("workspace.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        {
+            let prefix = saved["prefix"].as_str().unwrap_or("");
+            return Ok(Workspace {
+                root: if prefix.is_empty() {
+                    tree
+                } else {
+                    tree.join(prefix)
+                },
+                branch: saved["branch"].as_str().map(str::to_string),
+                base: saved["base"].as_str().map(str::to_string),
+                in_git: true,
+            });
+        }
+    }
     std::fs::create_dir_all(report_dir).map_err(|e| e.to_string())?;
     let tree_str = tree.to_str().ok_or("worktree path is not valid UTF-8")?;
     git_ok(
@@ -290,6 +318,10 @@ fn prepare_workspace(
         hooks_off,
         &["worktree", "add", "-b", &branch, tree_str, "HEAD"],
     )?;
+    let _ = std::fs::write(
+        report_dir.join("workspace.json"),
+        json!({"branch": branch, "base": base, "prefix": prefix}).to_string(),
+    );
     Ok(Workspace {
         root: if prefix.is_empty() {
             tree
@@ -381,7 +413,35 @@ pub(crate) fn run_check(cfg: &Config, round: usize, argv: &[String]) -> Check {
     }
 }
 
+/// What the agent is told when picking an interrupted delivery back up.
+fn resumed_prompt(spec: &Spec, had_history: bool) -> String {
+    let context = spec
+        .context
+        .as_deref()
+        .map(|c| format!("\n\n{c}"))
+        .unwrap_or_default();
+    if had_history {
+        format!(
+            "[jani runtime] The previous attempt at this task was interrupted (the worker stopped). Your conversation is restored. Check what is already in the worktree with git status and git diff before redoing anything, then continue and finish the task.{context}"
+        )
+    } else {
+        format!(
+            "[jani runtime] A previous attempt at this task was interrupted and its conversation was not saved. Earlier changes may already be in the worktree: check git status and git diff first, do not redo finished work.\n\n{}",
+            task_prompt(spec)
+        )
+    }
+}
+
 fn task_prompt(spec: &Spec) -> String {
+    let context = spec
+        .context
+        .as_deref()
+        .map(|c| format!("\n\n{c}"))
+        .unwrap_or_default();
+    format!("{}{context}", task_prompt_base(spec))
+}
+
+fn task_prompt_base(spec: &Spec) -> String {
     if spec.accept.is_empty() {
         return format!(
             "{}\n\nWhen you finish, report what you changed and what you verified. No acceptance checks were declared, so say plainly what is unverified.",
@@ -440,6 +500,7 @@ pub fn deliver(
     let mut run_cfg = cfg.clone();
     run_cfg.root = workspace.root.clone();
     run_cfg.task_id = Some(format!("task-{}", id.trim_start_matches("dlv-")));
+    run_cfg.resume = spec.resume;
     let mut agent = Agent::new(&run_cfg, catalog)?;
     if let Some(consent) = consent {
         agent.set_consent(consent);
@@ -451,11 +512,21 @@ pub fn deliver(
     let mut answer = String::new();
     let mut error: Option<String> = None;
     let mut rounds = 0;
-    let mut prompt = task_prompt(spec);
+    let mut prompt = if spec.resume {
+        resumed_prompt(spec, agent.has_history())
+    } else {
+        task_prompt(spec)
+    };
     let mut passed = false;
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let cancel: &std::sync::atomic::AtomicBool = spec.cancel.as_deref().unwrap_or(&never);
     for round in 0..=spec.repair_rounds {
         rounds = round + 1;
-        match agent.run_turn(&prompt) {
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            error = Some("cancelled".into());
+            break;
+        }
+        match agent.run_turn_cancellable(&prompt, cancel) {
             Ok(text) => answer = text,
             Err(e) => {
                 error = Some(format!("the agent's turn failed: {e}"));

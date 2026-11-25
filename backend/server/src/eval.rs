@@ -382,6 +382,9 @@ pub fn run_case(
             push_remote: None,
             open_pr: false,
             id: None,
+            resume: false,
+            context: None,
+            cancel: None,
         };
         let delivery = deliver::deliver(&cfg, catalog, &spec, None)?;
         result.outcome = delivery.outcome.as_str().into();

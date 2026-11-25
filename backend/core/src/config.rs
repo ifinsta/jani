@@ -175,6 +175,11 @@ pub struct Config {
     pub push_remote: Option<String>,
     pub open_pr: bool,
     /// `jani eval`: repetitions per case, output directory, case-name filter.
+    /// Continue a task's saved conversation (`--resume --task ID`).
+    pub resume: bool,
+    /// `jani work run`: keep polling for tasks, or stop after one.
+    pub watch: bool,
+    pub once: bool,
     pub repeat: usize,
     pub out_dir: Option<PathBuf>,
     pub only: Option<String>,
@@ -264,6 +269,8 @@ USAGE:
   jani run "TASK" [OPTIONS]
   jani --print "TASK" [OPTIONS]
   jani deliver "TASK" [--accept CMD]... [OPTIONS]
+  jani work add "TASK" [--accept CMD]... | list | show ID | run [--once|--watch] | answer ID TEXT | cancel ID | retry ID
+  jani memory list|add TOPIC NOTE|forget ID [OPTIONS]
   jani eval run|validate SUITE_DIR [--repeat N] [--out DIR] [OPTIONS]
   jani eval compare A_RESULTS.json B_RESULTS.json
   jani repl [OPTIONS]
@@ -346,6 +353,8 @@ OPTIONS:
   --repeat N              eval: runs per case (default 1)
   --out DIR               eval: where results and per-run reports go
   --only TEXT             eval: run only cases whose name contains TEXT
+  --watch / --once        work run: keep polling for tasks / stop after one
+  --resume                Continue the saved conversation of --task ID (kept per task in the state dir)
   --exec MODE             Command execution: off (default), allowlist (= --allow-exec) or smart:
                           read-only inspection runs, builds/tests run when a sandbox contains
                           them, anything else asks the operator. See docs/EXECUTION.md
@@ -554,6 +563,9 @@ impl Config {
             no_commit: false,
             push_remote: None,
             open_pr: false,
+            resume: false,
+            watch: false,
+            once: false,
             repeat: 1,
             out_dir: None,
             only: None,
@@ -942,7 +954,8 @@ impl Config {
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
                 | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
-                | "mcp" | "native" | "lab" | "update" | "ui" | "exec" | "eval" => {
+                | "mcp" | "native" | "lab" | "update" | "ui" | "exec" | "eval" | "memory"
+                | "work" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -1081,6 +1094,9 @@ impl Config {
                         return Err("--repeat must be 1..20".into());
                     }
                 }
+                "--resume" => cfg.resume = true,
+                "--watch" => cfg.watch = true,
+                "--once" => cfg.once = true,
                 "--out" => cfg.out_dir = Some(PathBuf::from(take_value(args, &mut i, a)?)),
                 "--only" => cfg.only = Some(take_value(args, &mut i, a)?),
                 "--exec" => {

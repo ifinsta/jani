@@ -151,6 +151,19 @@ impl<'a> Broker<'a> {
                     ),
                 })
             }
+            Tool::Remember => {
+                get_str(args, "topic")?;
+                get_str(args, "note")?;
+                Ok(Call {
+                    action: action::MEMORY_WRITE,
+                    // Writes to the operator's state directory, not the worktree, so it is
+                    // a control action: it needs a policy that permits `memory.write`, not
+                    // the operator's file-editing grant.
+                    effect: Effect::Control,
+                    risk: RiskTier::R1,
+                    resource: "memory:notes".into(),
+                })
+            }
             Tool::Command => {
                 let argv = get_argv(args)?;
                 let program = argv.first().ok_or("empty executable")?;
@@ -944,6 +957,24 @@ impl<'a> Broker<'a> {
                     false,
                 )?;
                 Ok((data, None, None))
+            }
+            Tool::Remember => {
+                // Notes are secret-scrubbed like any model output before they are kept,
+                // and what is stored is what comes back, so the model sees the redaction.
+                let note = self
+                    .governance
+                    .inspect_model_output(get_str(args, "note")?, "memory-note")?;
+                let saved = crate::memory::add(
+                    &self.cfg.state_dir,
+                    get_str(args, "topic")?,
+                    &note,
+                    &self.task_id,
+                )?;
+                Ok((
+                    json!({"saved": true, "id": saved.id, "topic": saved.topic, "note": saved.note}),
+                    None,
+                    None,
+                ))
             }
             Tool::Command => {
                 let argv = get_argv(args)?;

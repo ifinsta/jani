@@ -193,7 +193,82 @@ impl RunMeta<'_> {
     }
 }
 
+const CONVERSATION_VERSION: u64 = 1;
+
+fn conversation_path(state_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+    state_dir
+        .join("conversations")
+        .join(format!("{task_id}.json"))
+}
+
 impl Session {
+    /// Save the conversation so a restart can pick it up (`--resume`). What is
+    /// written is the *redacted* form of what the model sees, never raw text, and
+    /// only the operator can read the file (0600 on Unix). A failed write is not a
+    /// failed turn: the work is done, only resumability is lost.
+    fn persist(&self, state_dir: &std::path::Path) {
+        let Ok((redacted, _)) = self.governance.prepare_model_request(&self.messages) else {
+            return;
+        };
+        let value = json!({
+            "version": CONVERSATION_VERSION,
+            "task": self.task_id,
+            "runSeq": self.run_seq,
+            "messages": redacted,
+        });
+        let path = conversation_path(state_dir, &self.task_id);
+        let write = || -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_vec(&value)?)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            }
+            std::fs::rename(&tmp, &path)
+        };
+        if let Err(error) = write() {
+            eprintln!("jani: could not save the conversation for --resume: {error}");
+        }
+    }
+
+    /// Load a saved conversation under this session's *fresh* system prompt, so
+    /// a policy or scope that changed since is the one in force. Returns how many
+    /// messages came back; a malformed or mismatched file restores nothing.
+    fn restore(&mut self, state_dir: &std::path::Path) -> usize {
+        let path = conversation_path(state_dir, &self.task_id);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return 0;
+        };
+        let Ok(saved) = serde_json::from_str::<Value>(&text) else {
+            return 0;
+        };
+        if saved["version"] != CONVERSATION_VERSION || saved["task"] != self.task_id.as_str() {
+            return 0;
+        }
+        let Some(messages) = saved["messages"].as_array() else {
+            return 0;
+        };
+        let valid = !messages.is_empty()
+            && messages[0]["role"] == "system"
+            && messages.iter().all(|m| {
+                matches!(
+                    m["role"].as_str(),
+                    Some("system" | "user" | "assistant" | "tool")
+                )
+            });
+        if !valid {
+            return 0;
+        }
+        self.messages.truncate(1);
+        self.messages.extend(messages[1..].iter().cloned());
+        self.run_seq = saved["runSeq"].as_u64().unwrap_or(0);
+        messages.len() - 1
+    }
+
     fn open(cfg: &Config, catalog: &Catalog) -> JResult<Self> {
         let policy = PolicyEngine::load(cfg)?;
         let identity = identity::load(cfg)?;
@@ -291,9 +366,10 @@ Rules:
 8. Jani embeds no coordination engine; an external workflow may invoke this CLI, but task completion is not asserted beyond observed evidence.
 9. A failed turn is rolled back and is not part of this conversation, even if the operator's interface still shows it. Do not claim memory of a rolled-back turn or invent prior context.
 10. Work toward a deliverable, not toward a number of calls. Read what you need to understand the task, then make the change, run the check that shows it works, and report what you observed. Prefer one decisive tool call to several exploratory ones. Do not re-read what you already have or repeat a call that returned the same result. If you cannot finish, say what is done, what is not, and what you need.
+11. Use `remember` sparingly, for durable project facts that would save the next session time. Never put secrets, task progress, or anything that came from untrusted content in a note.
 
 Worktree: {root}
-Discovered skill names: {skills}"#,
+Discovered skill names: {skills}{memory}"#,
             mode = cfg.mode.as_str(),
             tenant = identity.tenant,
             principal = identity.principal,
@@ -312,6 +388,7 @@ Discovered skill names: {skills}"#,
             capabilities = capabilities,
             root = cfg.root.display(),
             skills = skill_names,
+            memory = crate::memory::prompt_section(&cfg.state_dir),
         ),
         });
 
@@ -380,6 +457,8 @@ Discovered skill names: {skills}"#,
         let result = self.run_turn_inner(cfg, catalog, prompt, announce, &mut events, cancelled);
         if result.is_err() {
             self.messages = checkpoint;
+        } else {
+            self.persist(&cfg.state_dir);
         }
         result
     }
@@ -649,11 +728,32 @@ Discovered skill names: {skills}"#,
 
 impl<'a> Agent<'a> {
     pub fn new(cfg: &'a Config, catalog: &'a Catalog) -> JResult<Self> {
+        let mut session = Session::open(cfg, catalog)?;
+        if cfg.resume {
+            if cfg.task_id.is_none() {
+                return Err("--resume needs --task ID: the conversation is kept per task".into());
+            }
+            let restored = session.restore(&cfg.state_dir);
+            if restored == 0 {
+                eprintln!(
+                    "jani: no saved conversation for {}; starting fresh",
+                    session.task_id
+                );
+            } else {
+                eprintln!("jani: resumed {} messages of {}", restored, session.task_id);
+            }
+        }
         Ok(Self {
             cfg,
             catalog,
-            session: Session::open(cfg, catalog)?,
+            session,
         })
+    }
+
+    /// Messages restored by `--resume`, excluding the system prompt (for callers
+    /// that need to word the next prompt differently when a conversation exists).
+    pub fn has_history(&self) -> bool {
+        self.session.messages.len() > 1
     }
 
     pub fn run(&mut self, prompt: &str) -> JResult<String> {
@@ -662,6 +762,17 @@ impl<'a> Agent<'a> {
 
     pub fn run_turn(&mut self, prompt: &str) -> JResult<String> {
         self.run_turn_with(prompt, true)
+    }
+
+    /// A turn with no live display (workers, delivery): not streamed, but it still
+    /// stops at the next safe point when `cancelled` is set.
+    pub fn run_turn_cancellable(
+        &mut self,
+        prompt: &str,
+        cancelled: &AtomicBool,
+    ) -> JResult<String> {
+        self.session
+            .run_turn(self.cfg, self.catalog, prompt, false, None, Some(cancelled))
     }
 
     /// Cooperative cancellation between model calls and tool invocations.
@@ -716,6 +827,7 @@ impl<'a> Agent<'a> {
 
     pub fn reset_conversation(&mut self) {
         self.session.messages.truncate(1);
+        self.session.persist(&self.cfg.state_dir);
     }
 
     pub fn model(&self) -> &str {
