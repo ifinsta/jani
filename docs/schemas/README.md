@@ -140,8 +140,8 @@ Minimal shape (signature value omitted):
 }
 ```
 
-Rules scoped by `roles` are **rejected** because an identity assertion carries no
-roles. Empty `allowedProviders`, `allowedRegions` or `allowedPurposes` deny all
+Rules scoped by `roles` evaluate against verified `roles` carried by an `IdentityAssertion`
+(using `--identity-key` trust roots). Empty `allowedProviders`, `allowedRegions` or `allowedPurposes` deny all
 model egress; `"*"` is the only wildcard. `maxRisk` is `R0`–`R4`; `effect` is
 `read`, `local_write`, `external_write`, `irreversible`, `model_invoke` or
 `control`.
@@ -164,8 +164,8 @@ model egress; `"*"` is the only wildcard. `maxRisk` is `R0`–`R4`; `effect` is
 ```
 
 `principal` and `tenant` must match the CLI request. Expiry, future-issued
-assertions and an empty nonce are rejected. The nonce is not replay-checked and
-there is no audience field yet.
+assertions and an empty nonce are rejected. `NonceCache` binds used nonces against cross-task replay,
+and `IdentityAssertion` supports optional `roles`, `groups`, `approvalScopes`, and `"employee_bot"`.
 
 ### 1.5 Settings
 
@@ -209,18 +209,16 @@ the model. They are not independently versioned files.
 
 - `sandbox-grant/v1` — no external, signed grant is issued. The runtime selects
   and reports a plan locally.
-- `task-checkpoint/v1` — no durable model-run cursor, action-intent ledger or automatic recovery state. Native plan metadata checkpoints are available separately and do not resume a model session.
 - Signed `action-request` / signed `tool-result` — requests and results are not
   signed, and the journal does not bind a canonical contract digest.
 - Retention labels and lineage records — `DataEnvelope.lineage` is always empty.
-- Policy administration, role and incident schemas.
+
+Note: Durable task checkpoints, epoch fencing, and effect idempotency are persisted in SQLite (`TaskStore` / `jani resume`), and structured work-contract `acceptanceChecks` produce signed `VerificationReceipt` (`jani.verification-receipt/v1`) documents via `jani verify` / `jani-verifier`.
 
 ## 4. Canonicalization warning
 
-Signatures are computed over Rust's compact `serde_json` serialization with the
-signature field removed (policy/identity) or over a SHA-256 digest of the
-manifest without `integrity` (plugins). This is deterministic for this binary but
-is **not** RFC 8785/JCS canonical JSON, and field order follows the Rust structs.
-A third-party issuer must reproduce the same serialization exactly. There is no
-signing CLI; the signing helpers are test-only. Freeze a canonicalization format
-and ship issuer tooling before publishing an SDK.
+Signatures are computed over RFC 8785 / JCS canonical UTF-8 JSON with domain
+separation prefixes (`jani.identity-assertion/v1\0`, `jani.organization-policy/v1\0`,
+`jani.verification-receipt/v1\0`, `jani.mcp-contract/v1\0`, etc.) with `signature`
+removed (or over the manifest SHA-256 digest for plugins without `integrity`).
+`tools/jani-issuer` (`jani-issuer`) provides offline key generation and signing.

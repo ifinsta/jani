@@ -98,9 +98,16 @@ impl Cgroups {
 
     /// Which of the configured limits this host can enforce with cgroups.
     pub fn can_enforce(&self, limits: &Limits) -> (Vec<&'static str>, Vec<&'static str>) {
+        let v2_controllers = if self.flavor == Flavor::V2 {
+            std::fs::read_to_string(self.root.join("cgroup.controllers")).unwrap_or_default()
+        } else {
+            String::new()
+        };
         let have = |ctl: &str| match self.flavor {
             Flavor::V1 => self.root.join(ctl).is_dir() && is_writable(&self.root.join(ctl)),
-            Flavor::V2 => is_writable(&self.root),
+            Flavor::V2 => {
+                is_writable(&self.root) && v2_controllers.split_whitespace().any(|c| c == ctl)
+            }
         };
         let (mut ok, mut missing) = (Vec::new(), Vec::new());
         for (name, wanted, ctl) in [
@@ -156,14 +163,34 @@ impl Cgroups {
                 }
             }
             Flavor::V2 => {
+                // Move gateway process out of the root cgroup into a leaf subgroup if
+                // needed so `cgroup.subtree_control` can be enabled on Linux cgroup v2.
+                if let Ok(procs) = std::fs::read_to_string(self.root.join("cgroup.procs")) {
+                    if !procs.trim().is_empty() {
+                        let gw = self.root.join("jani-gateway");
+                        if std::fs::create_dir_all(&gw).is_ok() {
+                            let _ =
+                                write(&gw.join("cgroup.procs"), &std::process::id().to_string());
+                        }
+                    }
+                }
                 let base = self.root.join("jani-cloud");
                 std::fs::create_dir_all(&base)?;
-                // Controllers must be enabled for children by the parent.
-                let _ = write(
-                    &self.root.join("cgroup.subtree_control"),
-                    "+memory +pids +cpu",
-                );
-                let _ = write(&base.join("cgroup.subtree_control"), "+memory +pids +cpu");
+                let mut enable = Vec::new();
+                if limits.memory_mb.is_some() {
+                    enable.push("+memory");
+                }
+                if limits.pids.is_some() {
+                    enable.push("+pids");
+                }
+                if limits.cpus.is_some() {
+                    enable.push("+cpu");
+                }
+                let ctrl_spec = enable.join(" ");
+                if !ctrl_spec.is_empty() {
+                    let _ = write(&self.root.join("cgroup.subtree_control"), &ctrl_spec);
+                    write(&base.join("cgroup.subtree_control"), &ctrl_spec)?;
+                }
                 let dir = base.join(key);
                 std::fs::create_dir_all(&dir)?;
                 if let Some(mb) = limits.memory_mb {
@@ -241,6 +268,12 @@ fn make_writable(root: &Path) {
         targets.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
     }
     for dir in targets {
+        if std::fs::symlink_metadata(&dir)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            continue;
+        }
         if is_writable(&dir) {
             continue;
         }

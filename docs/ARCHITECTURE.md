@@ -42,11 +42,13 @@ narrow the ones above it but never widen them.
    `--write-path`, `--allow-exec` and related flags are a ceiling.
 2. **Signed policy:** enterprise mode requires a signed, tenant-bound
    `OrganizationPolicy`. `defaults.action` must be `deny`; rules are matched by
-   action, resource, risk and effect; explicit denies win. Roles are not part of
-   verified identity, so role-scoped rules are rejected at load and never match.
-3. **Verified identity and contract:** a signed `IdentityAssertion` binds tenant
-   and principal. A `WorkContract` can restrict capabilities, write paths, the
-   sandbox profile and budgets; omitting a capability or write path grants nothing.
+   action, resource, risk, roles, and effect; explicit denies win. Role-scoped rules
+   match only against verified `roles` carried by an `IdentityAssertion`.
+3. **Verified identity and contract:** a signed `IdentityAssertion` binds tenant,
+   principal, roles, groups, and `approvalScopes` using `--identity-key` trust roots
+   strictly isolated from `--policy-key`. A `WorkContract` can restrict capabilities,
+   write paths, the sandbox profile, budgets, and structured `acceptanceChecks`;
+   omitting a capability or write path grants nothing.
 4. **Tool broker:** every model tool call is mapped to a typed `ActionRequest`,
    validated, policy-evaluated, approval-checked, budget-checked and journaled
    before execution. Unknown tools and malformed arguments are journaled denials.
@@ -98,9 +100,11 @@ that invokes Jani as a normal CLI. Jani grants it no special authority.
 Jani follows an ifinpay-style Rust workspace. There is **no root-level `src/` and no `crates/` directory**.
 
 - `contract/`: versioned vocabulary and state machine source of truth.
-- `backend/core/` (`jani-core`): signed identity, policy, data-governance, core types, budget, audit, approvals and generated contracts; no dependency on the model or CLI.
-- `backend/store/` (`jani-store`): SQLite-backed attention state plus transaction outbox.
-- `backend/server/` (`jani`): executable and composition root; model loop, broker, sandbox, skills, plugins, alert commands, and CI end-to-end tests.
+- `backend/core/` (`jani-core`): signed identity, policy, data-governance, core types, budget, audit, approvals, kill switch and generated contracts; no dependency on the model or CLI.
+- `backend/store/` (`jani-store`): SQLite-backed attention state, durable task checkpoints/idempotency (`TaskStore`), plus transaction outbox.
+- `backend/verifier/` (`jani-verifier`): model-free contract verifier running structured `acceptanceChecks` and emitting signed `VerificationReceipt`s.
+- `backend/server/` (`jani`): executable and composition root; model loop, broker, sandbox, skills, sandboxed sidecar plugins + zero-secret credential proxy, event `dispatch`, alert commands, and CI end-to-end tests.
+- `tools/jani-issuer/`: offline Ed25519 keygen and canonical JCS signer for policies, identities, plugins, and assignment grants.
 - `tools/jani-check/`: architecture gates and contract checks.
 
 `backend/<package>/src/` exists because Cargo uses `src/lib.rs` and `src/main.rs` **inside each package**. The repository root is a virtual workspace, not a Rust source crate.
@@ -114,13 +118,13 @@ See [WORKSPACE_ARCHITECTURE.md](WORKSPACE_ARCHITECTURE.md).
 - Jani uses the **OpenAI-compatible Chat Completions tool interface**, not a Python SDK or provider-specific agent framework.
 - A `SKILL.md` is advisory. Every permission claim the model is told about must also be enforced in Rust.
 - Coordination is deliberately out of scope. External workflows can invoke the same CLI without changing Jani's privilege model.
-- Plugins are verified and catalogued, but this build refuses native dynamic
-  loading and has no WASM or sidecar executor. MCP operations are mediated by
-  signed contracts, delegated authorization and response receipts, so an
-  installed plugin cannot gain authority.
+- Signed `sidecar` plugins execute out-of-process under `SandboxManager` using
+  bounded JSON-RPC over stdin/stdout and a parent-owned `CredentialBroker` proxy
+  that injects configured secrets only on declared hosts and scrubs responses; native
+  dynamic loading remains refused. MCP operations are mediated by signed contracts,
+  delegated authorization and response receipts.
 <!-- jani-claim: {"id":"ARCH-MCP-EXECUTOR","kind":"source_contains","path":"backend/server/src/main.rs","needle":"mod mcp;","statement":"MCP operations are mediated by signed contracts, delegated authorization and response receipts."} -->
 - Environment and file-system checks are defense in depth, not an OS-level
   sandbox. On Windows and macOS they are not confinement at all for isolation
   purposes; enterprise isolation profiles are refused there rather than claimed.
-- State is local plaintext JSON and SQLite. The journal is tamper-evident, not tamper-proof,
-  and is not externally anchored.
+- Local state uses SQLite/JSON with optional external hash-chain anchoring (`--audit-anchor`).

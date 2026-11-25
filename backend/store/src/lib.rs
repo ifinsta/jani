@@ -2,6 +2,7 @@
 //! No network service or coordinator is required.
 //! External side effects are never claimed atomic with a SQLite commit.
 pub mod mirror;
+pub mod tasks;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,8 +46,19 @@ fn now() -> u64 {
 
 fn safe(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_symlink() => Err(format!("symlink refused: {}", path.display())),
-        Ok(_) => Ok(()),
+        Ok(m) => {
+            if m.file_type().is_symlink() {
+                return Err(format!("symlink refused: {}", path.display()));
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if m.file_attributes() & 0x400 != 0 {
+                    return Err(format!("reparse point refused: {}", path.display()));
+                }
+            }
+            Ok(())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     }
@@ -66,6 +78,11 @@ impl Store {
         let path = dir.join(DB_NAME);
         safe(&path)?;
         let db = Connection::open(&path).map_err(|e| format!("open attention database: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
         harden(&db)?;
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (

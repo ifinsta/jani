@@ -3,6 +3,8 @@ param(
     [string]$Version,
     [string]$Target,
     [string]$Type = 'agent',
+    [string[]]$UpdateKey,
+    [switch]$AllowUnsignedLegacy,
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Jani\bin'),
     [switch]$AddToPath,
     [switch]$NoPath
@@ -133,6 +135,27 @@ if ($legacy) {
 if ([string]$manifest.version -ne $Version -or [string]$manifest.tag -ne $tag) {
     Fail "manifest identity does not match $tag"
 }
+if ($legacy) {
+    if (-not $AllowUnsignedLegacy) {
+        Fail 'legacy v1 releases are unsigned; pass -AllowUnsignedLegacy only if you explicitly trust this local checkout'
+    }
+} else {
+    if (-not $UpdateKey) {
+        Fail 'typed v2 releases require -UpdateKey ID:HEX or HEX; repeat it for additional trusted signers'
+    }
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        Fail 'python 3 is required for signed-manifest verification'
+    }
+    $signingTool = Join-Path $root 'tools\release_signing.py'
+    $verifyArgs = @($signingTool, 'verify', '--manifest', $manifestPath)
+    foreach ($key in $UpdateKey) {
+        $verifyArgs += @('--update-key', $key)
+    }
+    & python @verifyArgs
+    if ($LASTEXITCODE -ne 0) {
+        Fail 'release manifest signature verification failed'
+    }
+}
 $artifact = @($manifest.artifacts) | Where-Object { $_.target -eq $Target } | Select-Object -First 1
 if (-not $artifact) {
     $available = (@($manifest.artifacts) | ForEach-Object { $_.target }) -join ', '
@@ -151,24 +174,68 @@ if (-not (Test-Path -LiteralPath $binaryPath)) {
 }
 
 $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $binaryPath).Hash.ToLowerInvariant()
-if ($actual -ne ([string]$artifact.sha256).ToLowerInvariant()) {
-    Fail "checksum mismatch for $binaryPath; refusing to install"
+if ((Get-Item -LiteralPath $binaryPath).Length -ne [int64]$artifact.sizeBytes -or
+    $actual -ne ([string]$artifact.sha256).ToLowerInvariant()) {
+    Fail "checksum/size mismatch for $binaryPath; refusing to install"
 }
 
 $binaryName = [string]$contract.types.$Type
 $exeName = if ($Target -like '*windows*') { "$binaryName.exe" } else { $binaryName }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $destination = Join-Path $InstallDir $exeName
-Copy-Item -LiteralPath $binaryPath -Destination $destination -Force
-
-$installed = & $destination --version 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Fail "installed binary failed to run: $installed"
+$verificationName = ".$exeName.verify-$([guid]::NewGuid().ToString('N'))"
+$verificationPath = Join-Path $InstallDir $verificationName
+Copy-Item -LiteralPath $binaryPath -Destination $verificationPath
+try {
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $verificationPath
+    $startInfo.Arguments = '--version'
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Environment.Clear()
+    $systemRoot = [Environment]::GetEnvironmentVariable('SystemRoot')
+    if ($systemRoot) {
+        $startInfo.Environment['SystemRoot'] = $systemRoot
+    }
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit(10000)) {
+        $process.Kill()
+        $process.WaitForExit()
+        Fail 'release candidate verification timed out'
+    }
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    if ($process.ExitCode -ne 0) {
+        Fail "release candidate failed to run: $stdout$stderr"
+    }
+    $backupPath = Join-Path $InstallDir (".$exeName.bak-$([guid]::NewGuid().ToString('N'))")
+    $movedBackup = $false
+    try {
+        if (Test-Path -LiteralPath $destination) {
+            Move-Item -LiteralPath $destination -Destination $backupPath -Force
+            $movedBackup = $true
+        }
+        Move-Item -LiteralPath $verificationPath -Destination $destination -Force
+        if ($movedBackup) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        if ($movedBackup -and -not (Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath $backupPath)) {
+            Move-Item -LiteralPath $backupPath -Destination $destination -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+    $installed = $stdout.Trim()
+} finally {
+    Remove-Item -LiteralPath $verificationPath -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host "Installed $installed to $destination"
 Write-Host "Verified SHA-256 $actual"
-Write-Warning 'Jani release binaries are not code-signed; verify the checksum, manifest and source commit before use.'
+Write-Warning 'The release manifest signature was verified; the Windows binary is not Authenticode code-signed.'
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')

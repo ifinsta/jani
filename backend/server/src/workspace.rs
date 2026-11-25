@@ -28,14 +28,31 @@ impl<'a> Workspace<'a> {
         let target = self.cfg.root.join(path);
         // Resolve every existing path component; deny symlink traversal. Avoids ordinary
         // escape-through-symlink paths, but is not atomic against hostile racing processes.
+        let canon_root = self
+            .cfg
+            .root
+            .canonicalize()
+            .map_err(|e| format!("invalid worktree root: {e}"))?;
         let mut cursor = self.cfg.root.clone();
         for component in path.components() {
             cursor.push(component.as_os_str());
             match fs::symlink_metadata(&cursor) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    return Err("symlinked path component refused".into())
+                Ok(meta) => {
+                    if meta.file_type().is_symlink() {
+                        return Err("symlinked path component refused".into());
+                    }
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::fs::MetadataExt;
+                        if meta.file_attributes() & 0x400 != 0 {
+                            return Err("reparse-point path component refused".into());
+                        }
+                    }
+                    let real = cursor.canonicalize().map_err(|e| e.to_string())?;
+                    if !real.starts_with(&canon_root) {
+                        return Err("path resolves outside worktree".into());
+                    }
                 }
-                Ok(_) => (),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Err(e) => return Err(e.to_string()),
             }
@@ -56,8 +73,8 @@ impl<'a> Workspace<'a> {
             return Err("not a directory".into());
         }
         let mut found = Vec::new();
-        let mut stack = vec![(base, 0u8)];
-        while let Some((path, depth)) = stack.pop() {
+        let mut queue = std::collections::VecDeque::from([(base, 0u8)]);
+        while let Some((path, depth)) = queue.pop_front() {
             let mut entries = fs::read_dir(path)
                 .map_err(|e| e.to_string())?
                 .flatten()
@@ -76,13 +93,27 @@ impl<'a> Workspace<'a> {
                 if kind.is_symlink() {
                     continue;
                 }
+                let relative = name.to_string_lossy().replace('\\', "/");
+                if let Some(policy) = &self.cfg.permissions {
+                    let request = crate::permissions::Request::Read {
+                        path: &relative,
+                        directory: kind.is_dir(),
+                    };
+                    if matches!(
+                        policy.check(Some(&request), crate::types::Effect::Read),
+                        crate::permissions::Verdict::Deny { .. }
+                            | crate::permissions::Verdict::Ask { .. }
+                    ) {
+                        continue;
+                    }
+                }
                 if kind.is_dir() {
-                    found.push(format!("{}/", name.display()));
+                    found.push(format!("{relative}/"));
                     if depth < MAX_LIST_DEPTH {
-                        stack.push((p, depth + 1));
+                        queue.push_back((p, depth + 1));
                     }
                 } else if kind.is_file() {
-                    found.push(name.display().to_string());
+                    found.push(relative);
                 }
             }
             if found.len() >= MAX_LIST_ENTRIES {
@@ -181,6 +212,49 @@ mod tests {
         assert!(is_secret(Path::new("certs/server.key")));
         assert!(is_secret(Path::new("home/.netrc")));
         assert!(!is_secret(Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn root_listings_filter_permission_denied_subtrees() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("src/private")).unwrap();
+        fs::write(root.join("src/private/hidden.txt"), "fixture-hidden").unwrap();
+        fs::write(root.join("src/public.txt"), "public").unwrap();
+        let mut cfg = test_config(root.clone());
+        cfg.permissions = Some(
+            crate::permissions::Policy::compile(
+                crate::permissions::Mode::Default,
+                &[],
+                &[],
+                &["Read(./src/private/**)".into()],
+            )
+            .unwrap(),
+        );
+        let ws = Workspace { cfg: &cfg };
+        for directory in ["", ".", "src"] {
+            let listing = ws.list(directory).unwrap();
+            assert!(listing.contains("public.txt"), "{listing}");
+            assert!(!listing.contains("private"), "{listing}");
+            assert!(!listing.contains("hidden.txt"), "{listing}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ntfs_default_stream_cannot_alias_a_protected_file() {
+        let root = temp_root();
+        fs::write(root.join(".env"), "fixture-env-content").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join(".env::$DATA")).unwrap(),
+            "fixture-env-content"
+        );
+        let cfg = test_config(root.clone());
+        let ws = Workspace { cfg: &cfg };
+        for path in [".env", ".ENV", ".env::$DATA", ".ENV::$DATA"] {
+            assert!(ws.read(path).is_err(), "{path}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

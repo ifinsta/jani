@@ -20,8 +20,10 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{lookup_host, TcpListener, TcpStream, UnixListener, UnixStream},
+    sync::Semaphore,
 };
 
+const MAX_EGRESS_CONNECTIONS: usize = 64;
 const MAX_HEAD: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +169,13 @@ async fn connect(rule: &Rule, host: &str, port: u16) -> Result<TcpStream, String
         .collect();
     let usable: Vec<SocketAddr> = addrs
         .into_iter()
-        .filter(|a| rule.host_is_literal_ip() || !is_internal(&a.ip()))
+        .filter(|a| {
+            let link_local = match a.ip() {
+                IpAddr::V4(v4) => v4.is_link_local(),
+                IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+            };
+            !link_local && (rule.host_is_literal_ip() || !is_internal(&a.ip()))
+        })
         .collect();
     if usable.is_empty() {
         return Err(format!("{host} resolves only to internal addresses"));
@@ -198,9 +206,9 @@ fn split_authority(authority: &str, default_port: u16) -> Option<(String, u16)> 
 }
 
 async fn handle(mut client: UnixStream, allow: Arc<Allow>, who: Arc<String>) {
-    let head = match read_head(&mut client).await {
-        Ok(h) => h,
-        Err(_) => return,
+    let head = match tokio::time::timeout(Duration::from_secs(15), read_head(&mut client)).await {
+        Ok(Ok(h)) => h,
+        _ => return,
     };
     let split = head
         .windows(4)
@@ -210,7 +218,14 @@ async fn handle(mut client: UnixStream, allow: Arc<Allow>, who: Arc<String>) {
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
-    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let (method, target, version) = (
+        parts.next().unwrap_or(""),
+        parts.next().unwrap_or(""),
+        parts.next().unwrap_or(""),
+    );
+    if parts.next().is_some() || !matches!(version, "HTTP/1.1" | "HTTP/1.0") {
+        return refuse(&mut client, "400 Bad Request", "malformed request line").await;
+    }
     let deny = |host: &str, port: u16| tracing::warn!(workspace = %who, destination = %format!("{host}:{port}"), "egress denied");
     if method.eq_ignore_ascii_case("CONNECT") {
         let Some((host, port)) = split_authority(target, 443) else {
@@ -264,6 +279,25 @@ async fn handle(mut client: UnixStream, allow: Arc<Allow>, who: Arc<String>) {
     let Some((host, port)) = split_authority(authority, 80) else {
         return refuse(&mut client, "400 Bad Request", "malformed URL").await;
     };
+    let raw_headers: Vec<&str> = lines.collect();
+    let mut seen_cl = false;
+    for line in &raw_headers {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("transfer-encoding:") {
+            return refuse(
+                &mut client,
+                "501 Not Implemented",
+                "transfer-encoding not supported on egress proxy",
+            )
+            .await;
+        }
+        if lower.starts_with("content-length:") {
+            if seen_cl {
+                return refuse(&mut client, "400 Bad Request", "duplicate content-length").await;
+            }
+            seen_cl = true;
+        }
+    }
     let Some(rule) = allow.rule_for(&host, port) else {
         deny(&host, port);
         return refuse(
@@ -275,10 +309,18 @@ async fn handle(mut client: UnixStream, allow: Arc<Allow>, who: Arc<String>) {
     };
     match connect(rule, &host, port).await {
         Ok(mut upstream) => {
-            let mut out = format!("{method} {path} HTTP/1.1\r\n");
-            for line in lines {
+            let host_header = if port == 80 {
+                host.clone()
+            } else {
+                format!("{host}:{port}")
+            };
+            let mut out = format!("{method} {path} HTTP/1.1\r\nHost: {host_header}\r\n");
+            for line in raw_headers {
                 let lower = line.to_ascii_lowercase();
-                if lower.starts_with("proxy-") || lower.starts_with("connection:") {
+                if lower.starts_with("proxy-")
+                    || lower.starts_with("connection:")
+                    || lower.starts_with("host:")
+                {
                     continue;
                 }
                 out.push_str(line);
@@ -314,11 +356,19 @@ pub fn spawn(socket: &Path, allow: Arc<Allow>, who: String) -> Result<tokio::tas
         std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o666))?;
     }
     let who = Arc::new(who);
+    let permits = Arc::new(Semaphore::new(MAX_EGRESS_CONNECTIONS));
     Ok(tokio::spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    tokio::spawn(handle(stream, allow.clone(), who.clone()));
+                    if let Ok(permit) = permits.clone().try_acquire_owned() {
+                        let allow = allow.clone();
+                        let who = who.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            handle(stream, allow, who).await;
+                        });
+                    }
                 }
                 Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
             }

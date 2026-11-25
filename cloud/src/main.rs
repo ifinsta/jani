@@ -31,6 +31,9 @@ pub struct App {
     pub manager: Arc<Manager>,
     /// Exact origin of the registered redirect URI; the only Origin we accept.
     pub origin: String,
+    pub tenant: String,
+    pub allow_consent_proxy: bool,
+    pub intake_token: Option<String>,
     pub approvers: approvals::Approvers,
     pub profiles: approvals::Profiles,
     pub data_dir: PathBuf,
@@ -197,6 +200,19 @@ async fn run() -> Result<()> {
     let settings = settings_from_env()?;
     let plan = settings.plan(is_root())?;
     std::fs::create_dir_all(&settings.data_dir)?;
+    let _instance_lock = {
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(settings.data_dir.join(".lock"))
+            .context("cannot open jani-cloud startup lock")?;
+        lock_file
+            .try_lock()
+            .context("another jani-cloud instance already owns data_dir")?;
+        lock_file
+    };
     tracing::info!(
         sandbox = ?plan.sandbox,
         uid_isolation = settings.uid_base.is_some(),
@@ -251,9 +267,21 @@ async fn run() -> Result<()> {
     });
     let app_manager = manager.clone();
     let profiles = approvals::Profiles::new(&data_dir);
+    let tenant = std::env::var("JANI_CLOUD_TENANT")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| jani_core::config::defaults::TENANT.into());
+    let allow_consent_proxy = std::env::var("JANI_CLOUD_ALLOW_CONSENT").as_deref() == Ok("1");
+    let intake_token = std::env::var("JANI_CLOUD_INTAKE_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let app = Arc::new(App {
         manager,
         origin,
+        tenant,
+        allow_consent_proxy,
+        intake_token,
         approvers,
         profiles,
         data_dir,
@@ -309,6 +337,8 @@ fn router(state: AppState) -> Router {
         .route("/cloud/me", get(me))
         .route("/cloud/approvals", get(approvals_list))
         .route("/cloud/approvals/decide", post(approvals_decide))
+        .route("/cloud/kill-switch", post(kill_switch))
+        .route("/cloud/intake", post(intake_webhook))
         .route("/cloud/approver", get(approver_page))
         .route(
             "/cloud-approver.js",
@@ -568,7 +598,7 @@ async fn me(State(app): State<Arc<App>>, person: Person) -> Response {
 }
 
 async fn approvals_list(State(app): State<Arc<App>>, person: Person) -> Response {
-    if !app.approvers.is_approver(&person) {
+    if person.degraded || !app.approvers.is_approver(&person) {
         return not_an_approver();
     }
     let me = workspace::user_key(&person.sub);
@@ -582,7 +612,7 @@ async fn approvals_decide(
     headers: axum::http::HeaderMap,
     Json(body): Json<DecideBody>,
 ) -> Response {
-    if !app.approvers.is_approver(&person) {
+    if person.degraded || !app.approvers.is_approver(&person) {
         return not_an_approver();
     }
     if let Err(why) = proxy::same_origin(&app, &headers) {
@@ -592,6 +622,7 @@ async fn approvals_decide(
         &app.data_dir,
         &app.self_bin,
         app.uid_isolation,
+        &app.tenant,
         &person,
         &body.user,
         &body.id,
@@ -614,7 +645,7 @@ async fn approver_page(
     State(siwi): State<Arc<Siwi>>,
     person: Person,
 ) -> Response {
-    if !app.approvers.is_approver(&person) {
+    if person.degraded || !app.approvers.is_approver(&person) {
         return not_an_approver();
     }
     let _ = siwi;
@@ -628,8 +659,8 @@ const APPROVER_PAGE: &str = r##"<!doctype html>
 <link rel="stylesheet" href="/siwi/ui.css"><link rel="stylesheet" href="/cloud.css">
 <script type="module" src="/cloud-approver.js"></script>
 </head><body><main class="c-cloud c-cloud--wide" id="main"><div class="c-panel"><div class="c-panel__body o-stack">
- <div class="o-cluster" style="justify-content:space-between"><h1>Approvals</h1><a class="c-button" href="/">Back to my workspace</a></div>
- <p class="u-muted">Actions people's assistants are waiting to take. You see what is being done and where, not the content: the audit journal records a digest. Approving lets that one action run once.</p>
+ <div class="o-cluster" style="justify-content:space-between"><h1>Approvals</h1><div class="o-cluster"><button class="c-button" type="button" id="kill-switch" data-testid="kill-switch">Activate org kill switch</button><a class="c-button" href="/">Back to my workspace</a></div></div>
+ <p class="u-muted">Actions people's assistants are waiting to take. You see purpose, verification receipt status, and a redacted resource preview. Approving lets that one action run once.</p>
  <div id="list" data-testid="approvals"></div>
  <p class="u-muted" id="status" role="status" aria-live="polite"></p>
 </div></div></main></body></html>"##;
@@ -637,9 +668,20 @@ const APPROVER_PAGE: &str = r##"<!doctype html>
 const APPROVER_JS: &str = r#"
 const list = document.getElementById("list");
 const status = document.getElementById("status");
+const killBtn = document.getElementById("kill-switch");
 const when = (t) => new Date(t * 1000).toLocaleString();
 const mono = (t) => { const s = document.createElement("span"); s.className = "mono"; s.textContent = t; return s; };
 let armed = null;
+let killArmed = false;
+if (killBtn) {
+  killBtn.addEventListener("click", async () => {
+    if (!killArmed) { killArmed = true; killBtn.textContent = "Confirm fleet kill switch"; return; }
+    killArmed = false; killBtn.textContent = "Activate org kill switch"; status.textContent = "Stopping fleet…";
+    const res = await fetch("/cloud/kill-switch", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-siwi": "1" }, body: JSON.stringify({ reason: "approver console trigger" }) });
+    const out = await res.json().catch(() => ({}));
+    status.textContent = res.ok ? ("Kill switch active. Stopped " + (out.stopped || 0) + " workspaces.") : (out.message || "Refused (" + res.status + ").");
+  });
+}
 async function load() {
   const r = await fetch("/cloud/approvals", { credentials: "same-origin" });
   if (!r.ok) { status.textContent = "Could not load approvals (" + r.status + ")."; return; }
@@ -647,14 +689,16 @@ async function load() {
   list.textContent = "";
   if (!pending.length) { const p = document.createElement("p"); p.className = "u-muted"; p.textContent = "Nothing is waiting for you."; list.append(p); return; }
   const table = document.createElement("table"); table.className = "c-cloud__table";
-  table.innerHTML = "<thead><tr><th>Requested by</th><th>Action</th><th>Where</th><th>Risk</th><th>Expires</th><th></th></tr></thead>";
+  table.innerHTML = "<thead><tr><th>Requested by</th><th>Action</th><th>Context / Verified</th><th>Preview</th><th>Risk</th><th>Expires</th><th></th></tr></thead>";
   const body = document.createElement("tbody");
   for (const a of pending) {
     const tr = document.createElement("tr");
     const cell = (...nodes) => { const td = document.createElement("td"); td.append(...nodes); tr.append(td); return td; };
     cell(a.requester + (a.own ? " (you)" : ""));
     cell(mono(a.capability));
-    cell(mono(a.resource));
+    const ctx = (a.taskContext && a.taskContext.purpose ? a.taskContext.purpose : a.taskId) + " | " + (a.verification ? (a.verification.passed ? "verified" : "failed-checks") : "unverified");
+    cell(ctx);
+    cell(mono(a.resourcePreview || a.resource));
     cell(a.risk);
     cell(when(a.expiresAt));
     const actions = cell();
@@ -685,3 +729,258 @@ async function load() {
 load();
 setInterval(() => { if (!document.hidden && !armed) load(); }, 10000);
 "#;
+
+#[derive(Deserialize)]
+struct KillSwitchBody {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn kill_switch(State(app): State<Arc<App>>, person: Person, req: Request) -> Response {
+    if let Err(why) = proxy::same_origin(&app, req.headers()) {
+        return proxy::forbidden(why);
+    }
+    if person.degraded || !app.approvers.is_approver(&person) {
+        return not_an_approver();
+    }
+    let body_bytes = match axum::body::to_bytes(req.into_body(), 16 * 1024).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid body"})),
+            )
+                .into_response()
+        }
+    };
+    let parsed: KillSwitchBody =
+        serde_json::from_slice(&body_bytes).unwrap_or(KillSwitchBody { reason: None });
+    let reason = parsed
+        .reason
+        .as_deref()
+        .unwrap_or("cloud approver emergency kill switch");
+    if let Err(e) = jani_core::kill::activate(&app.data_dir, Some(&app.tenant), &person.sub, reason)
+    {
+        tracing::error!(error = %e, "kill switch activation failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "kill_switch_failed"})),
+        )
+            .into_response();
+    }
+    let mut killed_tasks = 0usize;
+    if let Ok(entries) = std::fs::read_dir(app.data_dir.join("users")) {
+        for entry in entries.flatten() {
+            let key = entry.file_name().to_string_lossy().into_owned();
+            if workspace::user_key(&key) != key && !key.chars().all(|c| c.is_ascii_hexdigit()) {
+                continue;
+            }
+            let st = entry.path().join("state");
+            if st.is_dir() {
+                let _ = jani_core::kill::activate(&st, Some(&app.tenant), &person.sub, reason);
+                if let Ok(mut store) = jani_store::tasks::TaskStore::open(&st) {
+                    killed_tasks += store.kill_tenant(&app.tenant).unwrap_or(0);
+                }
+            }
+        }
+    }
+    let stopped = app.manager.stop_all().await;
+    Json(json!({
+        "ok": true,
+        "stopped": stopped,
+        "killedTasks": killed_tasks,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IntakeBody {
+    user: String,
+    source: String,
+    event: String,
+    reference: String,
+    delivery_id: String,
+    #[serde(default)]
+    prompt: Option<String>,
+}
+
+fn constant_eq(a: &str, b: &str) -> bool {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let len = ab.len().max(bb.len());
+    let mut diff = ab.len() ^ bb.len();
+    for i in 0..len {
+        diff |= usize::from(ab.get(i).copied().unwrap_or(0) ^ bb.get(i).copied().unwrap_or(0));
+    }
+    diff == 0
+}
+
+async fn intake_webhook(
+    State(app): State<Arc<App>>,
+    MaybePerson(person): MaybePerson,
+    req: Request,
+) -> Response {
+    let authorized_by_token = match (
+        app.intake_token.as_deref(),
+        req.headers()
+            .get("x-jani-intake-token")
+            .and_then(|v| v.to_str().ok()),
+    ) {
+        (Some(expected), Some(presented)) => constant_eq(expected, presented),
+        _ => false,
+    };
+    let authorized_by_person = person.as_ref().is_some_and(|p| !p.degraded);
+    if !authorized_by_token && !authorized_by_person {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "intake requires valid X-Jani-Intake-Token or fresh session"})),
+        )
+            .into_response();
+    }
+    if authorized_by_person && !authorized_by_token {
+        if let Err(why) = proxy::same_origin(&app, req.headers()) {
+            return proxy::forbidden(why);
+        }
+    }
+    let body = match axum::body::to_bytes(req.into_body(), 128 * 1024).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid body"})),
+            )
+                .into_response()
+        }
+    };
+    let Ok(payload) = serde_json::from_slice::<IntakeBody>(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid intake JSON"})),
+        )
+            .into_response();
+    };
+    if !jani_core::types::valid_id(&payload.source, 64)
+        || !jani_core::types::valid_id(&payload.delivery_id, 96)
+        || payload.reference.trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid intake identifiers"})),
+        )
+            .into_response();
+    }
+    if jani_core::kill::is_killed(&app.data_dir, &app.tenant)
+        .unwrap_or(None)
+        .is_some()
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "kill_switch_active"})),
+        )
+            .into_response();
+    }
+    let user_dir_key = workspace::user_key(&payload.user);
+    let state_dir = app.data_dir.join("users").join(&user_dir_key).join("state");
+    if let Err(e) = std::fs::create_dir_all(state_dir.join("intake")) {
+        tracing::error!(error = %e, "intake mkdir failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "intake_storage_failed"})),
+        )
+            .into_response();
+    }
+    let task_id = format!(
+        "intake-{}",
+        jani_core::types::sha256_hex(payload.reference.as_bytes())
+            .chars()
+            .take(12)
+            .collect::<String>()
+    );
+    let key = format!(
+        "intake:{}:{}:{}",
+        payload.source, payload.reference, payload.delivery_id
+    );
+    let digest = jani_core::types::sha256_hex(&body);
+    let mut store = match jani_store::tasks::TaskStore::open(&state_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "intake task store failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "task_store_failed"})),
+            )
+                .into_response();
+        }
+    };
+    let _ = store.checkpoint(
+        &app.tenant,
+        &task_id,
+        1,
+        "queued",
+        None,
+        None,
+        &payload.user,
+        "webhook-intake",
+        "",
+        &[],
+    );
+    match store.begin_effect(
+        &app.tenant,
+        &task_id,
+        1,
+        &key,
+        "intake.webhook",
+        &payload.reference,
+        &digest,
+    ) {
+        Ok(jani_store::tasks::EffectGate::AlreadyApplied(_)) => (
+            StatusCode::OK,
+            Json(json!({"ok": true, "deduplicated": true, "taskId": task_id})),
+        )
+            .into_response(),
+        Ok(jani_store::tasks::EffectGate::InFlight) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "duplicate delivery in flight"})),
+        )
+            .into_response(),
+        Ok(jani_store::tasks::EffectGate::Proceed) => {
+            let (scrubbed_prompt, _) =
+                jani_core::data::redact_text(payload.prompt.as_deref().unwrap_or(""));
+            let envelope = json!({
+                "taskId": task_id,
+                "source": payload.source,
+                "event": payload.event,
+                "reference": payload.reference,
+                "deliveryId": payload.delivery_id,
+                "prompt": scrubbed_prompt,
+            });
+            let dest = state_dir
+                .join("intake")
+                .join(format!("{}.json", payload.delivery_id));
+            let _ = std::fs::write(
+                &dest,
+                serde_json::to_vec_pretty(&envelope).unwrap_or_default(),
+            );
+            let _ = store.finish_effect(&app.tenant, &task_id, &key, true, Some(&envelope));
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({"ok": true, "queued": true, "taskId": task_id})),
+            )
+                .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_eq_handles_mismatched_lengths() {
+        assert!(constant_eq("secret-token", "secret-token"));
+        assert!(!constant_eq("secret-token", "secret-toke"));
+        assert!(!constant_eq("secret-token", "secret-tokex"));
+    }
+}

@@ -5,6 +5,7 @@
 //! refused here and stays on the command line.
 
 use crate::config::{Config, JResult};
+use crate::types::AuditEvent;
 use crate::{evidence, journal, plugins, sandbox, types, update};
 use serde_json::{json, Value};
 
@@ -51,8 +52,17 @@ pub(super) fn audit(cfg: &Config) -> JResult<Value> {
 
 pub(super) fn evidence_export(cfg: &Config, id: &str) -> JResult<Value> {
     valid_run(id)?;
-    let receipt = evidence::receipt(&cfg.state_dir, id)?;
-    let events = journal::read_run(&cfg.state_dir.join(journal::JOURNAL_FILE), id)?;
+    let events = journal::read_verified_events(&cfg.state_dir.join(journal::JOURNAL_FILE))?;
+    let receipt = evidence::receipt_with_verifier_keys(
+        &cfg.state_dir,
+        id,
+        &cfg.verifier_keys,
+        &cfg.revoked_keys,
+    )?;
+    let events: Vec<_> = events
+        .into_iter()
+        .filter(|event| event.run_id == id)
+        .collect();
     Ok(json!({
         "schemaVersion": "jani.run-evidence-export/v1",
         "exportedAt": types::now_unix(),
@@ -64,14 +74,16 @@ pub(super) fn evidence_export(cfg: &Config, id: &str) -> JResult<Value> {
 
 /// Receipts for the most recent runs, newest first. Runs with no verifiable
 /// receipt are listed with the reason instead of being dropped.
-pub(super) fn evidence_list(cfg: &Config, run_ids: &[String]) -> Value {
+pub(super) fn evidence_list(events: &[AuditEvent], run_ids: &[String]) -> Value {
     let rows: Vec<Value> = run_ids
         .iter()
         .take(30)
-        .map(|id| match evidence::receipt(&cfg.state_dir, id) {
-            Ok(receipt) => json!({"runId": id, "receipt": receipt}),
-            Err(error) => json!({"runId": id, "error": error}),
-        })
+        .map(
+            |id| match evidence::receipt_from_verified_events(events, id) {
+                Ok(receipt) => json!({"runId": id, "receipt": receipt}),
+                Err(error) => json!({"runId": id, "error": error}),
+            },
+        )
         .collect();
     json!(rows)
 }

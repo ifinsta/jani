@@ -1,5 +1,5 @@
 use crate::config::{validate_relative, Config, JResult};
-use crate::process::{execute, execute_with};
+use crate::process::{execute_with_scrubbed, execute_with_scrubbed_cancel, ProcessIsolation};
 use crate::sandbox::{SandboxManager, SandboxPlan};
 use crate::types::{NetworkPolicy, SandboxProfile, SandboxReceipt};
 use serde_json::{json, Value};
@@ -30,7 +30,13 @@ pub fn run(cfg: &Config, argv: &[String], timeout: u64) -> JResult<Value> {
     let (program, args) = argv.split_first().ok_or("empty executable")?;
     let mut cmd = Command::new(program);
     cmd.args(args);
-    let out = execute(&mut cmd, &cfg.root, timeout)?;
+    let out = execute_with_scrubbed(
+        &mut cmd,
+        &cfg.root,
+        timeout,
+        ProcessIsolation::Direct,
+        &cfg.credential_env_names,
+    )?;
     Ok(json!({
         "exit_code": out.code,
         "timed_out": out.timed_out,
@@ -52,7 +58,8 @@ pub struct ExecGrant {
 
 /// Execute an allowlisted command through the selected OS sandbox backend and
 /// return both its output and an execution receipt. A profile that requires
-/// confinement fails closed when no backend can satisfy it.
+/// confinement fails closed when no backend can satisfy it. Terminates the
+/// confined child process if `cancelled` is signalled while waiting.
 pub fn run_confined(
     cfg: &Config,
     argv: &[String],
@@ -60,6 +67,7 @@ pub fn run_confined(
     profile: SandboxProfile,
     network: NetworkPolicy,
     grant: &ExecGrant,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> JResult<(Value, SandboxReceipt)> {
     if !cfg.allow_exec {
         return Err("command execution disabled; --allow-exec required".into());
@@ -80,7 +88,14 @@ pub fn run_confined(
     let manager = SandboxManager::new(cfg);
     let plan: SandboxPlan = manager.prepare(profile, network)?;
     let (mut cmd, isolation) = manager.command_with(&plan, argv, &grant.extra_writable)?;
-    let out = execute_with(&mut cmd, &cfg.root, timeout, isolation)?;
+    let out = execute_with_scrubbed_cancel(
+        &mut cmd,
+        &cfg.root,
+        timeout,
+        isolation,
+        &cfg.credential_env_names,
+        cancelled,
+    )?;
     let termination = if out.timed_out {
         Some("timeout-or-output-limit".to_string())
     } else if out.code.is_none() {
@@ -111,7 +126,13 @@ pub fn run_confined(
 pub fn verify_staged_paths(cfg: &Config) -> JResult<()> {
     let mut cmd = Command::new("git");
     cmd.args(["diff", "--cached", "--name-only", "-z"]);
-    let out = execute(&mut cmd, &cfg.root, 15)?;
+    let out = execute_with_scrubbed(
+        &mut cmd,
+        &cfg.root,
+        15,
+        ProcessIsolation::Direct,
+        &cfg.credential_env_names,
+    )?;
     if out.timed_out || out.code != Some(0) {
         return Err("could not inspect staged paths before commit".into());
     }
@@ -259,25 +280,35 @@ pub fn validate(args: &[String], cfg: &Config) -> JResult<()> {
     }
     if first == "git"
         && matches!(sub, "status" | "diff" | "log" | "show" | "rev-parse")
-        && args
-            .iter()
-            .any(|a| a.starts_with("--output") || a.starts_with("--ext-diff"))
+        && args.iter().any(|a| {
+            a.starts_with("--output")
+                || a.starts_with("--ext-diff")
+                || a == "--textconv"
+                || a.starts_with("--textconv=")
+        })
     {
-        return Err("git read command cannot write output files or run external diff tools".into());
+        return Err(
+            "git read command cannot write output files, run textconv filters, or use external diff tools"
+                .into(),
+        );
     }
     if args.iter().any(|a| {
         a.contains('\0')
             || a.starts_with("--git-dir")
             || a.starts_with("--work-tree")
-            || a == "-C"
-            || a == "-c"
-            || a == "--exec-path"
-            || a == "--manifest-path"
-            || a == "--config"
-            || a == "--target-dir"
-            || a == "--external"
-            || a == "--message-file"
-            || a == "-F"
+            || a.starts_with("-C")
+            || a.starts_with("-c")
+            || a.starts_with("-F")
+            || [
+                "--exec-path",
+                "--manifest-path",
+                "--config",
+                "--target-dir",
+                "--external",
+                "--message-file",
+            ]
+            .iter()
+            .any(|flag| a.as_str() == *flag || a.starts_with(&format!("{flag}=")))
     }) {
         return Err("unsafe executable override".into());
     }
@@ -356,6 +387,22 @@ mod tests {
         let cfg = test_config();
         assert!(validate(&cmd(&["git", "diff", "--no-index", "a", "b"]), &cfg).is_err());
         assert!(validate(&cmd(&["git", "diff", "--no-index=a", "b"]), &cfg).is_err());
+    }
+
+    #[test]
+    fn attached_execution_overrides_are_refused() {
+        let cfg = test_config();
+        for args in [
+            cmd(&["cargo", "check", "--manifest-path=../other/Cargo.toml"]),
+            cmd(&["cargo", "check", "--config=build.rustc-wrapper=arbitrary"]),
+            cmd(&["cargo", "check", "--target-dir=../outside"]),
+            cmd(&["git", "log", "--exec-path=../outside"]),
+            cmd(&["git", "log", "-ccore.pager=arbitrary"]),
+            cmd(&["git", "log", "-C../outside"]),
+            cmd(&["git", "commit", "-F../message"]),
+        ] {
+            assert!(validate(&args, &cfg).is_err(), "{args:?}");
+        }
     }
 
     #[test]

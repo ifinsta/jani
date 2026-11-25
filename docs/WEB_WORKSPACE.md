@@ -63,7 +63,7 @@ Scopes are frozen when `jani ui` starts, exactly as in the terminal session. The
 
 A tool call that needs approval creates a request and stops. Nothing runs until a **different, verified** principal decides it and the requesting session attaches it with `/approval ID`.
 
-- The browser can decide a request only when the process was started with a verified identity (`--identity FILE --policy-key ID:HEX`). Otherwise the request is refused with HTTP 403.
+- The browser can decide a request only when the process was started with a verified identity (`--identity FILE --identity-key ID:HEX`). Otherwise the request is refused with HTTP 403.
 - The store still enforces its own rules: the requester cannot approve their own action, the role must match, and expired requests are refused. The UI surfaces the refusal text.
 - In practice, run one `jani ui` as the operator and a second, on another port and with the approver's identity, against the same `--state-dir`.
 

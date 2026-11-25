@@ -5,7 +5,6 @@ use crate::{digest, state::State};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Component, Path},
 };
 const MAX_BYTES: u64 = 8_000_000;
@@ -21,19 +20,9 @@ pub fn import(s: &State, rel: &str) -> Result<Value, String> {
     {
         return Err("invalid relative Cargo metadata path".into());
     }
-    let source = s.root.join(path);
-    let meta = fs::symlink_metadata(&source).map_err(|_| "Cargo metadata missing")?;
-    if !meta.is_file()
-        || meta.file_type().is_symlink()
-        || meta.len() > MAX_BYTES
-        || !source
-            .canonicalize()
-            .map_err(|e| e.to_string())?
-            .starts_with(&s.root)
-    {
-        return Err("unsafe or oversized Cargo metadata path".into());
-    }
-    let bytes = fs::read(source).map_err(|e| e.to_string())?;
+    let bytes = s
+        .read_worktree_file(path, MAX_BYTES)
+        .map_err(|_| "unsafe, missing or oversized Cargo metadata path".to_string())?;
     parse(&s.root, &bytes)
 }
 

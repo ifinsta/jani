@@ -269,7 +269,7 @@ fn command_inner(cfg: &Config) -> JResult<Value> {
         delegation_keys: &cfg.mcp_delegation_keys,
     };
     contract.verify(ctx.contract_keys)?;
-    delegation.verify(&ctx)?;
+    delegation.verify(&ctx, &contract.server)?;
     if sub == "verify" {
         return Ok(json!({
             "valid":true,"server":contract.server.id,"operations":contract.operations.keys().collect::<Vec<_>>(),
@@ -354,13 +354,18 @@ fn command_inner(cfg: &Config) -> JResult<Value> {
         },
         &raw,
     );
-    if class.secrets_found > 0
-        || class.effective > spec.max_request_classification
-        || class.effective > delegation.max_classification
-    {
-        return Err("DATA_CLASSIFICATION_DENIED: request arguments exceed permitted class".into());
+    if class.secrets_found > 0 {
+        return Err("DATA_CLASSIFICATION_DENIED: request arguments contain secrets".into());
     }
-    let call = authorize(&contract, &delegation, &ctx, op, resource, args)?;
+    let call = authorize(
+        &contract,
+        &delegation,
+        &ctx,
+        op,
+        resource,
+        args,
+        class.effective,
+    )?;
     if sub == "authorize" {
         audit(cfg, &action, true, "MCP_AUTHORIZED_NO_NETWORK")?;
         return Ok(json!({

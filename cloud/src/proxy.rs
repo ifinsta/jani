@@ -23,6 +23,7 @@ use std::{path::Path, time::Duration};
 use tokio::net::UnixStream;
 
 const MAX_BODY: usize = 64 * 1024;
+const MAX_RESPONSE_BODY: usize = 2 * 1024 * 1024;
 /// The fixed Host the workspace is told it is served as.
 const WORKSPACE_HOST: &str = "localhost";
 
@@ -85,7 +86,7 @@ async fn call(
             .await
             .map_err(|e| format!("request: {e}"))?;
         let (parts, body) = reply.into_parts();
-        let bytes = body
+        let bytes = http_body_util::Limited::new(body, MAX_RESPONSE_BODY)
             .collect()
             .await
             .map_err(|e| format!("body: {e}"))?
@@ -108,6 +109,9 @@ pub async fn forward(app: &App, sub: &str, req: Request) -> Response {
             Json(json!({"error": "method not allowed"})),
         )
             .into_response();
+    }
+    if parts.uri.path() == "/api/consent" && !app.allow_consent_proxy {
+        return forbidden("direct command consent via cloud proxy is disabled");
     }
     if parts.method == Method::POST {
         if let Err(why) = same_origin(app, &parts.headers) {
@@ -145,6 +149,9 @@ pub async fn forward(app: &App, sub: &str, req: Request) -> Response {
             out = out.header(name, v);
         }
     }
+    if parts.uri.path() == "/api/consent" && !app.allow_consent_proxy {
+        return forbidden("direct command consent via cloud proxy is disabled");
+    }
     if parts.method == Method::POST {
         out = out.header(header::ORIGIN, format!("http://{WORKSPACE_HOST}"));
     }
@@ -177,6 +184,14 @@ pub async fn forward(app: &App, sub: &str, req: Request) -> Response {
                 kept.insert(name, v);
             }
         }
+    }
+    if !kept.contains_key(header::CONTENT_SECURITY_POLICY) {
+        kept.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+            ),
+        );
     }
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = status;

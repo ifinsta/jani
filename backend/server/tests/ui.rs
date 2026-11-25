@@ -3,9 +3,7 @@
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::net::TcpListener;
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
@@ -305,7 +303,62 @@ fn a_tampered_journal_is_refused_not_displayed() {
     let run = get(&ui, "/api/run?id=r");
     assert_eq!(run.status, 409, "{}", run.body);
     assert!(run.body.contains("refusing to show unverified events"));
+    let evidence = get(&ui, "/api/evidence/list");
+    assert_eq!(evidence.status, 409, "{}", evidence.body);
+    assert!(evidence.body.contains("refusing to show unverified events"));
     assert!(!run.body.contains("forged"));
+    assert!(!evidence.body.contains("forged"));
+}
+
+#[test]
+fn evidence_listing_uses_verified_receipts_and_is_bounded() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("jani-ui-evidence-{}-{stamp:x}", std::process::id()));
+    std::fs::create_dir_all(root.join("repo")).unwrap();
+    std::fs::create_dir_all(root.join("state")).unwrap();
+    let mut journal = jani_core::journal::Journal::open(&root.join("state")).unwrap();
+    for index in 0..35 {
+        let run_id = format!("run-{index:02}");
+        for decision in ["started", "completed"] {
+            journal
+                .record(jani_core::journal::EventInput {
+                    tenant_id: "local",
+                    task_id: "task",
+                    run_id: &run_id,
+                    invocation_id: "run",
+                    actor_id: "operator",
+                    worker_id: "operator",
+                    action: "agent.run",
+                    resource_digest: "digest",
+                    decision,
+                    reason_code: "test",
+                    policy_revision: "runtime",
+                    approval_id: None,
+                    sandbox_receipt_id: None,
+                    data_classification: jani_core::types::Classification::Internal,
+                })
+                .unwrap();
+        }
+    }
+    drop(journal);
+
+    let ui = start_with_state(&root);
+    let reply = get(&ui, "/api/evidence/list");
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let rows = reply.json();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 30);
+    assert!(rows.iter().all(|row| row["error"].is_null()));
+    assert!(rows
+        .iter()
+        .all(|row| row["receipt"]["journalChainVerified"] == true));
+    assert!(rows
+        .iter()
+        .all(|row| row["receipt"]["outcomeVerified"] == false));
 }
 
 #[test]
@@ -562,7 +615,6 @@ fn unix_socket_mode_has_no_tcp_port_and_keeps_every_check() {
 }
 
 /// A model that replies from a script, one reply per request.
-#[cfg(unix)]
 fn scripted_provider(replies: Vec<Value>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -624,7 +676,6 @@ fn scripted_provider(replies: Vec<Value>) -> String {
     format!("http://{address}/v1")
 }
 
-#[cfg(unix)]
 fn tool_call(argv: &[&str]) -> Value {
     json!({
         "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
@@ -635,12 +686,10 @@ fn tool_call(argv: &[&str]) -> Value {
     })
 }
 
-#[cfg(unix)]
 fn say(text: &str) -> Value {
     json!({"choices": [{"message": {"role": "assistant", "content": text}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}})
 }
 
-#[cfg(unix)]
 fn wait_for_consent(ui: &Ui) -> Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
@@ -656,13 +705,26 @@ fn wait_for_consent(ui: &Ui) -> Value {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn smart_exec_asks_the_operator_in_the_workspace_and_the_answer_decides() {
+    #[cfg(unix)]
+    let (cmd_made, cmd_other, label_made, label_other): (&[&str], &[&str], &str, &str) = (
+        &["touch", "made.txt"],
+        &["touch", "other.txt"],
+        "touch made.txt",
+        "touch other.txt",
+    );
+    #[cfg(windows)]
+    let (cmd_made, cmd_other, label_made, label_other): (&[&str], &[&str], &str, &str) = (
+        &["cmd", "/C", "type nul > made.txt"],
+        &["cmd", "/C", "type nul > other.txt"],
+        "cmd /C type nul > made.txt",
+        "cmd /C type nul > other.txt",
+    );
     let base = scripted_provider(vec![
-        tool_call(&["touch", "made.txt"]),
+        tool_call(cmd_made),
         say("made it"),
-        tool_call(&["touch", "other.txt"]),
+        tool_call(cmd_other),
         say("understood, not made"),
     ]);
     let ui = start_with_env(
@@ -677,9 +739,9 @@ fn smart_exec_asks_the_operator_in_the_workspace_and_the_answer_decides() {
 
     post(&ui, "/api/session/send", json!({"text": "make a file"}));
     let question = wait_for_consent(&ui);
-    assert_eq!(question["command"], "touch made.txt");
-    assert!(question["reason"].as_str().unwrap().contains("touch"));
-    assert_eq!(question["suggest"], "touch made.txt");
+    assert_eq!(question["command"], label_made);
+    assert!(question["reason"].as_str().unwrap().contains(cmd_made[0]));
+    assert_eq!(question["suggest"], label_made);
     // The file is not made while the question is open.
     assert!(!ui.root.join("repo/made.txt").exists());
     // A stale or wrong question id is refused; a malformed answer is refused.
@@ -713,7 +775,7 @@ fn smart_exec_asks_the_operator_in_the_workspace_and_the_answer_decides() {
     // Declining stops the command and the model is told so.
     post(&ui, "/api/session/send", json!({"text": "make another"}));
     let second = wait_for_consent(&ui);
-    assert_eq!(second["command"], "touch other.txt");
+    assert_eq!(second["command"], label_other);
     assert_eq!(
         post(
             &ui,
@@ -733,10 +795,13 @@ fn smart_exec_asks_the_operator_in_the_workspace_and_the_answer_decides() {
     assert!(text.contains("exec_operator_declined"), "{text}");
 }
 
-#[cfg(unix)]
 #[test]
 fn cancelling_a_turn_answers_a_waiting_question_no() {
-    let base = scripted_provider(vec![tool_call(&["touch", "never.txt"]), say("stopped")]);
+    #[cfg(unix)]
+    let cmd_never: &[&str] = &["touch", "never.txt"];
+    #[cfg(windows)]
+    let cmd_never: &[&str] = &["cmd", "/C", "type nul > never.txt"];
+    let base = scripted_provider(vec![tool_call(cmd_never), say("stopped")]);
     let ui = start_with_env(
         &["--exec", "smart"],
         &[("JANI_API_BASE", base), ("JANI_MODEL", "scripted".into())],

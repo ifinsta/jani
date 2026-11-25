@@ -29,20 +29,17 @@ impl MirrorRegister {
     pub fn open(state_dir: &Path) -> Result<Self, String> {
         let root = state_dir.join(DIR_NAME);
         for path in [state_dir, root.as_path()] {
-            if let Ok(metadata) = fs::symlink_metadata(path) {
-                if metadata.file_type().is_symlink() {
-                    return Err("symlinked Mirror state refused".into());
-                }
-            }
+            crate::safe(path)?;
         }
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let db_path = root.join(DB_NAME);
-        if let Ok(metadata) = fs::symlink_metadata(&db_path) {
-            if metadata.file_type().is_symlink() {
-                return Err("symlinked Mirror database refused".into());
-            }
-        }
+        crate::safe(&db_path)?;
         let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&db_path, fs::Permissions::from_mode(0o600));
+        }
         crate::harden(&conn)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS mirror_findings (

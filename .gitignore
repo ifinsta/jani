@@ -2,6 +2,7 @@
 .env
 .env.*
 *.log
+!validation/updates/2026-10-27/tui-probe-012.log
 **/.jani/*
 !**/.jani/settings.json
 

@@ -216,6 +216,8 @@ pub fn bwrap_prefix(user_dir: &Path, egress_socket: Option<&Path>) -> Vec<String
         "/proc",
         "--dev",
         "/dev",
+        "--size",
+        "67108864",
         "--tmpfs",
         "/tmp",
         "--bind",
@@ -345,8 +347,10 @@ impl Settings {
 
 /// Bytes on disk under a directory, without following symlinks.
 pub fn dir_usage(path: &Path) -> u64 {
+    use std::collections::HashSet;
     use std::os::unix::fs::MetadataExt;
     let mut total = 0u64;
+    let mut seen: HashSet<(u64, u64)> = HashSet::new();
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -356,6 +360,12 @@ pub fn dir_usage(path: &Path) -> u64 {
             let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
                 continue;
             };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if !meta.is_dir() && !seen.insert((meta.dev(), meta.ino())) {
+                continue;
+            }
             total += meta.blocks() * 512;
             if meta.is_dir() {
                 stack.push(entry.path());
@@ -391,6 +401,14 @@ impl Manager {
         self.settings.data_dir.join("users").join(key)
     }
 
+    fn ui_run_dir(&self, key: &str) -> PathBuf {
+        self.settings.data_dir.join("run").join(key)
+    }
+
+    fn over_quota_marker(&self, key: &str) -> PathBuf {
+        self.settings.data_dir.join("over-quota").join(key)
+    }
+
     fn disk_limit_bytes(&self) -> Option<u64> {
         self.settings.limits.disk_mb.map(|mb| mb * 1024 * 1024)
     }
@@ -406,11 +424,14 @@ impl Manager {
         let key = user_key(sub);
         if let Some(limit) = self.disk_limit_bytes() {
             let mut over = self.over_quota.lock().await;
-            if over.contains(&key) {
+            let marker = self.over_quota_marker(&key);
+            if over.contains(&key) || marker.exists() {
                 let used = dir_usage(&self.user_dir(&key));
                 if used <= limit {
                     over.remove(&key);
+                    let _ = std::fs::remove_file(&marker);
                 } else {
+                    over.insert(key.clone());
                     return Err(Failure::OverQuota {
                         used_mb: used / (1024 * 1024),
                         limit_mb: limit / (1024 * 1024),
@@ -510,6 +531,11 @@ impl Manager {
                     Cgroups::remove(&entry.joined);
                 }
                 self.over_quota.lock().await.insert(key.clone());
+                let marker = self.over_quota_marker(&key);
+                if let Some(parent) = marker.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&marker, used.to_string());
                 tracing::warn!(workspace = %key, used_mb = used / (1024 * 1024), limit_mb = limit / (1024 * 1024), "workspace is over its disk quota and was stopped");
                 stopped += 1;
             }
@@ -535,6 +561,7 @@ impl Manager {
         }
         self.prepare(&dir, &key).await?;
         self.over_quota.lock().await.remove(&key);
+        let _ = std::fs::remove_file(self.over_quota_marker(&key));
         Ok(())
     }
 
@@ -671,10 +698,13 @@ impl Manager {
         };
         // Keep the pipes drained so a chatty child can never block on a full pipe.
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-        // Inside the sandbox the socket is under /work, which is this directory.
-        let socket = match inner_socket.strip_prefix("/work/") {
-            Some(rel) if sandboxed => user_dir.join(rel),
-            _ => PathBuf::from(inner_socket),
+        // Socket lives in dedicated runtime directory outside `/work`.
+        let socket = match inner_socket.strip_prefix("/run/jani/") {
+            Some(rel) if sandboxed => self.ui_run_dir(key).join(rel),
+            _ => match inner_socket.strip_prefix("/work/") {
+                Some(rel) if sandboxed => user_dir.join(rel),
+                _ => PathBuf::from(inner_socket),
+            },
         };
         Ok(Running {
             child,
@@ -693,17 +723,18 @@ impl Manager {
         egress_sock: Option<&Path>,
     ) -> (PathBuf, Vec<String>) {
         let in_sandbox = self.plan.sandbox == Sandbox::Bwrap;
+        let ui_run_dir = self.ui_run_dir(key);
         let (repo, state, socket) = if in_sandbox {
             (
                 "/work/repo".to_string(),
                 "/work/state".to_string(),
-                "/work/ui.sock".to_string(),
+                "/run/jani/ui.sock".to_string(),
             )
         } else {
             (
                 user_dir.join("repo").display().to_string(),
                 user_dir.join("state").display().to_string(),
-                user_dir.join("ui.sock").display().to_string(),
+                ui_run_dir.join("ui.sock").display().to_string(),
             )
         };
         let mut jani: Vec<String> = vec![
@@ -737,6 +768,9 @@ impl Manager {
         let mut args = bwrap_prefix(user_dir, egress_sock);
         let at = args.len() - 1; // before the trailing `--`
         let mut binds = vec![
+            "--bind".to_string(),
+            ui_run_dir.display().to_string(),
+            "/run/jani".to_string(),
             "--ro-bind".to_string(),
             host_bin.display().to_string(),
             SANDBOX_JANI.to_string(),
@@ -788,6 +822,8 @@ impl Manager {
         for sub in ["repo", "state", "home"] {
             std::fs::create_dir_all(user_dir.join(sub))?;
         }
+        let ui_run = self.ui_run_dir(key);
+        std::fs::create_dir_all(&ui_run)?;
         if fresh {
             if let Some(template) = &self.settings.template {
                 copy_tree(template, &repo).context("cannot copy the workspace template")?;
@@ -825,10 +861,15 @@ impl Manager {
                 for parent in [
                     self.settings.data_dir.as_path(),
                     user_dir.parent().unwrap_or(user_dir),
+                    ui_run.parent().unwrap_or(&ui_run),
                 ] {
                     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o711))?;
                 }
+                std::fs::set_permissions(&ui_run, std::fs::Permissions::from_mode(0o700))?;
                 chown_tree(user_dir, uid)?;
+                chown_tree(&ui_run, uid)?;
+            } else {
+                std::fs::set_permissions(&ui_run, std::fs::Permissions::from_mode(0o700))?;
             }
         }
         Ok(uid)
@@ -889,9 +930,12 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn chown_tree(path: &Path, uid: u32) -> Result<()> {
-    use std::os::unix::fs::chown;
-    chown(path, Some(uid), Some(uid))?;
+    use std::os::unix::fs::lchown;
     let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("refusing to chown symlink {}", path.display());
+    }
+    lchown(path, Some(uid), Some(uid))?;
     if meta.is_dir() {
         for entry in std::fs::read_dir(path)? {
             chown_tree(&entry?.path(), uid)?;

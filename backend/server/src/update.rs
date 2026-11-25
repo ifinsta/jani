@@ -5,9 +5,11 @@ use jani_core::contract::{
     RELEASE_MANIFEST_SCHEMA as MANIFEST_SCHEMA, RELEASE_PACKAGE, RELEASE_TARGETS,
     RELEASE_UPDATE_SCHEMA as UPDATE_SCHEMA,
 };
+use jani_core::crypto;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -20,6 +22,7 @@ const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const FETCH_ATTEMPTS: u64 = 4;
 const RETRY_BASE: Duration = Duration::from_millis(400);
 const RECEIPTS_DIR: &str = "updates";
+const RELEASE_SIGNING_DOMAIN: &[u8] = b"jani-release-manifest/v2\0";
 
 pub fn command(cfg: &Config) -> JResult<()> {
     match cfg.sub.as_deref() {
@@ -34,11 +37,39 @@ fn check(cfg: &Config) -> JResult<()> {
     print_json(&check_report(cfg)?)
 }
 
+fn sweep_stale_backups_in(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') && name.contains(".jani-old-") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn sweep_stale_backups(cfg: &Config, current: Option<&Path>) {
+    if !cfg!(windows) {
+        return;
+    }
+    if let Some(dir) = current.and_then(|p| p.parent()) {
+        sweep_stale_backups_in(dir);
+    }
+    for target in &cfg.update_targets {
+        if let Some(dir) = target.parent() {
+            sweep_stale_backups_in(dir);
+        }
+    }
+}
+
 /// The same report `jani update check` prints, returned for other front ends.
 pub fn check_report(cfg: &Config) -> JResult<serde_json::Value> {
-    let source = source(cfg)?;
-    let release = fetch_release(&source)?;
     let current_exe = current_exe();
+    sweep_stale_backups(cfg, current_exe.as_deref());
+    let source = source(cfg)?;
+    let release = fetch_release(&source, &cfg.update_keys)?;
     let states = inspect_targets(cfg, &release, current_exe.as_deref())?;
     let update_available = states.iter().any(|state| state.update_available);
     let report = json!({
@@ -51,6 +82,7 @@ pub fn check_report(cfg: &Config) -> JResult<serde_json::Value> {
         "latestVersion": release.version,
         "commit": release.commit,
         "builtAt": release.built_at,
+        "manifestSignatureKey": release.signature_key_id,
         "artifact": artifact_json(&release.artifact),
         "updateAvailable": update_available,
         "targets": states.iter().map(TargetState::json).collect::<Vec<_>>(),
@@ -59,6 +91,8 @@ pub fn check_report(cfg: &Config) -> JResult<serde_json::Value> {
 }
 
 fn install(cfg: &Config) -> JResult<()> {
+    let current = current_exe();
+    sweep_stale_backups(cfg, current.as_deref());
     let source = source(cfg)?;
     let outcome = install_once(cfg, &source)?;
     print_json(&outcome.report)?;
@@ -108,10 +142,10 @@ fn source(cfg: &Config) -> JResult<String> {
         .ok_or(
             "update source is required: pass --source URL or set JANI_UPDATE_SOURCE to the origin serving the releases/ tree",
         )?;
-    validate_source(source)
+    validate_source(source, cfg.allow_insecure_local_update)
 }
 
-fn validate_source(raw: &str) -> JResult<String> {
+fn validate_source(raw: &str, allow_insecure_local: bool) -> JResult<String> {
     let source = raw.trim().trim_end_matches('/');
     if source.is_empty() {
         return Err("update source must not be empty".into());
@@ -136,8 +170,15 @@ fn validate_source(raw: &str) -> JResult<String> {
     if authority.contains('@') {
         return Err("update source must not embed credentials".into());
     }
-    if scheme == "http" && !crate::net::is_loopback_authority(authority) {
-        return Err("plain-http update sources are allowed only on localhost".into());
+    if scheme == "http" {
+        if !crate::net::is_loopback_authority(authority) {
+            return Err("plain-http update sources are allowed only on localhost".into());
+        }
+        if !allow_insecure_local {
+            return Err(
+                "plain-http loopback update sources require --allow-insecure-local-update".into(),
+            );
+        }
     }
     Ok(source.to_string())
 }
@@ -154,7 +195,7 @@ fn host_platform() -> JResult<(&'static str, &'static str)> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Channel {
     schema_version: String,
     #[serde(rename = "type")]
@@ -163,8 +204,15 @@ struct Channel {
     latest: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManifestSignature {
+    key_id: String,
+    value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Manifest {
     schema_version: String,
     #[serde(rename = "type")]
@@ -177,10 +225,38 @@ struct Manifest {
     dirty: bool,
     built_at: String,
     artifacts: Vec<Artifact>,
+    signature: Option<ManifestSignature>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+impl Manifest {
+    fn signing_bytes(&self) -> JResult<Vec<u8>> {
+        let mut unsigned = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        unsigned
+            .as_object_mut()
+            .ok_or("release manifest is not an object")?
+            .remove("signature");
+        let mut bytes = RELEASE_SIGNING_DOMAIN.to_vec();
+        bytes.extend(serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?);
+        Ok(bytes)
+    }
+
+    fn verify(&self, trusted_keys: &[String], url: &str) -> JResult<()> {
+        let signature = self
+            .signature
+            .as_ref()
+            .ok_or_else(|| format!("release manifest at {url} is unsigned"))?;
+        crypto::verify_signature(
+            trusted_keys,
+            &signature.key_id,
+            &self.signing_bytes()?,
+            &signature.value,
+        )
+        .map_err(|error| format!("release manifest signature at {url} is invalid: {error}"))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Artifact {
     target: String,
     binary: String,
@@ -198,6 +274,7 @@ struct Release {
     version: String,
     commit: String,
     built_at: String,
+    signature_key_id: String,
     artifact: Artifact,
 }
 
@@ -299,7 +376,17 @@ fn retry_delay(attempt: u64) -> Duration {
     crate::net::retry_delay(base, attempt, crate::net::RETRY_CAP)
 }
 
-fn fetch_release(source: &str) -> JResult<Release> {
+fn fetch_release(source: &str, trusted_keys: &[String]) -> JResult<Release> {
+    if trusted_keys.is_empty() {
+        return Err(
+            "update trust root is required: pass --update-key ID:HEX or set JANI_UPDATE_KEYS"
+                .into(),
+        );
+    }
+    for key in trusted_keys {
+        crypto::parse_key_spec(key)
+            .map_err(|error| format!("invalid update trust root: {error}"))?;
+    }
     let (platform, target) = host_platform()?;
     let origin = Origin::new()?;
     let channel_url = format!("{source}/{RELEASE_COMPONENT}/{platform}/latest.json");
@@ -325,6 +412,7 @@ fn fetch_release(source: &str) -> JResult<Release> {
     );
     let manifest: Manifest = origin.get_json(&manifest_url)?;
     validate_manifest(&manifest, platform, target, &channel.latest, &manifest_url)?;
+    manifest.verify(trusted_keys, &manifest_url)?;
     let artifact = manifest
         .artifacts
         .iter()
@@ -339,6 +427,11 @@ fn fetch_release(source: &str) -> JResult<Release> {
         version: manifest.version.clone(),
         commit: manifest.commit.clone(),
         built_at: manifest.built_at.clone(),
+        signature_key_id: manifest
+            .signature
+            .as_ref()
+            .map(|signature| signature.key_id.clone())
+            .unwrap_or_default(),
         artifact,
     })
 }
@@ -636,42 +729,103 @@ fn inspect_targets(
     release: &Release,
     current_exe: Option<&Path>,
 ) -> JResult<Vec<TargetState>> {
+    let current_fingerprint = current_exe.and_then(|path| file_fingerprint(path).ok());
     Ok(resolve_targets(cfg)?
         .into_iter()
-        .map(|path| inspect_target(path, release, current_exe, cfg.update_force))
+        .map(|path| {
+            inspect_target(
+                path,
+                release,
+                current_exe,
+                current_fingerprint.as_ref(),
+                cfg.update_force,
+            )
+        })
         .collect())
+}
+
+fn file_fingerprint(path: &Path) -> JResult<(u64, String)> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("target is not a regular file".into());
+    }
+    if metadata.len() > MAX_ARTIFACT_BYTES {
+        return Err("target exceeds the supported release size".into());
+    }
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok((metadata.len(), hex::encode(hasher.finalize())))
 }
 
 fn inspect_target(
     path: PathBuf,
     release: &Release,
     current_exe: Option<&Path>,
+    current_fingerprint: Option<&(u64, String)>,
     force: bool,
 ) -> TargetState {
     let restart_required = current_exe
         .and_then(|exe| fs::canonicalize(&path).ok().map(|path| path == exe))
         .unwrap_or(false);
-    if path.exists() && !path.is_file() {
-        return TargetState {
-            path,
-            current: None,
-            error: Some("target exists but is not a regular file".into()),
-            update_available: false,
-            status: "error",
-            restart_required,
-        };
-    }
-    let current = if path.exists() {
-        match binary_version(&path) {
-            Ok(version) => Some(version),
-            Err(error) => {
+    let exists = match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return TargetState {
                     path,
                     current: None,
-                    error: Some(error),
+                    error: Some("target exists but is not a regular file".into()),
                     update_available: false,
                     status: "error",
                     restart_required,
+                };
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return TargetState {
+                path,
+                current: None,
+                error: Some(error.to_string()),
+                update_available: false,
+                status: "error",
+                restart_required,
+            };
+        }
+    };
+    let current = if exists {
+        if restart_required {
+            Some(env!("CARGO_PKG_VERSION").to_string())
+        } else {
+            match file_fingerprint(&path) {
+                Ok(fingerprint) => {
+                    if current_fingerprint == Some(&fingerprint) {
+                        Some(env!("CARGO_PKG_VERSION").to_string())
+                    } else if fingerprint.0 == release.artifact.size_bytes
+                        && fingerprint.1.eq_ignore_ascii_case(&release.artifact.sha256)
+                    {
+                        Some(release.version.clone())
+                    } else {
+                        None
+                    }
+                }
+                Err(error) => {
+                    return TargetState {
+                        path,
+                        current: None,
+                        error: Some(error),
+                        update_available: false,
+                        status: "error",
+                        restart_required,
+                    };
                 }
             }
         }
@@ -681,9 +835,11 @@ fn inspect_target(
     let comparison = current
         .as_deref()
         .and_then(|current| compare_versions(&release.version, current));
-    let update_available = force || current.is_none() || comparison == Some(Ordering::Greater);
+    let update_available = force || !exists || comparison == Some(Ordering::Greater);
     let status = if update_available {
         "update-available"
+    } else if exists && current.is_none() {
+        "unknown-version"
     } else if comparison == Some(Ordering::Less) {
         "newer-local"
     } else if current.is_some() {
@@ -701,18 +857,24 @@ fn inspect_target(
     }
 }
 
-fn binary_version(path: &Path) -> JResult<String> {
+fn binary_version(path: &Path, credential_env_names: &[String]) -> JResult<String> {
     let cwd = path
         .parent()
         .filter(|parent| parent.is_dir())
         .unwrap_or_else(|| Path::new("."));
     let mut command = Command::new(path);
     command.arg("--version");
-    let output = process::execute(&mut command, cwd, 10)
-        .map_err(|e| format!("cannot run {} --version: {e}", path.display()))?;
+    let output = process::execute_with_scrubbed(
+        &mut command,
+        cwd,
+        10,
+        crate::process::ProcessIsolation::Direct,
+        credential_env_names,
+    )
+    .map_err(|e| format!("cannot run {} --version: {e}", path.display()))?;
     if output.code != Some(0) {
         return Err(format!(
-            "{} --version exited with {:?}; refusing to replace an unrecognized binary",
+            "{} --version exited with {:?}; refusing to install an unrecognized binary",
             path.display(),
             output.code
         ));
@@ -742,7 +904,7 @@ struct InstallOutcome {
 }
 
 fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
-    let release = fetch_release(source)?;
+    let release = fetch_release(source, &cfg.update_keys)?;
     let current_exe = current_exe();
     let states = inspect_targets(cfg, &release, current_exe.as_deref())?;
     let needs_install = states
@@ -785,7 +947,14 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
                 results.push(state.json());
                 continue;
             }
-            match install_target(&state.path, &bytes, &release, state.restart_required) {
+            match install_target(
+                &state.path,
+                &bytes,
+                &release,
+                state.restart_required,
+                state.current.as_deref(),
+                &cfg.credential_env_names,
+            ) {
                 Ok(result) => {
                     installed += 1;
                     results.push(result);
@@ -820,6 +989,8 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
         }
     } else if installed > 0 {
         "installed"
+    } else if states.iter().any(|state| state.status == "unknown-version") {
+        "unknown-version"
     } else {
         "up-to-date"
     };
@@ -833,6 +1004,7 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
         "latestVersion": release.version,
         "commit": release.commit,
         "builtAt": release.built_at,
+        "manifestSignatureKey": release.signature_key_id,
         "artifact": artifact_json(&release.artifact),
         "artifactVerified": artifact_verified,
         "status": status,
@@ -865,8 +1037,9 @@ fn install_target(
     bytes: &[u8],
     release: &Release,
     restart_required: bool,
+    previous: Option<&str>,
+    credential_env_names: &[String],
 ) -> JResult<Value> {
-    let previous = binary_version(path).ok();
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -878,7 +1051,7 @@ fn install_target(
     let verified = (|| -> JResult<()> {
         let mut last = String::new();
         for attempt in 1..=3 {
-            match binary_version(&candidate) {
+            match binary_version(&candidate, credential_env_names) {
                 Ok(version) if version == release.version => return Ok(()),
                 Ok(version) => {
                     last = format!(
@@ -1061,7 +1234,64 @@ mod tests {
                 dirty: false,
                 built_at: "2026-10-26T00:00:00Z".into(),
             }],
+            signature: None,
         }
+    }
+
+    #[test]
+    fn release_manifest_signature_is_domain_separated_and_tamper_evident() {
+        let secret = "55".repeat(32);
+        let public = crypto::public_key_hex(&secret).unwrap();
+        let mut sample = manifest();
+        let bytes = sample.signing_bytes().unwrap();
+        assert!(bytes.starts_with(RELEASE_SIGNING_DOMAIN));
+        sample.signature = Some(ManifestSignature {
+            key_id: "release-test".into(),
+            value: crypto::sign_hex(&secret, &bytes).unwrap(),
+        });
+        sample
+            .verify(
+                &[format!("release-test:{public}")],
+                "https://releases.example",
+            )
+            .unwrap();
+
+        let mut tampered = sample;
+        tampered.version = "0.2.1".into();
+        assert!(tampered
+            .verify(
+                &[format!("release-test:{public}")],
+                "https://releases.example"
+            )
+            .is_err());
+        let wrong_key = "66".repeat(32);
+        let wrong_public = crypto::public_key_hex(&wrong_key).unwrap();
+        let mut sample = manifest();
+        sample.signature = Some(ManifestSignature {
+            key_id: "release-test".into(),
+            value: crypto::sign_hex(&wrong_key, &sample.signing_bytes().unwrap()).unwrap(),
+        });
+        assert!(sample
+            .verify(
+                &[format!("release-test:{public}")],
+                "https://releases.example"
+            )
+            .is_err());
+        sample
+            .verify(
+                &[format!("release-test:{wrong_public}")],
+                "https://releases.example",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn release_manifest_must_be_signed_by_an_explicit_trusted_key() {
+        let sample = manifest();
+        let err = sample
+            .verify(&["11".repeat(32)], "https://releases.example")
+            .unwrap_err();
+        assert!(err.contains("unsigned"));
     }
 
     #[test]
@@ -1091,19 +1321,20 @@ mod tests {
     }
 
     #[test]
-    fn sources_require_https_or_loopback() {
-        assert!(validate_source("https://releases.example.com/jani").is_ok());
+    fn sources_require_https_or_explicit_loopback_opt_in() {
+        assert!(validate_source("https://releases.example.com/jani", false).is_ok());
+        assert!(validate_source("http://127.0.0.1:8080/releases/", false).is_err());
         assert_eq!(
-            validate_source("http://127.0.0.1:8080/releases/").unwrap(),
+            validate_source("http://127.0.0.1:8080/releases/", true).unwrap(),
             "http://127.0.0.1:8080/releases"
         );
-        assert!(validate_source("http://localhost:9000").is_ok());
-        assert!(validate_source("http://[::1]:9000/releases").is_ok());
-        assert!(validate_source("http://releases.example.com").is_err());
-        assert!(validate_source("ftp://releases.example.com").is_err());
-        assert!(validate_source("https://token@releases.example.com").is_err());
-        assert!(validate_source("https://releases.example.com?token=x").is_err());
-        assert!(validate_source("releases.example.com").is_err());
+        assert!(validate_source("http://localhost:9000", true).is_ok());
+        assert!(validate_source("http://[::1]:9000/releases", true).is_ok());
+        assert!(validate_source("http://releases.example.com", true).is_err());
+        assert!(validate_source("ftp://releases.example.com", true).is_err());
+        assert!(validate_source("https://token@releases.example.com", false).is_err());
+        assert!(validate_source("https://releases.example.com?token=x", false).is_err());
+        assert!(validate_source("releases.example.com", false).is_err());
     }
 
     #[test]

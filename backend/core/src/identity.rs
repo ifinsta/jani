@@ -2,10 +2,16 @@ use crate::config::Config;
 use crate::crypto;
 use crate::types::{now_unix, RuntimeMode};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
 use std::path::Path;
 
+const IDENTITY_DOMAIN: &[u8] = b"jani.identity-assertion/v1\0";
+const NONCES_FILE: &str = "identity-nonces.json";
+const MAX_NONCE_ENTRIES: usize = 4096;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdentitySignature {
     #[serde(default)]
     pub key_id: String,
@@ -13,7 +19,7 @@ pub struct IdentitySignature {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdentityAssertion {
     pub api_version: String,
     pub kind: String,
@@ -22,6 +28,12 @@ pub struct IdentityAssertion {
     pub subject_type: String,
     #[serde(default)]
     pub issuer: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub approval_scopes: Vec<String>,
     pub issued_at: u64,
     pub expires_at: u64,
     pub nonce: String,
@@ -33,7 +45,9 @@ impl IdentityAssertion {
     pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
         let mut clone = self.clone();
         clone.signature = None;
-        serde_json::to_vec(&clone).map_err(|e| e.to_string())
+        let mut bytes = IDENTITY_DOMAIN.to_vec();
+        bytes.extend(crypto::canonical_serialize(&clone)?);
+        Ok(bytes)
     }
 
     #[cfg(test)]
@@ -47,14 +61,25 @@ impl IdentityAssertion {
     }
 
     pub fn verify(&self, trusted_keys: &[String]) -> Result<(), String> {
+        self.verify_with_revoked(trusted_keys, &[])
+    }
+
+    pub fn verify_with_revoked(
+        &self,
+        trusted_keys: &[String],
+        revoked_keys: &[String],
+    ) -> Result<(), String> {
         if self.api_version != "jani.dev/v1alpha1" {
             return Err("unsupported identity apiVersion; expected jani.dev/v1alpha1".into());
         }
         if self.kind != "IdentityAssertion" {
             return Err("identity kind must be IdentityAssertion".into());
         }
-        if self.subject_type != "human" && self.subject_type != "worker" {
-            return Err("identity subjectType must be human or worker".into());
+        if !matches!(
+            self.subject_type.as_str(),
+            "human" | "worker" | "employee_bot"
+        ) {
+            return Err("identity subjectType must be human, worker, or employee_bot".into());
         }
         if self.principal.trim().is_empty() || self.tenant.trim().is_empty() {
             return Err("identity requires principal and tenant".into());
@@ -74,7 +99,13 @@ impl IdentityAssertion {
             .as_ref()
             .ok_or("identity assertion is unsigned")?;
         let bytes = self.signing_bytes()?;
-        crypto::verify_signature(trusted_keys, &signature.key_id, &bytes, &signature.value)
+        crypto::verify_signature_with_revoked(
+            trusted_keys,
+            revoked_keys,
+            &signature.key_id,
+            &bytes,
+            &signature.value,
+        )
     }
 }
 
@@ -84,6 +115,9 @@ pub struct VerifiedIdentity {
     pub tenant: String,
     pub subject_type: String,
     pub issuer: String,
+    pub roles: Vec<String>,
+    pub groups: Vec<String>,
+    pub approval_scopes: Vec<String>,
     pub verified: bool,
     pub expires_at: Option<u64>,
 }
@@ -95,10 +129,125 @@ impl VerifiedIdentity {
             tenant: cfg.tenant.clone(),
             subject_type: "human".into(),
             issuer: "local-unmanaged".into(),
+            roles: Vec::new(),
+            groups: Vec::new(),
+            approval_scopes: Vec::new(),
             verified: false,
             expires_at: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NonceEntry {
+    expires_at: u64,
+    #[serde(default)]
+    task_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NonceCache {
+    #[serde(default)]
+    entries: BTreeMap<String, NonceEntry>,
+}
+
+fn update_nonces(
+    state_dir: &Path,
+    mutate: impl FnOnce(&mut NonceCache, u64) -> Result<(), String>,
+) -> Result<(), String> {
+    fs::create_dir_all(state_dir)
+        .map_err(|e| format!("cannot create state directory {}: {e}", state_dir.display()))?;
+    let path = state_dir.join(NONCES_FILE);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .map_err(|e| format!("cannot open identity nonce lock: {e}"))?;
+    lock.lock()
+        .map_err(|e| format!("cannot lock identity nonce cache: {e}"))?;
+    let res = (|| {
+        let now = now_unix();
+        let mut cache: NonceCache = match fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str(&raw)
+                .map_err(|e| format!("corrupt identity nonce cache: {e}"))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => NonceCache::default(),
+            Err(e) => return Err(format!("cannot read identity nonce cache: {e}")),
+        };
+        cache.entries.retain(|_, v| v.expires_at > now);
+        if cache.entries.len() >= MAX_NONCE_ENTRIES {
+            return Err("identity nonce cache is full".into());
+        }
+        mutate(&mut cache, now)?;
+        let json = serde_json::to_vec(&cache).map_err(|e| e.to_string())?;
+        let tmp = path.with_extension(format!("tmp.{}", crate::process::unique_id()));
+        fs::write(&tmp, &json).map_err(|e| format!("cannot write nonce cache: {e}"))?;
+        if let Err(e) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("cannot persist nonce cache: {e}"));
+        }
+        Ok(())
+    })();
+    let _ = lock.unlock();
+    res
+}
+
+/// Strictly consumes a nonce once; subsequent presentations with the same scope+nonce are denied.
+pub fn claim_unique_nonce(
+    state_dir: &Path,
+    scope: &str,
+    nonce: &str,
+    expires_at: u64,
+) -> Result<(), String> {
+    let key = format!("{scope}\0{nonce}");
+    update_nonces(state_dir, |cache, now| {
+        if expires_at <= now {
+            return Err("nonce is already expired".into());
+        }
+        if cache.entries.contains_key(&key) {
+            return Err("identity or grant nonce has already been consumed".into());
+        }
+        cache.entries.insert(
+            key,
+            NonceEntry {
+                expires_at,
+                task_id: None,
+            },
+        );
+        Ok(())
+    })
+}
+
+/// Records an identity assertion nonce bound to `task_id` (or unique if `task_id` is None).
+pub fn consume_assertion_nonce(
+    state_dir: &Path,
+    assertion: &IdentityAssertion,
+    task_id: Option<&str>,
+    strict_single_use: bool,
+) -> Result<(), String> {
+    let key = format!(
+        "id:{}\0{}\0{}\0{}",
+        assertion.issuer, assertion.tenant, assertion.principal, assertion.nonce
+    );
+    update_nonces(state_dir, |cache, _now| {
+        if let Some(existing) = cache.entries.get(&key) {
+            if strict_single_use || existing.task_id.as_deref() != task_id || task_id.is_none() {
+                return Err("identity assertion nonce replay rejected".into());
+            }
+            return Ok(());
+        }
+        cache.entries.insert(
+            key,
+            NonceEntry {
+                expires_at: assertion.expires_at,
+                task_id: task_id.map(str::to_string),
+            },
+        );
+        Ok(())
+    })
 }
 
 pub fn load(cfg: &Config) -> Result<VerifiedIdentity, String> {
@@ -108,8 +257,14 @@ pub fn load(cfg: &Config) -> Result<VerifiedIdentity, String> {
         }
         return Ok(VerifiedIdentity::local(cfg));
     };
+    if cfg.identity_keys.is_empty() {
+        return Err(
+            "identity verification requires --identity-key (or JANI_IDENTITY_KEYS) trust roots; policy keys are not accepted"
+                .into(),
+        );
+    }
     let assertion = load_assertion(path)?;
-    assertion.verify(&cfg.policy_keys)?;
+    assertion.verify_with_revoked(&cfg.identity_keys, &cfg.revoked_keys)?;
     if assertion.tenant != cfg.tenant {
         return Err(format!(
             "identity tenant '{}' does not match requested tenant '{}'",
@@ -127,6 +282,9 @@ pub fn load(cfg: &Config) -> Result<VerifiedIdentity, String> {
         tenant: assertion.tenant,
         subject_type: assertion.subject_type,
         issuer: assertion.issuer,
+        roles: assertion.roles,
+        groups: assertion.groups,
+        approval_scopes: assertion.approval_scopes,
         verified: true,
         expires_at: Some(assertion.expires_at),
     })
@@ -151,6 +309,9 @@ mod tests {
             tenant: "org-example".into(),
             subject_type: "human".into(),
             issuer: "idp-example".into(),
+            roles: vec!["reviewer".into()],
+            groups: vec!["eng".into()],
+            approval_scopes: vec!["write-review".into()],
             issued_at: now_unix().saturating_sub(10),
             expires_at: now_unix().saturating_add(600),
             nonce: "nonce-1".into(),
@@ -169,6 +330,43 @@ mod tests {
         let mut tampered = a.clone();
         tampered.principal = "human-99".into();
         assert!(tampered.verify(&[format!("default:{public}")]).is_err());
+
+        assert!(a
+            .verify_with_revoked(&[format!("default:{public}")], &["default".into()])
+            .is_err());
+    }
+
+    #[test]
+    fn identity_keys_are_isolated_from_policy_keys_and_nonces_block_replay() {
+        let dir =
+            std::env::temp_dir().join(format!("jani-id-nonce-{}", crate::process::unique_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let secret = "33".repeat(32);
+        let public = public_key_hex(&secret).unwrap();
+        let mut a = assertion();
+        a.sign(&secret, "id-1").unwrap();
+        let id_path = dir.join("identity.json");
+        fs::write(&id_path, serde_json::to_vec(&a).unwrap()).unwrap();
+
+        let mut cfg = Config::baseline();
+        cfg.identity_path = Some(id_path.clone());
+        cfg.tenant = a.tenant.clone();
+        cfg.principal = a.principal.clone();
+        cfg.policy_keys = vec![format!("id-1:{public}")];
+        assert!(load(&cfg).is_err());
+
+        cfg.identity_keys = vec![format!("id-1:{public}")];
+        let loaded = load(&cfg).unwrap();
+        assert_eq!(loaded.roles, vec!["reviewer".to_string()]);
+
+        assert!(claim_unique_nonce(&dir, "test", "nonce-1", now_unix() + 60).is_ok());
+        assert!(claim_unique_nonce(&dir, "test", "nonce-1", now_unix() + 60).is_err());
+        assert!(consume_assertion_nonce(&dir, &a, Some("task-1"), false).is_ok());
+        assert!(consume_assertion_nonce(&dir, &a, Some("task-1"), false).is_ok());
+        assert!(consume_assertion_nonce(&dir, &a, Some("task-2"), false).is_err());
+        assert!(consume_assertion_nonce(&dir, &a, Some("task-1"), true).is_err());
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

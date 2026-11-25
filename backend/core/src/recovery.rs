@@ -16,11 +16,10 @@ struct RunSnapshot {
 }
 
 pub fn status(state_dir: &Path) -> Result<Value, String> {
-    let chain = journal::verify(state_dir)?;
-    if chain["ok"] != true {
-        return Err("audit integrity check failed; recovery status cannot be trusted".into());
-    }
-    let events = journal::read_events(&state_dir.join(journal::JOURNAL_FILE))?;
+    let events =
+        journal::read_verified_events(&state_dir.join(journal::JOURNAL_FILE)).map_err(|e| {
+            format!("audit integrity check failed; recovery status cannot be trusted: {e}")
+        })?;
     let mut grouped: BTreeMap<(String, String, String), RunSnapshot> = BTreeMap::new();
     for event in events {
         // Only runs that have an actual agent.run record are treated as tasks.

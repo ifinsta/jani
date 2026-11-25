@@ -16,15 +16,22 @@ fn covered(service: &str, source: &str, status: &str, reason: &str) -> Coverage 
         reason: reason.to_owned(),
     }
 }
-fn run(unit: &str, previous: Option<&str>) -> std::io::Result<Vec<u8>> {
+fn run(unit: &str, previous: Option<&str>, max_logs: usize) -> std::io::Result<Vec<u8>> {
     let bin = super::which(&["/usr/bin/journalctl", "/bin/journalctl"]).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "journalctl unavailable")
     })?;
     let after = previous.map(|cursor| format!("--after-cursor={cursor}"));
-    let mut args: Vec<&str> = vec!["--unit", unit, "--output=json", "--no-pager", "--quiet"];
-    match &after {
-        Some(flag) => args.push(flag.as_str()),
-        None => args.push("--lines=100"),
+    let lines = format!("--lines={}", max_logs.clamp(1, 100));
+    let mut args: Vec<&str> = vec![
+        "--unit",
+        unit,
+        "--output=json",
+        "--no-pager",
+        "--quiet",
+        lines.as_str(),
+    ];
+    if let Some(flag) = &after {
+        args.push(flag.as_str());
     }
     super::run_captured(
         &bin,
@@ -103,7 +110,7 @@ pub fn capture(
             return Err("invalid stored cursor".into());
         }
     }
-    let bytes = match run(unit, previous) {
+    let bytes = match run(unit, previous, max_logs) {
         Ok(bytes) => bytes,
         Err(_) => {
             return Ok(Capture {
@@ -121,12 +128,14 @@ pub fn capture(
     let raw = std::str::from_utf8(&bytes).map_err(|_| "invalid journal text")?;
     let mut logs = Vec::new();
     let mut last = None;
+    let mut hit_limit = false;
     for line in raw.lines() {
         if line.trim().is_empty() {
             continue;
         }
         if logs.len() >= max_logs {
-            return Err("journal event limit reached; cursor unchanged".into());
+            hit_limit = true;
+            break;
         }
         let value: serde_json::Value =
             serde_json::from_str(line).map_err(|_| "invalid journal JSON")?;
@@ -135,14 +144,17 @@ pub fn capture(
         last = Some(cursor);
     }
     let initial = previous.is_none();
+    let partial = initial || hit_limit;
     Ok(Capture {
         logs,
         cursor: last,
         coverage: covered(
             service,
             &source,
-            if initial { "partial" } else { "covered" },
-            if initial {
+            if partial { "partial" } else { "covered" },
+            if hit_limit {
+                "journal batch capped at max_logs; cursor advanced to delivered entries"
+            } else if initial {
                 "initial journal tail; earlier history not verified"
             } else {
                 ""

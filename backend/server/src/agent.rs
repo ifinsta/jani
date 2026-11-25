@@ -16,6 +16,7 @@ use crate::types::{
     new_id, now_unix, sha256_hex, ApprovalStatus, Classification, Effect, NetworkPolicy,
     SandboxProfile, ToolResult, WorkContract,
 };
+use jani_store::tasks::TaskStore;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -39,9 +40,11 @@ struct Session {
     identity: VerifiedIdentity,
     contract: Option<WorkContract>,
     governance: Governance,
+    plugins: PluginRegistry,
     journal: Journal,
     approvals: ApprovalStore,
     budget: BudgetLedger,
+    task_epoch: u64,
     messages: Vec<Value>,
     task_id: String,
     model: ModelChoice,
@@ -144,21 +147,40 @@ fn tool_activity(name: &str, params: &Value) -> String {
                 operation => format!("calling native {tool}.{operation}"),
             }
         }
+        Some(Tool::Plugin) => {
+            format!(
+                "calling connector {}/{}",
+                field("plugin_id"),
+                field("capability")
+            )
+        }
         _ => format!("calling {name}"),
     }
 }
 
+fn cancel_turn(meta: &RunMeta<'_>, journal: &mut Journal) -> JResult<String> {
+    meta.record(journal, decision::FAILED, reason::CANCELLED_BY_OPERATOR)?;
+    Err(
+        "turn cancelled at an execution boundary; earlier file or external effects may remain"
+            .into(),
+    )
+}
+
 fn ensure_active(
     cancelled: Option<&AtomicBool>,
+    state_dir: &std::path::Path,
     meta: &RunMeta<'_>,
     journal: &mut Journal,
 ) -> JResult<()> {
     if cancelled.is_some_and(|token| token.load(Ordering::SeqCst)) {
+        cancel_turn(meta, journal)?;
+    }
+    if let Some(rec) = jani_core::kill::is_killed(state_dir, &meta.identity.tenant)? {
         meta.record(journal, decision::FAILED, reason::CANCELLED_BY_OPERATOR)?;
-        return Err(
-            "turn cancelled at an execution boundary; earlier file or external effects may remain"
-                .into(),
-        );
+        return Err(format!(
+            "KILL_SWITCH_ACTIVE: execution halted by {} ({})",
+            rec.actor, rec.reason
+        ));
     }
     Ok(())
 }
@@ -195,8 +217,22 @@ impl RunMeta<'_> {
 
 impl Session {
     fn open(cfg: &Config, catalog: &Catalog) -> JResult<Self> {
+        Self::open_with_resume(cfg, catalog, None)
+    }
+
+    fn open_with_resume(
+        cfg: &Config,
+        catalog: &Catalog,
+        resume_task_id: Option<&str>,
+    ) -> JResult<Self> {
         let policy = PolicyEngine::load(cfg)?;
         let identity = identity::load(cfg)?;
+        if let Some(rec) = jani_core::kill::is_killed(&cfg.state_dir, &identity.tenant)? {
+            return Err(format!(
+                "KILL_SWITCH_ACTIVE: halted by {} ({})",
+                rec.actor, rec.reason
+            ));
+        }
         let contract = match cfg.contract_path.as_ref() {
             Some(path) => Some(WorkContract::load(path)?),
             None => None,
@@ -208,6 +244,14 @@ impl Session {
                     "work contract purpose '{}' does not match the requested purpose '{}'",
                     contract.spec.purpose, cfg.purpose
                 ));
+            }
+            if let Some(tid) = resume_task_id {
+                if contract.metadata.task_id != tid {
+                    return Err(format!(
+                        "work contract taskId '{}' does not match resumed task '{tid}'",
+                        contract.metadata.task_id
+                    ));
+                }
             }
         }
         let limits = effective_limits(&policy, contract.as_ref())?;
@@ -223,14 +267,42 @@ impl Session {
         );
         let plugins = PluginRegistry::load(cfg)?;
 
-        let task_id = contract
-            .as_ref()
-            .map(|contract| contract.metadata.task_id.clone())
-            .or_else(|| cfg.task_id.clone())
-            .unwrap_or_else(|| new_id("task"));
-        let journal = Journal::open(&cfg.state_dir)?;
+        let mut tasks = TaskStore::open(&cfg.state_dir)?;
+        let mut loaded_checkpoint = None;
+        let (task_id, task_epoch) = match resume_task_id {
+            Some(tid) => {
+                let cp = tasks
+                    .load(&identity.tenant, tid)?
+                    .ok_or_else(|| format!("no saved checkpoint for task '{tid}'"))?;
+                if cp.status == "killed" {
+                    return Err(format!("task '{tid}' was killed and cannot be resumed"));
+                }
+                let epoch = tasks.claim_resume_epoch(&identity.tenant, tid)?;
+                loaded_checkpoint = Some(cp);
+                (tid.to_string(), epoch)
+            }
+            None => {
+                let tid = contract
+                    .as_ref()
+                    .map(|contract| contract.metadata.task_id.clone())
+                    .or_else(|| cfg.task_id.clone())
+                    .unwrap_or_else(|| new_id("task"));
+                if let Some(path) = cfg.identity_path.as_ref() {
+                    let assertion = identity::load_assertion(path)?;
+                    identity::consume_assertion_nonce(
+                        &cfg.state_dir,
+                        &assertion,
+                        Some(&tid),
+                        false,
+                    )?;
+                }
+                (tid, 1)
+            }
+        };
+        let journal = Journal::open_with_anchor(&cfg.state_dir, cfg.audit_anchor.as_deref())?;
         let approvals = ApprovalStore::open(&cfg.state_dir)?;
-        let budget = BudgetLedger::new(&cfg.state_dir, &task_id, &limits)?;
+        let budget =
+            BudgetLedger::new_for_tenant(&cfg.state_dir, &identity.tenant, &task_id, &limits)?;
 
         let skill_names = catalog
             .skills
@@ -315,15 +387,37 @@ Discovered skill names: {skills}"#,
         ),
         });
 
+        let messages = match loaded_checkpoint {
+            Some(cp) if !cp.messages.is_empty() => cp.messages,
+            _ => {
+                let msgs = vec![system];
+                tasks.checkpoint(
+                    &identity.tenant,
+                    &task_id,
+                    task_epoch,
+                    "ready",
+                    None,
+                    None,
+                    &identity.principal,
+                    &cfg.purpose,
+                    &cfg.root.display().to_string(),
+                    &msgs,
+                )?;
+                msgs
+            }
+        };
+
         Ok(Self {
             policy,
             identity,
             contract,
             governance,
+            plugins,
             journal,
             approvals,
             budget,
-            messages: vec![system],
+            task_epoch,
+            messages,
             task_id,
             model: ModelChoice::from_config(cfg),
             approval_ids: cfg.approval_ids.clone(),
@@ -380,6 +474,25 @@ Discovered skill names: {skills}"#,
         let result = self.run_turn_inner(cfg, catalog, prompt, announce, &mut events, cancelled);
         if result.is_err() {
             self.messages = checkpoint;
+            let status = if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                "cancelled"
+            } else {
+                "failed"
+            };
+            if let Ok(mut tasks) = TaskStore::open(&cfg.state_dir) {
+                let _ = tasks.checkpoint(
+                    &self.identity.tenant,
+                    &self.task_id,
+                    self.task_epoch,
+                    status,
+                    self.last_run_id.as_deref(),
+                    None,
+                    &self.identity.principal,
+                    &cfg.purpose,
+                    &cfg.root.display().to_string(),
+                    &self.messages,
+                );
+            }
         }
         result
     }
@@ -413,7 +526,20 @@ Discovered skill names: {skills}"#,
         trim_messages(&mut self.messages, MAX_HISTORY_BYTES);
 
         run_meta.record(&mut self.journal, decision::STARTED, reason::RUN_STARTED)?;
-        ensure_active(cancelled, &run_meta, &mut self.journal)?;
+        let mut tasks = TaskStore::open(&cfg.state_dir)?;
+        let _ = tasks.checkpoint(
+            &self.identity.tenant,
+            &task_id,
+            self.task_epoch,
+            "running",
+            Some(&run_id),
+            None,
+            &self.identity.principal,
+            &cfg.purpose,
+            &cfg.root.display().to_string(),
+            &self.messages,
+        );
+        ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
         if announce {
             eprintln!(
                 "jani: run={run_id} task={task_id} mode={} tenant={} policy={} sandbox={} network={}",
@@ -433,8 +559,9 @@ Discovered skill names: {skills}"#,
         // the conversation, so "continue" resumes instead of starting over.
         let mut repeats: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         let mut stalled = false;
+        let mut pending_approval_id: Option<String> = None;
         for step in 0..cfg.max_steps {
-            ensure_active(cancelled, &run_meta, &mut self.journal)?;
+            ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
             if cfg.max_steps > 8 && cfg.max_steps - step == RUNWAY_WARNING_STEPS {
                 self.messages.push(json!({"role": "user", "content": format!(
                     "[jani runtime] {RUNWAY_WARNING_STEPS} model turns remain in this turn. Stop exploring. Finish the change you are making, run the check that proves it, and leave the worktree consistent. If the task is not finished, you will be asked for a handoff, so keep track of what is done and what is not."
@@ -461,13 +588,17 @@ Discovered skill names: {skills}"#,
                         &tool_defs,
                         &mut self.budget,
                         &mut forward,
+                        cancelled,
                     )
                 }
-                None => gateway.complete(&self.messages, &tool_defs, &mut self.budget),
+                None => gateway.complete(&self.messages, &tool_defs, &mut self.budget, cancelled),
             };
             let assistant = match assistant {
                 Ok(message) => message,
                 Err(error) => {
+                    if cancelled.is_some_and(|token| token.load(Ordering::SeqCst)) {
+                        return cancel_turn(&run_meta, &mut self.journal);
+                    }
                     let _ = run_meta.record(
                         &mut self.journal,
                         decision::FAILED,
@@ -476,7 +607,7 @@ Discovered skill names: {skills}"#,
                     return Err(error);
                 }
             };
-            ensure_active(cancelled, &run_meta, &mut self.journal)?;
+            ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
             let calls = assistant
                 .get("tool_calls")
                 .and_then(Value::as_array)
@@ -496,10 +627,26 @@ Discovered skill names: {skills}"#,
                 }
                 let inspected = self.governance.inspect_model_output(body, "final-answer")?;
                 run_meta.record(&mut self.journal, decision::COMPLETED, reason::FINAL_ANSWER)?;
+                let (cp_status, cp_approval) = match pending_approval_id.as_deref() {
+                    Some(aid) => ("waiting_approval", Some(aid)),
+                    None => ("completed", None),
+                };
+                let _ = tasks.checkpoint(
+                    &self.identity.tenant,
+                    &task_id,
+                    self.task_epoch,
+                    cp_status,
+                    Some(&run_id),
+                    cp_approval,
+                    &self.identity.principal,
+                    &cfg.purpose,
+                    &cfg.root.display().to_string(),
+                    &self.messages,
+                );
                 return Ok(inspected);
             }
             for call in calls {
-                ensure_active(cancelled, &run_meta, &mut self.journal)?;
+                ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
                 let id = call
                     .get("id")
                     .and_then(Value::as_str)
@@ -527,10 +674,15 @@ Discovered skill names: {skills}"#,
                     });
                 }
                 let started_at = std::time::Instant::now();
-                let response = match parsed {
+                let mut repeat_key = jani_core::types::sha256_hex(raw.as_bytes());
+                let mut response = match parsed {
                     Ok(params) => {
+                        repeat_key = jani_core::crypto::canonical_json(&params)
+                            .map(|b| jani_core::types::sha256_hex(&b))
+                            .unwrap_or_else(|_| jani_core::types::sha256_hex(raw.as_bytes()));
                         let invocation_id = new_id("inv");
-                        ensure_active(cancelled, &run_meta, &mut self.journal)?;
+                        ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
+                        let task_epoch = self.task_epoch;
                         let mut broker = Broker {
                             cfg,
                             policy: &self.policy,
@@ -538,9 +690,12 @@ Discovered skill names: {skills}"#,
                             governance: &self.governance,
                             contract: self.contract.as_ref(),
                             catalog,
+                            plugins: Some(&self.plugins),
                             journal: &mut self.journal,
                             approvals: &mut self.approvals,
                             budget: &mut self.budget,
+                            tasks: Some(&mut tasks),
+                            task_epoch,
                             run_id: run_id.clone(),
                             task_id: task_id.clone(),
                             default_profile: self.sandbox_profile,
@@ -548,8 +703,14 @@ Discovered skill names: {skills}"#,
                             approval_ids: &self.approval_ids,
                             consent: self.consent.as_deref(),
                             session_exec: &mut self.session_exec,
+                            cancelled,
                         };
                         let result = broker.invoke(&invocation_id, name, &params);
+                        if result.status == crate::types::tool_status::APPROVAL_REQUIRED {
+                            if let Some(aid) = result.approval_id.as_ref() {
+                                pending_approval_id = Some(aid.clone());
+                            }
+                        }
                         json!(result)
                     }
                     Err(error) => json!(ToolResult::denied(
@@ -559,8 +720,9 @@ Discovered skill names: {skills}"#,
                         format!("invalid tool arguments: {error}")
                     )),
                 };
-                let mut response = response;
-                let seen = repeats.entry(format!("{name}\u{0}{raw}")).or_insert(0);
+                let seen = repeats
+                    .entry(format!("{name}\u{0}{repeat_key}"))
+                    .or_insert(0);
                 *seen += 1;
                 if *seen >= REPEAT_NOTE_AT {
                     if let Some(object) = response.as_object_mut() {
@@ -588,9 +750,33 @@ Discovered skill names: {skills}"#,
                 self.messages.push(json!({
                     "role": "tool",
                     "tool_call_id": id,
-                    "content": clipped(response),
+                    "content": clipped(response.clone()),
                 }));
+                let _ = tasks.record_step(
+                    &self.identity.tenant,
+                    &task_id,
+                    self.task_epoch,
+                    step,
+                    "tool_call",
+                    &json!({"tool": name, "status": response["status"]}),
+                );
             }
+            let _ = tasks.checkpoint(
+                &self.identity.tenant,
+                &task_id,
+                self.task_epoch,
+                if pending_approval_id.is_some() {
+                    "waiting_approval"
+                } else {
+                    "running"
+                },
+                Some(&run_id),
+                pending_approval_id.as_deref(),
+                &self.identity.principal,
+                &cfg.purpose,
+                &cfg.root.display().to_string(),
+                &self.messages,
+            );
             if stalled {
                 break;
             }
@@ -615,7 +801,9 @@ Discovered skill names: {skills}"#,
         self.messages.push(json!({"role": "user", "content": format!(
             "[jani runtime] {why} Tools are now unavailable. Reply with a handoff for the operator: (1) what is done and verified, naming the files you changed and the results you actually observed; (2) what is unfinished or unverified; (3) the exact next steps. Do not claim anything you did not observe."
         )}));
-        let closing = gateway.complete_without_tools(&self.messages, &tool_defs, &mut self.budget);
+        ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
+        let closing =
+            gateway.complete_without_tools(&self.messages, &tool_defs, &mut self.budget, cancelled);
         let body = match closing {
             Ok(message) => message
                 .get("content")
@@ -624,6 +812,9 @@ Discovered skill names: {skills}"#,
                 .trim()
                 .to_string(),
             Err(error) => {
+                if cancelled.is_some_and(|token| token.load(Ordering::SeqCst)) {
+                    return cancel_turn(&run_meta, &mut self.journal);
+                }
                 let _ = run_meta.record(&mut self.journal, decision::FAILED, reason::STEP_LIMIT);
                 return Err(format!(
                     "stopped after {} model turns and could not ask for a handoff: {error}",
@@ -639,10 +830,27 @@ Discovered skill names: {skills}"#,
         // Keep the turn in the conversation as an ordinary, tool-free answer.
         self.messages
             .push(json!({"role": "assistant", "content": body}));
+        ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
         let inspected = self
             .governance
             .inspect_model_output(&body, "final-answer")?;
         run_meta.record(&mut self.journal, decision::COMPLETED, code)?;
+        let (cp_status, cp_approval) = match pending_approval_id.as_deref() {
+            Some(aid) => ("waiting_approval", Some(aid)),
+            None => ("paused", None),
+        };
+        let _ = tasks.checkpoint(
+            &self.identity.tenant,
+            &task_id,
+            self.task_epoch,
+            cp_status,
+            Some(&run_id),
+            cp_approval,
+            &self.identity.principal,
+            &cfg.purpose,
+            &cfg.root.display().to_string(),
+            &self.messages,
+        );
         Ok(format!("{banner}\n\n{inspected}"))
     }
 }
@@ -653,6 +861,14 @@ impl<'a> Agent<'a> {
             cfg,
             catalog,
             session: Session::open(cfg, catalog)?,
+        })
+    }
+
+    pub fn resume(cfg: &'a Config, catalog: &'a Catalog, task_id: &str) -> JResult<Self> {
+        Ok(Self {
+            cfg,
+            catalog,
+            session: Session::open_with_resume(cfg, catalog, Some(task_id))?,
         })
     }
 
@@ -851,14 +1067,23 @@ impl<'a> Agent<'a> {
     }
 
     pub fn budget(&self) -> JResult<Value> {
-        budget::show(&self.cfg.state_dir, &self.session.task_id)
+        budget::show_for_tenant(
+            &self.cfg.state_dir,
+            &self.session.identity.tenant,
+            &self.session.task_id,
+        )
     }
 
     /// Evidence of recorded execution, not proof that the requested engineering
     /// acceptance criteria were satisfied. Never expose model/tool payloads.
     pub fn run_evidence(&self) -> JResult<Value> {
         let run_id = self.last_run_id().ok_or("no run has started")?;
-        crate::evidence::receipt(&self.cfg.state_dir, run_id)
+        crate::evidence::receipt_with_verifier_keys(
+            &self.cfg.state_dir,
+            run_id,
+            &self.cfg.verifier_keys,
+            &self.cfg.revoked_keys,
+        )
     }
 
     pub fn inspect(&self, run_id: Option<&str>) -> JResult<Value> {
@@ -1135,7 +1360,7 @@ mod tests {
 
         ApprovalStore::open(&cfg.state_dir)
             .unwrap()
-            .decide(&approval_id, "p2", "approver", true)
+            .decide(&approval_id, "t1", "p2", "human", "approver", true)
             .unwrap();
         let attached = agent.attach_approval(&approval_id).unwrap();
         assert!(attached.contains("Attached approval"), "{attached}");
@@ -1176,7 +1401,9 @@ mod tests {
         let own = create(&mut store, "task-1");
         let expiring = create(&mut store, "task-1");
         for id in [&foreign, &own, &expiring] {
-            store.decide(id, "p2", "approver", true).unwrap();
+            store
+                .decide(id, "t1", "p2", "human", "approver", true)
+                .unwrap();
         }
         drop(store);
 
@@ -1296,6 +1523,68 @@ mod tests {
         assert!(
             journal.contains("\"reason_code\":\"model_switched\""),
             "{journal}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resume_restores_checkpoint_and_rejects_killed_tasks() {
+        let root = workspace();
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        let tid = agent.task_id().to_string();
+        assert_eq!(agent.session.task_epoch, 1);
+        agent
+            .session
+            .messages
+            .push(message("user", "saved context"));
+        TaskStore::open(&cfg.state_dir)
+            .unwrap()
+            .checkpoint(
+                &agent.session.identity.tenant,
+                &tid,
+                agent.session.task_epoch,
+                "waiting_approval",
+                None,
+                Some("apr-123"),
+                &agent.session.identity.principal,
+                &cfg.purpose,
+                &root.display().to_string(),
+                &agent.session.messages,
+            )
+            .unwrap();
+        drop(agent);
+
+        let resumed = Agent::resume(&cfg, &catalog, &tid).unwrap();
+        assert_eq!(resumed.session.task_epoch, 2);
+        assert!(resumed
+            .session
+            .messages
+            .iter()
+            .any(|m| m["content"] == "saved context"));
+        drop(resumed);
+
+        let mut store = TaskStore::open(&cfg.state_dir).unwrap();
+        store.kill_tenant(&cfg.tenant).unwrap();
+        drop(store);
+        let killed_err = match Agent::resume(&cfg, &catalog, &tid) {
+            Ok(_) => panic!("killed task should fail resume"),
+            Err(err) => err,
+        };
+        assert!(killed_err.contains("killed"), "{killed_err}");
+
+        jani_core::kill::activate(&cfg.state_dir, Some(&cfg.tenant), "sec-admin", "incident")
+            .unwrap();
+        let active_kill_err = match Agent::new(&cfg, &catalog) {
+            Ok(_) => panic!("active kill switch should refuse Agent::new"),
+            Err(err) => err,
+        };
+        assert!(
+            active_kill_err.contains("KILL_SWITCH_ACTIVE"),
+            "{active_kill_err}"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

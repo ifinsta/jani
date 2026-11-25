@@ -11,9 +11,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Install pinned toolchain components
+        run: rustup component add rustfmt clippy
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -45,7 +44,7 @@ jobs:
       - run: python tools/doccheck.py
       - name: Check source-backed documentation claims
         id: claims
-        run: cargo run -p jani-claims -- check
+        run: cargo run -p jani-claims -- strict
       - name: Diagnose stale claims without bypassing the gate
         if: failure() && steps.claims.outcome == 'failure'
         run: |
@@ -54,3 +53,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
       - run: cargo build --release -p jani
+  cloud-check:
+    if: github.event_name != 'pull_request' || hashFiles('../siwi/crates/siwi/Cargo.toml') != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check jani-cloud when sibling siwi is present
+        run: |
+          if [ -f ../siwi/crates/siwi/Cargo.toml ]; then
+            cargo check --manifest-path cloud/Cargo.toml --all-targets
+            cargo test --manifest-path cloud/Cargo.toml
+          else
+            echo "Skipping cloud check: sibling ../siwi checkout not present"
+          fi

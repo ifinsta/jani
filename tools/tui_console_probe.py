@@ -64,6 +64,8 @@ VK_F1 = 0x70
 SHIFT_PRESSED = 0x0010
 VK_PAGE_UP = 0x21
 VK_DOWN = 0x28
+VK_Y = 0x59
+ALT_PRESSED = 0x0001
 
 kernel32.GetCurrentProcess.restype = wintypes.HANDLE
 kernel32.CreateFileW.restype = wintypes.HANDLE
@@ -240,6 +242,17 @@ def wait_for(width, height, needle, timeout=12.0):
     return screen
 
 
+def wait_for_line_count(width, height, needle, count, timeout=5.0):
+    deadline = time.time() + timeout
+    screen = ""
+    while time.time() < deadline:
+        screen = read_screen(width, height)
+        if sum(needle in line for line in screen.splitlines()) >= count:
+            return screen
+        time.sleep(0.1)
+    return screen
+
+
 def stable_screen(width, height, needle, timeout=12.0):
     # The idle UI redraws every 250 ms; a single read can land mid-diff. Two
     # identical consecutive frames are the settled content.
@@ -361,6 +374,8 @@ def palette_body(screen, title="commands", footer="enter run"):
 
 class FakeProvider(BaseHTTPRequestHandler):
     captured = []
+    approval_mode = False
+    approval_sent = False
 
     def send_sse(self, payload):
         self.wfile.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n")
@@ -370,11 +385,55 @@ class FakeProvider(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length)
         FakeProvider.captured.append(body.decode("utf-8", "replace"))
-        first = len(FakeProvider.captured) == 1
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("cache-control", "no-cache")
         self.end_headers()
+        if FakeProvider.approval_mode:
+            if not FakeProvider.approval_sent:
+                FakeProvider.approval_sent = True
+                time.sleep(0.3)
+                self.send_sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_consent",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "command",
+                                                "arguments": json.dumps(
+                                                    {
+                                                        "argv": [
+                                                            "jani-consent-probe",
+                                                            "--once",
+                                                        ],
+                                                        "timeout_secs": 10,
+                                                    }
+                                                ),
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+                self.send_sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+            else:
+                time.sleep(0.3)
+                self.send_sse(
+                    {"choices": [{"delta": {"content": "Consent approved."}}]}
+                )
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
+        first = len(FakeProvider.captured) == 1
         if first:
             time.sleep(0.9)
             self.send_sse(
@@ -538,7 +597,15 @@ def main():
     out_fd = msvcrt.open_osfhandle(child_out.value, os.O_WRONLY)
 
     process = subprocess.Popen(
-        [binary],
+        [
+            binary,
+            "repl",
+            "--allow-exec",
+            "--exec",
+            "smart",
+            "--settings",
+            ".jani/settings.json",
+        ],
         cwd=scratch,
         stdin=in_fd,
         stdout=out_fd,
@@ -663,16 +730,22 @@ def main():
         tools_recollapsed = False
         if tools_row >= 0:
             click(stdin_handle, 5, tools_row)
-            expanded_tools = wait_for(width, height, "▾ tools · 5 calls", timeout=5.0)
+            expanded_tools = wait_for_line_count(
+                width, height, "reading notes.txt", 5, timeout=5.0
+            )
             expanded_rows = [
                 line for line in expanded_tools.splitlines() if "reading notes.txt" in line
             ]
-            tools_expanded = "▾ tools · 5 calls" in expanded_tools
-            tools_expand_shows_all = len(expanded_rows) == 5
+            tools_expanded = len(expanded_rows) == 5
+            tools_expand_shows_all = tools_expanded
             print("--- expanded tools ---")
             print(expanded_tools)
             print("tool_calls_expand_to_five:", tools_expanded and tools_expand_shows_all)
-            collapsed_row = row_of(expanded_tools, "▾ tools · 5 calls")
+            for _ in range(4):
+                wheel(stdin_handle, 40, 10, 120)
+                time.sleep(0.05)
+            expanded_header = stable_screen(width, height, "▾ tools · 5 calls", timeout=5.0)
+            collapsed_row = row_of(expanded_header, "▾ tools · 5 calls")
             if collapsed_row >= 0:
                 click(stdin_handle, 5, collapsed_row)
                 recollapsed = wait_for(width, height, "▸ tools · 5 calls", timeout=5.0)
@@ -707,7 +780,7 @@ def main():
         print("--- overflow screen ---")
         print(overflow)
         print("scrollbar_rendered:", "║" in overflow or "█" in overflow)
-        print("following_at_bottom:", "• beta item" in overflow)
+        print("following_at_bottom:", "Any other input" in overflow)
         print("earlier_block_hidden:", jani_version not in overflow)
 
         key(stdin_handle, VK_PAGE_UP)
@@ -727,7 +800,7 @@ def main():
         print("--- wheel up ---")
         print(scrolled)
         print("wheel_scroll_up:", "below the bottom" in scrolled and scrolled != keyed)
-        earlier = jani_version in scrolled and "Any other input" not in scrolled
+        earlier = "probe-skill" in scrolled and "Any other input" not in scrolled
         print("earlier_content_visible:", earlier)
         fold_row = row_of(scrolled, "▸ think")
         if fold_row < 0:
@@ -892,6 +965,43 @@ def main():
         )
         print("custom_model_has_no_profile:", custom_status_ok)
 
+        FakeProvider.approval_mode = True
+        FakeProvider.approval_sent = False
+        type_text(stdin_handle, "run the consent probe\r")
+        ask = wait_for(width, height, "needs your OK", timeout=15.0)
+        print("--- consent screen ---")
+        print(ask)
+        consent_visible = (
+            "needs your OK" in ask
+            and "Alt+Y" in ask
+            and "allow once" in ask
+            and "jani-consent-probe --once" in ask
+        )
+        print("consent_visible:", consent_visible)
+        type_text(stdin_handle, "y")
+        unmodified = stable_screen(width, height, "needs your OK", timeout=5.0)
+        typeahead_refused = (
+            "needs your OK" in unmodified
+            and "allowed once" not in unmodified
+            and "Consent approved." not in unmodified
+        )
+        print("unmodified_key_cannot_approve:", typeahead_refused)
+        key(stdin_handle, VK_Y, "y", ALT_PRESSED)
+        approved = wait_until_idle(width, height, "Consent approved.", timeout=25.0)
+        print("--- approved screen ---")
+        print(approved)
+        consent_approved = (
+            "allowed once: jani-consent-probe --once" in approved
+            and "Consent approved." in approved
+        )
+        print("deliberate_alt_chord_approves:", consent_approved)
+        requests = [json.loads(body) for body in FakeProvider.captured]
+        print("provider_requests_after_consent:", len(requests))
+        print(
+            "consent_tool_result_round_trip:",
+            len(requests) == 4 and FakeProvider.captured[3].count("call_consent") >= 1,
+        )
+
         type_text(stdin_handle, "/exit\r")
         try:
             code = process.wait(timeout=15)
@@ -932,15 +1042,16 @@ def main():
             and tools_expanded
             and tools_expand_shows_all
             and tools_recollapsed
-            and len(requests) == 2
+            and len(requests) == 4
             and FakeProvider.captured[1].count("call_probe_") >= 5
+            and FakeProvider.captured[3].count("call_consent") >= 1
             and ("║" in overflow or "█" in overflow)
-            and "• beta item" in overflow
+            and "Any other input" in overflow
             and jani_version not in overflow
             and "below the bottom" in keyed
             and "below the bottom" in scrolled
             and scrolled != keyed
-            and jani_version in scrolled
+            and "probe-skill" in scrolled
             and "Any other input" not in scrolled
             and click_expanded
             and "below the bottom" not in resumed
@@ -958,7 +1069,10 @@ def main():
             and custom_row
             and custom_model
             and custom_status_ok
-            and len(FakeProvider.captured) == 2
+            and consent_visible
+            and typeahead_refused
+            and consent_approved
+            and len(FakeProvider.captured) == 4
             and bool(requests)
             and all(request.get("stream") is True for request in requests)
             and all("probe-secret-key" not in body for body in FakeProvider.captured)

@@ -1,10 +1,12 @@
 # Testing and acceptance plan
 
-## Pending terminal, cancellation, recovery and evidence gates (new source, unverified)
+## Verified terminal, cancellation, recovery and evidence gates
 
-The new F1–F4 shortcut suite in `backend/server/src/tui.rs` must prove shortcuts draft but do not send model requests, overwrite an existing draft, enable writes or act while busy. Its 80x24 rendering test checks every shortcut is visible. The updated Windows console probe sends a real F1 keyboard record and checks that text appears without a provider request, then clears it before starting the existing fake-provider flow.
+On Windows with the pinned Rust 1.95.0 toolchain, the current source passed `cargo test --workspace --all-targets -j 1`: **438 tests, 0 failures**. This includes 187 server unit tests, 70 server integration tests, 126 core tests and 55 tests in the remaining workspace crates.
 
-A release candidate must pass: `cargo fmt --all -- --check`, full workspace clippy/tests, `python tools/doccheck.py`, `cargo run -p jani-claims -- check`, `cargo build --locked --release -p jani`, and the Windows `tools/tui_console_probe.py` against **the new binary**. Independently inspect 40x10 and 120x40 terminal layouts and verify that `profile trusted-dev` is not mistaken for actual OS isolation.
+The F1–F4 shortcut suite proves shortcuts draft but do not send model requests, overwrite an existing draft, enable writes or act while busy. Its 80x24 rendering test checks every shortcut is visible. The Windows console probe sends real F1, wheel, click and Alt-chord input records and checks the rendered screen buffer. The connected-browser trial kept composer focus while `ysa` and a later plain `y` were typed during a pending command, refused those keys as approval, then executed `cmd /c echo` only after an explicit Allow once click; its four-event journal verified successfully and the browser reported no console errors.
+
+A release candidate must pass: `cargo fmt --all -- --check`, full workspace clippy/tests, `python tools/doccheck.py`, `cargo run -p jani-claims -- strict`, `cargo build --locked --release -p jani`, and the Windows `tools/tui_console_probe.py` against **the new binary**. Independently inspect 40x10 and 120x40 terminal layouts and verify that `profile trusted-dev` is not mistaken for actual OS isolation. The Windows host constrained the real probe console to 120x30; tiny-layout refusal is unit-tested, while 40x10 and other terminal-emulator checks remain manual.
 
 Windows developers can invoke the reproducible gate script from a disposable clone:
 
@@ -12,11 +14,9 @@ Windows developers can invoke the reproducible gate script from a disposable clo
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify_tui_phase1.ps1
 ```
 
-It runs formatting, clippy, workspace tests, architecture and claims checks, documentation validation, a locked release build and the real-console probe, then reports commit and binary SHA-256. It does not publish or install the build. Its existence is not proof that it has run.
+It runs formatting, serial clippy and workspace tests, architecture and strict claims checks, documentation validation, a locked serial release build and the real-console probe, then reports commit and binary SHA-256. It does not publish or install the build. Its existence is not proof that it has run.
 
 Additional gates: `cargo test -p jani-core recovery`, `cargo test -p jani-core evidence`, `cargo test -p jani failed_turn_restores_exact_context_even_after_history_trimming`, `cargo test -p jani cancelled_turn_never_invokes_a_model_or_tool`, CLI recovery integration against a built executable, journal corruption refusal, multiline paste and Shift+Enter, cancellation while work is already running, and independent confirmation that no follow-up tools execute after the cancellation boundary.
-
-The baseline counts below predate this slice. Do not increase passing test counts until the new runs execute.
 
 ## Verification gates
 
@@ -32,7 +32,7 @@ The workspace root lists `backend/server` under `default-members`, so the
 
 Expected automated coverage in this build:
 
-- 199 unit tests across config, policy, identity, data, broker, journal, approvals,
+- 187 server unit tests across config, policy, identity, data, broker, journal, approvals,
   budget, sandbox, process, workspace, skills, schema, plugins, project settings,
   Claude-style permission matching, model transport and SSE assembly, streaming
   output inspection, native tools, mirror reports, the interactive terminal
@@ -40,11 +40,9 @@ Expected automated coverage in this build:
   selection and the model picker, runtime model switching and journaling, live
   turn state, transcript scrolling and per-block thinking folds, the Markdown
   renderer, and the check/claims tooling.
-- 24 CLI and integration tests: 17 CLI tests including the shipped work-contract
-  example, settings precedence, inline-credential redaction, profile credential
-  binding, top-level `model` selection, `permissions` diagnostics, the guarantee
-  that `--version`/`--help` need no provider credentials and the interactive
-  default, plus MCP gateway, mirror CLI and native tool suites.
+- 70 server integration tests: 34 CLI, 7 end-to-end, 2 MCP gateway, 3 mirror CLI,
+  2 native-tool, 13 Web UI and 9 updater tests.
+- 126 core tests and 55 tests in the remaining workspace crates.
 - Broker tests prove settings `deny`, `ask` and allowlists narrow contract and
   policy decisions; plan mode blocks writes and commands while allowing reads.
 - Streaming tests cover OpenAI text/reasoning/tool-call fragments and usage,
@@ -59,6 +57,20 @@ Expected automated coverage in this build:
 The E2E test removes `OPENAI_API_KEY`, `JANI_POLICY` and `JANI_IDENTITY` from the
 child environment so it exercises local-unmanaged mode deterministically.
 
+## Signed update and release verification
+
+```bash
+cargo test -p jani update::tests -j 1
+cargo test -p jani --test update_e2e -j 1
+python -m unittest discover -s tests -p 'test_release_catalog.py' -v
+python tools/release_catalog.py check
+python tools/release_catalog.py check --require-signatures --update-key release-2026:<64_HEX_PUBLIC_KEY>
+```
+
+The updater suite runs the real binary against a loopback release origin. It covers multi-target installation, exact-artifact version recognition without executing targets, unknown-target force behavior, an execution-marker target, self-replacement, watch publication and outage recovery, artifact tampering, missing/wrong trust, unsigned and tampered manifests, explicit CLI trust roots, and credential-scrubbed candidate verification. The release tests use only temporary dummy keys and artifacts.
+
+Signed release tests require OpenSSL 3 with Ed25519 support. The default catalogue gate checks the committed unsigned v0.1.x history for byte integrity; strict signature mode intentionally fails until a publisher re-signs a typed release. Syntax-checking `install.ps1` or `tools/release.ps1` alone is not an end-to-end installer/publisher trial; use a disposable worktree and temporary dummy key for that trial.
+
 ## Mandatory integration trials (disposable clone only)
 
 | Trial | Expected outcome |
@@ -68,6 +80,7 @@ child environment so it exercises local-unmanaged mode deterministically.
 | Worktree without settings + `~/.jani/settings.json` | `doctor` reports the user-wide path; a worktree settings file shadows it entirely |
 | Settings with an unknown field or malformed rule | Refused before work |
 | Settings with an inline `apiKey` | Accepted, reported as `settings (inline)` with a warning; the value never appears in output |
+| Auto-discovered worktree settings with top-level or profile `apiBase`/`apiKeyEnv` | Refused before state creation or provider connection; explicit `--settings`/`JANI_SETTINGS` deliberately opts in |
 | Settings permissions `deny` / `ask` / `allow` | Deny is journaled; ask requires an external `settings-permission` approval; allow never widens CLI, contract or policy |
 | `jani sandbox doctor`, `jani sandbox check` | Backend availability and confinement claims match the host; no false confinement |
 | `jani policy explain`, `jani policy check --action ... --resource ...` | Deterministic decision without a model call |
@@ -78,18 +91,26 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `../`, `.git/`, `.agents/`, `.env` and symlink escape | Refused |
 | Write outside the approved scope | Refused |
 | `command` with shell, arbitrary executable, `git -C`, `git --no-index` | Refused |
+| `--exec smart` inspection with protected, escaping, symlinked, unknown, clustered or attached inputs | Denied or held for consent; never classified safe from argv alone |
+| Unconfined fixed-list `cargo test`/`check`/`clippy` | Requires consent and creates no `target/` directory |
+| Web UI pending command while typing `ysa` or plain `y` in the composer | Focus stays in the composer, no approval is sent; explicit Allow once executes and returns the tool result |
 | `cargo clippy --fix`, `cargo fmt` without `--check` | Refused |
 | `git add -A` / `-u` or directory paths | Refused |
 | `git commit` with pre-staged files outside scope | Refused before commit |
 | Command timeout and output caps | Process is bounded; oversized output is truncated |
 | Transient provider error (408/429/5xx) | Limited retry, then a clear failure |
-| `jani update check` against a typed channel | Reports availability and target versions; no artifact download |
-| `jani update install --to A --to B` | Both targets replaced by the verified artifact; receipt written; second run reports up to date |
+| `jani update check --source URL --update-key ID:HEX` against a signed typed channel | Verifies the manifest before reporting availability and target versions; no artifact download and no execution of an existing target |
+| `jani update check` without a trust root, with a wrong key, or against an unsigned/tampered manifest | Refused before artifact download |
+| `jani update install --to A --to B --update-key ID:HEX` | Each known target is replaced by the verified artifact; receipt written; a repeat install reports up to date without another download |
+| `jani update install --to UNKNOWN` without `--force` | Reports `unknown-version`, downloads nothing, and never executes the existing target to identify it |
+| `jani update install --to UNKNOWN --force` | Installs only after downloading and verifying the signed artifact; candidate `--version` runs without built-in or configured provider credentials |
 | Tampered update artifact (same size, wrong digest) | Artifact rejected before replacement; targets and candidate files untouched |
 | `jani update watch` while a newer release is published | Applies the new version and keeps polling |
 | `jani update watch` while the origin is unreachable | Keeps running, reports error cycles, and installs once the origin returns |
 | `jani update install` targeting its own running executable | Replaced with the verified artifact; `restartRequired: true` |
 | Update origin over plain HTTP (non-loopback) or a redirect | Refused before any download |
+| Windows/Unix typed installer without an explicit trusted public key | Refused before copying a candidate; frozen legacy v1 fallback additionally requires explicit `-AllowUnsignedLegacy` |
+| Signed release publisher with an in-tree private key or missing OpenSSL Ed25519 support | Refused without advancing the channel pointer |
 | Two `SKILL.md` files with the same name | Earlier discovery directory wins |
 | Provider credentials in child environment | Not inherited |
 | Enterprise mode without `--policy` or `--identity` | Refused before any work |
@@ -99,7 +120,7 @@ child environment so it exercises local-unmanaged mode deterministically.
 | Empty provider/region/purpose allowlist | Model egress denied |
 | Secret in decoded JSON string | Redacted before egress; secret content never transmitted |
 | Unknown or malformed tool call | Denied and journaled |
-| Approval self-approval, wrong role, wrong payload, reuse | Refused |
+| Approval self-approval, wrong role, wrong tenant, non-human subject, wrong payload, reuse | Refused; concurrent writers cannot resurrect consumed requests or lose entries |
 | Corrupt or partially consumed budget ledger | Fails closed or adopts the stricter limit |
 | `audit verify` after a completed run | `ok: true` |
 | Manual journal edit | `audit verify` fails |
@@ -107,7 +128,7 @@ child environment so it exercises local-unmanaged mode deterministically.
 | `EnterpriseRestricted` profile on Windows | Refused; Job Object never claims filesystem/network confinement |
 | `EnterpriseRestricted` profile on Linux with bwrap available | bubblewrap plan; receipt reports filesystem and network confinement |
 | Linux and Windows builds | Toolchain gates pass on both |
-| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a live step and the `reading notes.txt` tool entry appear, a fake-provider SSE answer renders as Markdown (bullets, no raw `**` or backticks) with its thinking block folded, `/help` overflows the viewport so the scrollbar and the `N lines below the bottom` tip appear, `PgUp`, the injected wheel and a click on the `▸ think` label each move or fold the view, wheel-down resumes following, `/` opens the command palette and `st` filters it to `/status`, `Esc` closes it, `Down` selects `/status` and Enter runs it, `/new` runs through reopen-the-palette and clears the transcript, `/model ` opens the settings-profile picker with the current profile marked, `al` filters to the `alt` profile, Enter switches the live session and `/status` reports the profile, a typed custom model ID is offered and switches without a profile, a five-call tool section shows `last 3 shown` with exactly three rows and expands/recollapses through its header, a Markdown table whose first column is `#` renders with joined cells and no raw separator row, exactly two streaming requests carry no API key, exit 0 and `PROBE_RESULT=PASS` |
+| `python tools/tui_console_probe.py target/release/jani.exe target/tui-run` (Windows console) | Full-screen frames render, `/status` runs, a live step and the `reading notes.txt` tool entry appear, a fake-provider SSE answer renders as Markdown (bullets, no raw `**` or backticks) with its thinking block folded, `/help` overflows the viewport so the scrollbar and the `N lines below the bottom` tip appear, `PgUp`, the injected wheel and a click on the `▸ think` label each move or fold the view, wheel-down resumes following, `/` opens the command palette and `st` filters it to `/status`, `Esc` closes it, `Down` selects `/status` and Enter runs it, `/new` runs through reopen-the-palette and clears the transcript, `/model ` opens the settings-profile picker with the current profile marked, `al` filters to the `alt` profile, Enter switches the live session and `/status` reports the profile, a typed custom model ID is offered and switches without a profile, a five-call tool section shows `last 3 shown` with exactly three rows and expands/recollapses through its header, a Markdown table whose first column is `#` renders with joined cells and no raw separator row, exactly four streaming requests carry no API key, including the consent tool-result round-trip, a pending command rejects unmodified `y`, deliberate `Alt+Y` records allow-once and completes the turn, exit 0 and `PROBE_RESULT=PASS` |
 
 The console probe is a manual Windows trial, not a CI gate. It proves the
 rendered buffer in a real console, and key, wheel and click handling for events

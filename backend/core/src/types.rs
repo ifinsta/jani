@@ -486,7 +486,7 @@ pub struct DataEnvelope {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContractMetadata {
     pub task_id: String,
     pub tenant: String,
@@ -496,7 +496,7 @@ pub struct ContractMetadata {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContractBudget {
     #[serde(default)]
     pub max_usd: Option<f64>,
@@ -506,8 +506,25 @@ pub struct ContractBudget {
     pub deadline_seconds: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcceptanceCheck {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub argv: Vec<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContractSpec {
     pub purpose: String,
     #[serde(default)]
@@ -522,10 +539,12 @@ pub struct ContractSpec {
     pub budget: ContractBudget,
     #[serde(default)]
     pub acceptance: Vec<String>,
+    #[serde(default)]
+    pub acceptance_checks: Vec<AcceptanceCheck>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkContract {
     pub api_version: String,
     pub kind: String,
@@ -747,6 +766,111 @@ impl PluginManifest {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerificationSignature {
+    pub key_id: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcceptanceCheckOutcome {
+    pub id: String,
+    pub kind: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerificationReceipt {
+    pub api_version: String,
+    pub kind: String,
+    pub verification_id: String,
+    pub tenant_id: String,
+    pub task_id: String,
+    pub contract_digest: String,
+    pub verified_at: u64,
+    pub passed: bool,
+    pub verifier_id: String,
+    #[serde(default)]
+    pub checks: Vec<AcceptanceCheckOutcome>,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    #[serde(default)]
+    pub out_of_scope_files: Vec<String>,
+    #[serde(default)]
+    pub signature: Option<VerificationSignature>,
+}
+
+const VERIFICATION_SIGNING_DOMAIN: &[u8] = b"jani.verification-receipt/v1\0";
+
+impl VerificationReceipt {
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut unsigned = self.clone();
+        unsigned.signature = None;
+        let canonical = crate::crypto::canonical_serialize(&unsigned)?;
+        let mut bytes = Vec::with_capacity(VERIFICATION_SIGNING_DOMAIN.len() + canonical.len());
+        bytes.extend_from_slice(VERIFICATION_SIGNING_DOMAIN);
+        bytes.extend_from_slice(&canonical);
+        Ok(bytes)
+    }
+
+    pub fn verify(&self, trusted_keys: &[String]) -> Result<(), String> {
+        self.verify_with_revoked(trusted_keys, &[])
+    }
+
+    pub fn verify_with_revoked(
+        &self,
+        trusted_keys: &[String],
+        revoked_keys: &[String],
+    ) -> Result<(), String> {
+        if self.api_version != "jani.dev/v1alpha1" {
+            return Err("unsupported verification receipt apiVersion".into());
+        }
+        if self.kind != "VerificationReceipt" {
+            return Err("verification receipt kind must be VerificationReceipt".into());
+        }
+        let signature = self
+            .signature
+            .as_ref()
+            .ok_or("verification receipt is unsigned")?;
+        let bytes = self.signing_bytes()?;
+        crate::crypto::verify_signature_with_revoked(
+            trusted_keys,
+            revoked_keys,
+            &signature.key_id,
+            &bytes,
+            &signature.value,
+        )
+    }
+
+    pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read verification receipt {}: {e}", path.display()))?;
+        serde_json::from_str(&text).map_err(|e| format!("invalid verification receipt JSON: {e}"))
+    }
+}
+
+pub fn verification_receipt_path(
+    state_dir: &std::path::Path,
+    task_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    if task_id.trim().is_empty()
+        || task_id.len() > 128
+        || task_id.contains('/')
+        || task_id.contains('\\')
+        || task_id.contains("..")
+        || task_id.chars().any(char::is_control)
+    {
+        return Err("task_id contains unsafe characters for verification receipt path".into());
+    }
+    Ok(state_dir
+        .join("verifications")
+        .join(format!("{task_id}.json")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,6 +920,7 @@ mod tests {
                 data_classification: None,
                 budget: ContractBudget::default(),
                 acceptance: vec![],
+                acceptance_checks: vec![],
             },
         };
         let temp = std::env::temp_dir().join(format!(

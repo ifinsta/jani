@@ -43,6 +43,7 @@ pub enum Tool {
     Write,
     Command,
     NativeTool,
+    Plugin,
 }
 
 impl Tool {
@@ -53,6 +54,7 @@ impl Tool {
         Self::Write,
         Self::Command,
         Self::NativeTool,
+        Self::Plugin,
     ];
 
     pub fn name(self) -> &'static str {
@@ -63,6 +65,7 @@ impl Tool {
             Self::Write => "write",
             Self::Command => "command",
             Self::NativeTool => "native_tool",
+            Self::Plugin => "plugin",
         }
     }
 

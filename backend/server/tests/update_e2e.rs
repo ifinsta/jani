@@ -1,3 +1,4 @@
+use jani_core::crypto;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -9,6 +10,26 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+const DEFAULT_SIGNING_KEY: &str =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+const UPDATE_CREDENTIAL_ENV: &str = "JANI_UPDATE_SCRUB_TEST_KEY";
+
+fn public_key_spec(secret_hex: &str, key_id: &str) -> String {
+    format!("{key_id}:{}", crypto::public_key_hex(secret_hex).unwrap())
+}
+
+fn manifest_signing_bytes(mut manifest: Value) -> Vec<u8> {
+    manifest.as_object_mut().unwrap().remove("signature");
+    let mut bytes = b"jani-release-manifest/v2\0".to_vec();
+    bytes.extend(serde_json::to_vec(&manifest).unwrap());
+    bytes
+}
+
+fn sign_manifest(manifest: &mut Value, secret_hex: &str) {
+    let value = crypto::sign_hex(secret_hex, &manifest_signing_bytes(manifest.clone())).unwrap();
+    manifest["signature"] = json!({"keyId": "release-test", "value": value});
+}
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
@@ -40,7 +61,12 @@ fn build_stub(dir: &Path, version: &str) -> PathBuf {
     fs::write(
         &source,
         format!(
-            "fn main() {{\n    let arg = std::env::args().nth(1).unwrap_or_default();\n    if arg == \"--version\" {{ println!(\"jani {version}\"); }} else {{ std::process::exit(2); }}\n}}\n"
+            "fn main() {{\n    let arg = std::env::args().nth(1).unwrap_or_default();\n    if arg == \"--version\" {{\n        if [\"JANI_API_KEY\", \"OPENAI_API_KEY\", \"{UPDATE_CREDENTIAL_ENV}\"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some())
+        {{
+            std::process::exit(91);
+        }}\n        println!(\"jani {version}\");\n    }} else {{ std::process::exit(2); }}\n}}\n"
         ),
     )
     .unwrap();
@@ -64,6 +90,33 @@ fn build_stub(dir: &Path, version: &str) -> PathBuf {
     binary
 }
 
+fn build_marker_stub(dir: &Path) -> PathBuf {
+    let source = dir.join("marker-stub.rs");
+    fs::write(
+        &source,
+        "fn main() {\n    if let Some(path) = std::env::var_os(\"JANI_UPDATE_TARGET_MARKER\") {\n        std::fs::write(path, b\"executed\").unwrap();\n    }\n    if std::env::args().nth(1).as_deref() == Some(\"--version\") {\n        println!(\"jani 1.0.0\");\n    } else {\n        std::process::exit(2);\n    }\n}\n",
+    )
+    .unwrap();
+    let binary = dir.join(format!("marker-stub{}", std::env::consts::EXE_SUFFIX));
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let output = Command::new(rustc)
+        .arg("--edition=2021")
+        .arg("--crate-name")
+        .arg("jani_marker_stub")
+        .arg("-O")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("run rustc to build an execution-marker stand-in");
+    assert!(
+        output.status.success(),
+        "rustc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    binary
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -75,6 +128,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn publish(root: &Path, version: &str, artifact: &Path) {
+    publish_with_signer(root, version, artifact, DEFAULT_SIGNING_KEY);
+}
+
+fn publish_with_signer(root: &Path, version: &str, artifact: &Path, secret_hex: &str) {
     let (platform, target) = host_platform();
     let tag = format!("v{version}");
     let release_dir = root.join("agent").join(platform).join(&tag);
@@ -89,7 +146,7 @@ fn publish(root: &Path, version: &str, artifact: &Path) {
     )
     .unwrap();
     let commit = "0123456789abcdef0123456789abcdef01234567";
-    let manifest = json!({
+    let mut manifest = json!({
         "schemaVersion": "jani.release/v2",
         "type": "agent",
         "platform": platform,
@@ -109,6 +166,7 @@ fn publish(root: &Path, version: &str, artifact: &Path) {
             "builtAt": "2026-10-26T00:00:00Z"
         }]
     });
+    sign_manifest(&mut manifest, secret_hex);
     fs::write(
         release_dir.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).unwrap(),
@@ -280,10 +338,18 @@ fn command_for(binary: &Path, cfg_root: &Path, state: &Path) -> Command {
     let mut command = Command::new(binary);
     command
         .env("JANI_USER_SETTINGS", cfg_root.join("no-user-settings.json"))
+        .env(
+            "JANI_UPDATE_KEYS",
+            public_key_spec(DEFAULT_SIGNING_KEY, "release-test"),
+        )
         .env("JANI_UPDATE_RETRY_BASE_MS", "1")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost")
+        .env_remove("JANI_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("JANI_SETTINGS")
         .env_remove("JANI_UPDATE_SOURCE")
+        .arg("--allow-insecure-local-update")
         .arg("--repo")
         .arg(cfg_root)
         .arg("--state-dir")
@@ -343,20 +409,39 @@ fn update_check_and_install_push_a_verified_release_to_multiple_targets() {
         .expect("run update check");
     let report = output_json(&check);
     assert_eq!(report["latestVersion"], "9.9.9");
-    assert_eq!(report["updateAvailable"], true);
+    assert_eq!(report["updateAvailable"], false);
     let targets = report["targets"].as_array().unwrap();
     assert_eq!(targets.len(), 2);
     for target in targets {
-        assert_eq!(target["currentVersion"], "1.0.0");
-        assert_eq!(target["status"], "update-available");
+        assert_eq!(target["currentVersion"], Value::Null);
+        assert_eq!(target["status"], "unknown-version");
     }
     assert_eq!(origin.artifact_requests(), 0, "check downloaded a binary");
+
+    let forced_check = jani(&root, &state)
+        .arg("update")
+        .arg("check")
+        .arg("--source")
+        .arg(origin.url())
+        .arg("--force")
+        .arg("--to")
+        .arg(&device_a)
+        .arg("--to")
+        .arg(&device_b)
+        .output()
+        .expect("run forced update check");
+    let report = output_json(&forced_check);
+    assert_eq!(report["updateAvailable"], true);
+    for target in report["targets"].as_array().unwrap() {
+        assert_eq!(target["status"], "update-available");
+    }
 
     let install = jani(&root, &state)
         .arg("update")
         .arg("install")
         .arg("--source")
         .arg(origin.url())
+        .arg("--force")
         .arg("--to")
         .arg(&device_a)
         .arg("--to")
@@ -371,7 +456,7 @@ fn update_check_and_install_push_a_verified_release_to_multiple_targets() {
     assert_eq!(targets.len(), 2);
     for target in targets {
         assert_eq!(target["status"], "installed");
-        assert_eq!(target["previousVersion"], "1.0.0");
+        assert_eq!(target["previousVersion"], Value::Null);
         assert_eq!(target["newVersion"], "9.9.9");
     }
     assert_eq!(version_of(&device_a).as_deref(), Some("9.9.9"));
@@ -410,11 +495,11 @@ fn watch_installs_a_release_published_while_it_is_running() {
     let root = temp_dir("watch");
     let state = root.join("state");
     let origin_root = root.join("origin");
-    let current = build_stub(&root, "1.0.0");
+    let current = PathBuf::from(env!("CARGO_BIN_EXE_jani"));
     let next = build_stub(&root, "9.9.9");
     let target = root.join(format!("watched-device{}", std::env::consts::EXE_SUFFIX));
     fs::copy(&current, &target).unwrap();
-    publish(&origin_root, "1.0.0", &current);
+    publish(&origin_root, env!("CARGO_PKG_VERSION"), &current);
     let origin = TestOrigin::start(&origin_root);
 
     let log = root.join("watch.out");
@@ -438,7 +523,10 @@ fn watch_installs_a_release_published_while_it_is_running() {
         .expect("spawn update watch");
 
     thread::sleep(Duration::from_millis(1500));
-    assert_eq!(version_of(&target).as_deref(), Some("1.0.0"));
+    assert_eq!(
+        version_of(&target).as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     publish(&origin_root, "9.9.9", &next);
 
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -488,7 +576,7 @@ fn watch_survives_an_unreachable_origin_and_installs_when_it_returns() {
     let root = temp_dir("watch-outage");
     let state = root.join("state");
     let origin_root = root.join("origin");
-    let current = build_stub(&root, "1.0.0");
+    let current = PathBuf::from(env!("CARGO_BIN_EXE_jani"));
     let next = build_stub(&root, "9.9.9");
     let target = root.join(format!("offline-device{}", std::env::consts::EXE_SUFFIX));
     fs::copy(&current, &target).unwrap();
@@ -537,7 +625,10 @@ fn watch_survives_an_unreachable_origin_and_installs_when_it_returns() {
         );
         thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(version_of(&target).as_deref(), Some("1.0.0"));
+    assert_eq!(
+        version_of(&target).as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     let _origin = TestOrigin::start_at(&origin_root, port);
 
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -606,7 +697,7 @@ fn a_tampered_artifact_is_rejected_and_the_target_is_untouched() {
     let root = temp_dir("tamper");
     let state = root.join("state");
     let origin_root = root.join("origin");
-    let current = build_stub(&root, "1.0.0");
+    let current = PathBuf::from(env!("CARGO_BIN_EXE_jani"));
     let next = build_stub(&root, "9.9.9");
     let target = root.join(format!("guarded{}", std::env::consts::EXE_SUFFIX));
     fs::copy(&current, &target).unwrap();
@@ -626,7 +717,10 @@ fn a_tampered_artifact_is_rejected_and_the_target_is_untouched() {
     assert!(!output.status.success(), "tampered artifact was accepted");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("hash"), "{stderr}");
-    assert_eq!(version_of(&target).as_deref(), Some("1.0.0"));
+    assert_eq!(
+        version_of(&target).as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     let leftovers = fs::read_dir(&root)
         .unwrap()
         .filter_map(Result::ok)
@@ -638,6 +732,260 @@ fn a_tampered_artifact_is_rejected_and_the_target_is_untouched() {
         })
         .count();
     assert_eq!(leftovers, 0, "failed update left a temporary candidate");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn update_inspection_never_executes_an_existing_target() {
+    let root = temp_dir("no-target-execution");
+    let state = root.join("state");
+    let origin_root = root.join("origin");
+    let marker = root.join("target-executed");
+    let target = root.join(format!("unknown-device{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(build_marker_stub(&root), &target).unwrap();
+    let next = build_stub(&root, "9.9.9");
+    publish(&origin_root, "9.9.9", &next);
+    let origin = TestOrigin::start(&origin_root);
+
+    let check = jani(&root, &state)
+        .env("JANI_UPDATE_TARGET_MARKER", &marker)
+        .arg("update")
+        .arg("check")
+        .arg("--source")
+        .arg(origin.url())
+        .arg("--to")
+        .arg(&target)
+        .output()
+        .expect("run update check");
+    let report = output_json(&check);
+    assert_eq!(report["updateAvailable"], false);
+    assert_eq!(report["targets"][0]["status"], "unknown-version");
+    assert_eq!(report["targets"][0]["currentVersion"], Value::Null);
+    assert!(
+        !marker.exists(),
+        "update check executed the existing target"
+    );
+
+    let install = jani(&root, &state)
+        .env("JANI_UPDATE_TARGET_MARKER", &marker)
+        .arg("update")
+        .arg("install")
+        .arg("--source")
+        .arg(origin.url())
+        .arg("--to")
+        .arg(&target)
+        .output()
+        .expect("run update install without force");
+    let report = output_json(&install);
+    assert_eq!(report["status"], "unknown-version");
+    assert_eq!(report["artifactVerified"], false);
+    assert!(
+        !marker.exists(),
+        "update install executed the existing target"
+    );
+    assert_eq!(origin.artifact_requests(), 0);
+
+    let forced = jani(&root, &state)
+        .env("JANI_UPDATE_TARGET_MARKER", &marker)
+        .arg("update")
+        .arg("check")
+        .arg("--source")
+        .arg(origin.url())
+        .arg("--force")
+        .arg("--to")
+        .arg(&target)
+        .output()
+        .expect("run forced update check");
+    let report = output_json(&forced);
+    assert_eq!(report["updateAvailable"], true);
+    assert!(
+        !marker.exists(),
+        "forced check executed the existing target"
+    );
+    assert_eq!(origin.artifact_requests(), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn update_requires_an_explicit_trusted_signer_and_rejects_tampering() {
+    let root = temp_dir("manifest-trust");
+    let state = root.join("state");
+    let origin_root = root.join("origin");
+    let next = build_stub(&root, "9.9.9");
+    publish(&origin_root, "9.9.9", &next);
+    let (platform, _) = host_platform();
+    let manifest_path = origin_root
+        .join("agent")
+        .join(platform)
+        .join("v9.9.9")
+        .join("manifest.json");
+    let signed = fs::read(&manifest_path).unwrap();
+    let origin = TestOrigin::start(&origin_root);
+    let target = root.join(format!("trusted-device{}", std::env::consts::EXE_SUFFIX));
+    let check = |keys: Option<String>| {
+        let mut command = jani(&root, &state);
+        command
+            .arg("update")
+            .arg("check")
+            .arg("--source")
+            .arg(origin.url())
+            .arg("--to")
+            .arg(&target);
+        if let Some(keys) = keys {
+            command.env("JANI_UPDATE_KEYS", keys);
+        } else {
+            command.env_remove("JANI_UPDATE_KEYS");
+        }
+        command.output().expect("run update check")
+    };
+
+    let output = check(None);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("trust root is required"));
+
+    let wrong = public_key_spec(&"22".repeat(32), "release-test");
+    let output = check(Some(wrong));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("signature"));
+    assert_eq!(origin.artifact_requests(), 0);
+
+    let mut unsigned: Value = serde_json::from_slice(&signed).unwrap();
+    unsigned.as_object_mut().unwrap().remove("signature");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&unsigned).unwrap(),
+    )
+    .unwrap();
+    let output = check(Some(public_key_spec(DEFAULT_SIGNING_KEY, "release-test")));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unsigned"));
+
+    let mut tampered: Value = serde_json::from_slice(&signed).unwrap();
+    tampered["artifacts"][0]["sha256"] = json!("b".repeat(64));
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&tampered).unwrap(),
+    )
+    .unwrap();
+    let output = check(Some(public_key_spec(DEFAULT_SIGNING_KEY, "release-test")));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("signature"));
+    assert_eq!(origin.artifact_requests(), 0);
+
+    fs::write(&manifest_path, &signed).unwrap();
+    let output = check(Some(public_key_spec(DEFAULT_SIGNING_KEY, "release-test")));
+    let report = output_json(&output);
+    assert_eq!(report["latestVersion"], "9.9.9");
+    assert_eq!(report["manifestSignatureKey"], "release-test");
+    assert_eq!(origin.artifact_requests(), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn update_accepts_trust_from_the_explicit_cli_flag() {
+    let root = temp_dir("cli-trust");
+    let state = root.join("state");
+    let origin_root = root.join("origin");
+    let current = PathBuf::from(env!("CARGO_BIN_EXE_jani"));
+    let next = build_stub(&root, "9.9.9");
+    let target = root.join(format!(
+        "cli-trusted-device{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    fs::copy(&current, &target).unwrap();
+    publish(&origin_root, "9.9.9", &next);
+    let origin = TestOrigin::start(&origin_root);
+    let key = public_key_spec(DEFAULT_SIGNING_KEY, "release-test");
+
+    let check = jani(&root, &state)
+        .env_remove("JANI_UPDATE_KEYS")
+        .arg("update")
+        .arg("check")
+        .arg("--source")
+        .arg(origin.url())
+        .arg("--update-key")
+        .arg(&key)
+        .arg("--to")
+        .arg(&target)
+        .output()
+        .expect("run update check with CLI trust");
+    let report = output_json(&check);
+    assert_eq!(report["latestVersion"], "9.9.9");
+    assert_eq!(report["manifestSignatureKey"], "release-test");
+    assert_eq!(report["updateAvailable"], true);
+    assert_eq!(origin.artifact_requests(), 0);
+
+    let install = jani(&root, &state)
+        .env_remove("JANI_UPDATE_KEYS")
+        .arg("update")
+        .arg("install")
+        .arg("--source")
+        .arg(origin.url())
+        .arg("--update-key")
+        .arg(&key)
+        .arg("--to")
+        .arg(&target)
+        .output()
+        .expect("run update install with CLI trust");
+    let report = output_json(&install);
+    assert_eq!(report["status"], "installed");
+    assert_eq!(report["artifactVerified"], true);
+    assert_eq!(
+        report["targets"][0]["previousVersion"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(version_of(&target).as_deref(), Some("9.9.9"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn update_candidate_verification_does_not_inherit_provider_credentials() {
+    let root = temp_dir("candidate-scrub");
+    let state = root.join("state");
+    let origin_root = root.join("origin");
+    let next = build_stub(&root, "9.9.9");
+    publish(&origin_root, "9.9.9", &next);
+    fs::write(
+        root.join("no-user-settings.json"),
+        json!({
+            "version": 1,
+            "defaultModel": "fast",
+            "models": {"fast": {"model": "fixture-model", "apiKeyEnv": UPDATE_CREDENTIAL_ENV}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let origin = TestOrigin::start(&origin_root);
+    let target = root.join(format!("scrubbed-device{}", std::env::consts::EXE_SUFFIX));
+
+    let output = jani(&root, &state)
+        .env("JANI_API_KEY", "fixture-jani-update-key")
+        .env("OPENAI_API_KEY", "fixture-openai-update-key")
+        .env(UPDATE_CREDENTIAL_ENV, "fixture-custom-update-key")
+        .arg("update")
+        .arg("install")
+        .arg("--source")
+        .arg(origin.url())
+        .arg("--to")
+        .arg(&target)
+        .output()
+        .expect("run update install with credential guards");
+    let report = output_json(&output);
+    assert_eq!(report["status"], "installed");
+    assert_eq!(report["targets"][0]["newVersion"], "9.9.9");
+    assert_eq!(version_of(&target).as_deref(), Some("9.9.9"));
+    let visible = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!visible.contains("fixture-jani-update-key"));
+    assert!(!visible.contains("fixture-openai-update-key"));
+    assert!(!visible.contains("fixture-custom-update-key"));
 
     let _ = fs::remove_dir_all(root);
 }

@@ -8,5 +8,6 @@
 **/node_modules
 jani/releases
 jani/validation
+jani/synthetic/generated
 siwi/conformance
 **/.jani

@@ -13,6 +13,7 @@ pub mod env;
 pub mod evidence;
 pub mod identity;
 pub mod journal;
+pub mod kill;
 pub mod net;
 pub mod permissions;
 pub mod policy;

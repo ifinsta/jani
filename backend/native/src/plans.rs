@@ -2,7 +2,6 @@
 use crate::{digest, state::State};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 
 const MAX_PLAN_NODES: usize = 128;
 const MAX_NODE_DEPS: usize = 64;
@@ -111,17 +110,10 @@ pub fn planner(
     human_approved: bool,
 ) -> Result<Value, String> {
     match op {
-        "create" => {
+        "create" => s.transact(|s| {
             let file = args.first().ok_or("planner create requires a JSON file")?;
-            let path = std::path::Path::new(file);
-            jani_core::config::validate_relative(path)?;
-            let p = s.root.join(path);
-            let meta = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
-            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 131_072 {
-                return Err("unsafe plan file".into());
-            }
-            let plan: Value = serde_json::from_slice(&fs::read(p).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
+            let bytes = s.read_worktree_file(std::path::Path::new(file), 131_072)?;
+            let plan: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             validate(&plan)?;
             if s.get("plan", "active")?.is_some() {
                 return Err("plan already exists; refuse silent overwrite".into());
@@ -133,9 +125,9 @@ pub fn planner(
             );
             s.set("plan", "active", &plan)?;
             Ok(json!({"created":true,"nodes":nodes(&plan)?.len(),"digest":hash,"task":s.task}))
-        }
+        }),
         "inspect" => active(s),
-        "report" => {
+        "report" => s.transact(|s| {
             let id = args.first().ok_or("planner report requires node id")?;
             let receipt = args.get(1).ok_or("planner report requires evidence id")?;
             if s.get("evidence", receipt)?.is_none() {
@@ -157,8 +149,8 @@ pub fn planner(
             item["evidence"] = json!(receipt);
             s.set("plan", "active", &plan)?;
             Ok(json!({"id":id,"status":"reported_completed","trusted":false}))
-        }
-        "verify" => {
+        }),
+        "verify" => s.transact(|s| {
             if !human_approved {
                 return Err("planner verification requires verified human --approve".into());
             }
@@ -187,7 +179,7 @@ pub fn planner(
             s.set("plan", "active", &plan)?;
             Ok(json!({"id":id,"status":"verified","humanApproved":true,
                 "note":"operator attestation, not cryptographic proof of test correctness"}))
-        }
+        }),
         _ => Err(
             "planner commands: create FILE, inspect, report NODE EVIDENCE, verify NODE --approve"
                 .into(),

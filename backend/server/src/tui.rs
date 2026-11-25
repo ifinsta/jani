@@ -133,11 +133,14 @@ fn restore_terminal() {
 }
 
 fn install_panic_restore() {
-    let previous = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        restore_terminal();
-        previous(info);
-    }));
+    static PANIC_HOOK: std::sync::Once = std::sync::Once::new();
+    PANIC_HOOK.call_once(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            previous(info);
+        }));
+    });
 }
 
 fn set_cursor_visible(visible: bool) {
@@ -424,18 +427,25 @@ fn run_turn(
     Ok(())
 }
 
-/// Keys for the "may I run this?" question: `y` once, `s` this session, `a` always
-/// (saved as an operator rule), `n` or Esc to deny. Anything else is ignored.
+/// Alt+Y/S/A approve a visible question; n or Esc deny.
 fn answer_ask(state: &mut State, key: &KeyEvent) {
+    if key.kind != KeyEventKind::Press {
+        return;
+    }
     let Some((id, request)) = state.ask.clone() else {
         return;
     };
+    let approve = state.ask_visible
+        && (key.modifiers == KeyModifiers::ALT
+            || key.modifiers == (KeyModifiers::ALT | KeyModifiers::SHIFT));
     let (answer, label) = match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => (ConsentAnswer::Once, "allowed once"),
-        KeyCode::Char('s') | KeyCode::Char('S') => {
+        KeyCode::Char('y') | KeyCode::Char('Y') if approve => (ConsentAnswer::Once, "allowed once"),
+        KeyCode::Char('s') | KeyCode::Char('S') if approve => {
             (ConsentAnswer::Session, "allowed for this session")
         }
-        KeyCode::Char('a') | KeyCode::Char('A') => (ConsentAnswer::Always, "always allowed"),
+        KeyCode::Char('a') | KeyCode::Char('A') if approve => {
+            (ConsentAnswer::Always, "always allowed")
+        }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => (ConsentAnswer::Deny, "denied"),
         _ => return,
     };
@@ -446,6 +456,7 @@ fn answer_ask(state: &mut State, key: &KeyEvent) {
         };
         state.push(Entry::new(Kind::Note, format!("{label}: {subject}")));
         state.ask = None;
+        state.ask_visible = false;
     }
 }
 
@@ -661,6 +672,7 @@ struct State {
     gate: Arc<ConsentGate>,
     /// The question waiting for the operator, if any.
     ask: Option<(u64, ConsentRequest)>,
+    ask_visible: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -835,6 +847,7 @@ impl State {
             quit: false,
             gate: Arc::new(ConsentGate::default()),
             ask: None,
+            ask_visible: false,
         }
     }
 
@@ -1368,7 +1381,11 @@ impl Editor {
                 .zip(name.chars())
                 .take_while(|(a, b)| a == b)
                 .count();
-            common.truncate(keep);
+            let boundary = common
+                .char_indices()
+                .nth(keep)
+                .map_or(common.len(), |(index, _)| index);
+            common.truncate(boundary);
         }
         if matches.len() == 1 {
             common.push(' ');
@@ -1393,10 +1410,20 @@ fn approval_summary(requests: &[Value]) -> String {
 }
 
 fn draw(frame: &mut Frame, state: &mut State) {
+    state.ask_visible = false;
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        draw_too_small(frame, area);
+        if state.ask.is_some() {
+            draw_ask(
+                frame,
+                state,
+                area,
+                Rect::new(area.x, area.bottom(), area.width, 0),
+            );
+        } else {
+            draw_too_small(frame, area);
+        }
         return;
     }
     let margin = if area.width >= 96 { 3 } else { 2 };
@@ -1434,8 +1461,6 @@ fn draw(frame: &mut Frame, state: &mut State) {
     draw_transcript(frame, state, chunks[1]);
     draw_input(frame, state, chunks[2]);
     draw_palette(frame, state, content, chunks[2]);
-    draw_ask(frame, state, content, chunks[2]);
-    draw_hints(frame, state, chunks[3]);
     if show_tips {
         draw_tip(frame, state, chunks[4]);
     }
@@ -1448,6 +1473,8 @@ fn draw(frame: &mut Frame, state: &mut State) {
     if welcome {
         sprinkle_stars(frame, chunks[0]);
     }
+    draw_ask(frame, state, content, chunks[2]);
+    draw_hints(frame, state, chunks[3]);
 }
 
 fn hero_height(height: u16) -> u16 {
@@ -2039,80 +2066,116 @@ fn draw_input(frame: &mut Frame, state: &State, area: Rect) {
 }
 
 /// The question the agent is waiting on, over the transcript just above the composer.
-fn draw_ask(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
+fn draw_ask(frame: &mut Frame, state: &mut State, content: Rect, input: Rect) {
     let Some((_, request)) = state.ask.as_ref() else {
         return;
     };
     let available = input.y.saturating_sub(content.y);
-    let width = content.width.min(100);
-    if available < 9 || width < 30 {
+    let width = content.width;
+    let title = " needs your OK · the agent wants to run a command ";
+    let key = |chord: &str| {
+        Span::styled(
+            chord.to_string(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
+    let lines = [
+        Line::from(Span::styled(
+            format!("  {}", request.argv.join(" ")),
+            Style::default().fg(CODE),
+        )),
+        Line::from(Span::styled(
+            format!("  {}.", request.reason),
+            Style::default().fg(DIM),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            key("Alt+Y"),
+            Span::raw("  allow once"),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            key("Alt+S"),
+            Span::raw("  allow for this session"),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            key("Alt+A"),
+            Span::raw(format!(
+                "  always allow \"{}\" (saves a rule)",
+                request.suggest.join(" ")
+            )),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("n", Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
+            Span::raw("  deny (Esc too). Ctrl+C cancels the turn and denies."),
+        ]),
+    ];
+    let inner_width = usize::from(width.saturating_sub(2));
+    let has_controls = lines.iter().any(|line| {
+        line.spans
+            .iter()
+            .any(|span| span.content.chars().any(char::is_control))
+    });
+    let lines: Vec<Line<'static>> = lines
+        .iter()
+        .flat_map(|line| {
+            let spans: Vec<_> = line
+                .spans
+                .iter()
+                .map(|span| (span.content.to_string(), span.style))
+                .collect();
+            wrap_spans(&spans, inner_width).into_iter().map(|row| {
+                Line::from(
+                    row.into_iter()
+                        .map(|(text, style)| Span::styled(text, style))
+                        .collect::<Vec<_>>(),
+                )
+            })
+        })
+        .collect();
+    let height = u16::try_from(lines.len().saturating_add(2)).unwrap_or(u16::MAX);
+    if frame.area().width < MIN_WIDTH
+        || frame.area().height < MIN_HEIGHT
+        || available < height
+        || has_controls
+    {
+        let height = available.min(2);
+        let area = Rect::new(content.x, input.y - height, width, height);
+        frame.render_widget(Clear, area);
+        let notice = if height < 2 {
+            vec!["Esc denies; resize: command pending"]
+        } else {
+            vec!["Command pending; resize", "Esc denies; approvals disabled"]
+        };
+        frame.render_widget(
+            Paragraph::new(
+                notice
+                    .into_iter()
+                    .map(|line| Line::from(clip(line, usize::from(width))))
+                    .collect::<Vec<_>>(),
+            )
+            .style(Style::default().fg(USER).bg(PANEL)),
+            area,
+        );
         return;
     }
-    let inner_width = usize::from(width.saturating_sub(4));
-    let command = clip(&request.argv.join(" "), inner_width.saturating_sub(2));
-    let reason = clip(&format!("{}.", request.reason), inner_width);
-    let always = clip(&request.suggest.join(" "), inner_width.saturating_sub(28));
-    let height = 9u16;
-    let area = Rect::new(
-        content.x + (content.width - width) / 2,
-        input.y - height,
-        width,
-        height,
-    );
+    let area = Rect::new(content.x, input.y - height, width, height);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(USER))
         .title(Span::styled(
-            " needs your OK · the agent wants to run a command ",
+            title,
             Style::default().fg(USER).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(PANEL));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let key = |letter: &str| {
-        Span::styled(
-            letter.to_string(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )
-    };
-    let lines = vec![
-        Line::from(Span::styled(
-            format!("  {command}"),
-            Style::default().fg(CODE),
-        )),
-        Line::from(Span::styled(
-            format!("  {reason}"),
-            Style::default().fg(DIM),
-        )),
-        Line::from(""),
-        Line::from(vec![Span::raw("  "), key("y"), Span::raw("  allow once")]),
-        Line::from(vec![
-            Span::raw("  "),
-            key("s"),
-            Span::raw("  allow for this session"),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            key("a"),
-            Span::raw(format!("  always allow \"{always}\" (saves a rule)")),
-        ]),
-    ];
     frame.render_widget(Paragraph::new(lines), inner);
-    let deny = Rect::new(
-        inner.x,
-        inner.y + inner.height.saturating_sub(1),
-        inner.width,
-        1,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("  "),
-            Span::styled("n", Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
-            Span::raw("  deny (Esc too). Ctrl+C cancels the turn and denies."),
-        ])),
-        deny,
-    );
+    state.ask_visible = true;
 }
 
 fn draw_palette(frame: &mut Frame, state: &State, content: Rect, input: Rect) {
@@ -2422,7 +2485,17 @@ fn draw_hints(frame: &mut Frame, state: &State, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let line = if let Some(palette) = state.palette.as_ref() {
+    let line = if state.ask.is_some() {
+        if state.ask_visible {
+            hints_line(&[
+                ("Alt+Y", " once"),
+                ("Alt+S", " session"),
+                ("Alt+A", " always"),
+            ])
+        } else {
+            hints_line(&[("Esc", " deny  "), ("ctrl+c", " cancel")])
+        }
+    } else if let Some(palette) = state.palette.as_ref() {
         let action = match palette.mode {
             PaletteMode::Commands => " run  ",
             PaletteMode::Models => " switch  ",
@@ -3411,6 +3484,22 @@ mod tests {
     }
 
     #[test]
+    fn editor_completes_unicode_prefixes_at_byte_boundaries() {
+        for (names, expected) in [
+            (["éclair", "école", "écouter"], "/éc"),
+            (["日本語", "日本海", "日本人"], "/日本"),
+            (["𐐀alpha", "𐐀beta", "𐐀gamma"], "/𐐀"),
+        ] {
+            let mut editor = Editor::default();
+            editor.insert_str("/");
+            editor.complete(&names);
+            assert_eq!(editor.text, expected);
+            assert_eq!(editor.cursor, editor.text.len());
+            assert!(editor.text.is_char_boundary(editor.cursor));
+        }
+    }
+
+    #[test]
     fn wrapping_respects_width_and_words() {
         let lines = wrap("the quick brown fox", 10);
         assert_eq!(lines, vec!["the quick", "brown fox"]);
@@ -3570,6 +3659,8 @@ mod tests {
                         .join("skills")
                         .join(name)
                         .join("SKILL.md"),
+                    boundary: root.clone(),
+                    worktree_path: Some(format!(".agents/skills/{name}/SKILL.md")),
                 },
             );
         }
@@ -4390,68 +4481,231 @@ mod tests {
             "needs your OK",
             "npm install left-pad",
             "installs or changes dependencies",
-            "allow once",
-            "allow for this session",
-            "always allow \"npm install\"",
+            "Alt+Y  allow once",
+            "Alt+S  allow for this session",
+            "Alt+A  always allow \"npm install\"",
             "deny",
         ] {
             assert!(screen.contains(want), "{want} missing:\n{screen}");
         }
+        assert!(state.ask_visible);
         state.gate.cancel();
         assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
     }
 
     #[test]
-    fn keys_answer_the_question_and_nothing_else_does() {
-        for (key, expected, note) in [
-            (
-                KeyCode::Char('y'),
-                ConsentAnswer::Once,
-                "allowed once: npm install left-pad",
-            ),
-            (
-                KeyCode::Char('s'),
-                ConsentAnswer::Session,
-                "allowed for this session: npm install",
-            ),
-            (
-                KeyCode::Char('a'),
-                ConsentAnswer::Always,
-                "always allowed: npm install",
-            ),
-            (
-                KeyCode::Char('n'),
-                ConsentAnswer::Deny,
-                "denied: npm install left-pad",
-            ),
-            (
-                KeyCode::Esc,
-                ConsentAnswer::Deny,
-                "denied: npm install left-pad",
-            ),
-        ] {
+    fn alt_keys_answer_a_fully_rendered_question() {
+        for modifiers in [KeyModifiers::ALT, KeyModifiers::ALT | KeyModifiers::SHIFT] {
+            for (letter, expected, note) in [
+                (
+                    'y',
+                    ConsentAnswer::Once,
+                    "allowed once: npm install left-pad",
+                ),
+                (
+                    's',
+                    ConsentAnswer::Session,
+                    "allowed for this session: npm install",
+                ),
+                ('a', ConsentAnswer::Always, "always allowed: npm install"),
+            ] {
+                let (mut state, agent_side) = ask_state();
+                render(&mut state, 110, 32);
+                assert!(state.ask_visible);
+                let letter = if modifiers.contains(KeyModifiers::SHIFT) {
+                    letter.to_ascii_uppercase()
+                } else {
+                    letter
+                };
+                answer_ask(&mut state, &KeyEvent::new(KeyCode::Char(letter), modifiers));
+                assert!(state.ask.is_none());
+                assert!(!state.ask_visible);
+                assert!(
+                    state.entries.iter().any(|e| e.text.contains(note)),
+                    "{note}"
+                );
+                assert_eq!(agent_side.join().unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn unmodified_type_ahead_never_approves_a_question() {
+        let (mut state, agent_side) = ask_state();
+        render(&mut state, 110, 32);
+        for letter in "ysaySAx".chars() {
+            answer_ask(
+                &mut state,
+                &KeyEvent::new(KeyCode::Char(letter), KeyModifiers::NONE),
+            );
+        }
+        for letter in "YSA".chars() {
+            answer_ask(
+                &mut state,
+                &KeyEvent::new(KeyCode::Char(letter), KeyModifiers::SHIFT),
+            );
+        }
+        answer_ask(
+            &mut state,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert!(state.ask.is_some());
+        assert!(state.gate.pending().is_some());
+        assert!(state.entries.is_empty());
+        assert!(state.editor.is_empty());
+        state.gate.cancel();
+        assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+    }
+
+    #[test]
+    fn alt_keys_cannot_approve_before_the_first_render() {
+        let (mut state, agent_side) = ask_state();
+        assert!(!state.ask_visible);
+        for letter in "ysa".chars() {
+            answer_ask(
+                &mut state,
+                &KeyEvent::new(KeyCode::Char(letter), KeyModifiers::ALT),
+            );
+        }
+        assert!(state.ask.is_some());
+        assert!(state.gate.pending().is_some());
+        assert!(state.entries.is_empty());
+        state.gate.cancel();
+        assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+    }
+
+    #[test]
+    fn small_terminals_disable_approvals_and_show_a_resize_notice() {
+        for (width, height) in [(110, 10), (110, 9), (39, 32), (30, 8)] {
             let (mut state, agent_side) = ask_state();
-            // A stray key answers nothing and the question stays open.
+            render(&mut state, 110, 32);
+            assert!(state.ask_visible);
+            let screen = render(&mut state, width, height);
+            assert!(!state.ask_visible);
+            for want in [
+                "Command pending",
+                "resize",
+                "approvals disabled",
+                "Esc denies",
+            ] {
+                assert!(screen.contains(want), "{want} missing:\n{screen}");
+            }
+            for hidden in ["Alt+Y", "Alt+S", "Alt+A", "allow once", "always allow"] {
+                assert!(
+                    !screen.contains(hidden),
+                    "{hidden} must not appear:\n{screen}"
+                );
+            }
+            for letter in "ysa".chars() {
+                answer_ask(
+                    &mut state,
+                    &KeyEvent::new(KeyCode::Char(letter), KeyModifiers::ALT),
+                );
+            }
+            assert!(state.ask.is_some());
+            assert!(state.gate.pending().is_some());
+            assert!(state.entries.is_empty());
+            answer_ask(&mut state, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+        }
+    }
+
+    #[test]
+    fn long_commands_reasons_and_options_wrap_without_enabling_clipped_approvals() {
+        for field in 0..3 {
+            let (mut state, agent_side) = ask_state();
+            let request = &mut state.ask.as_mut().unwrap().1;
+            let long = "é".repeat(120);
+            match field {
+                0 => request.argv.push(long),
+                1 => request.reason = long,
+                _ => request.suggest.push(long),
+            }
+            let full = render(&mut state, 110, 32);
+            assert!(state.ask_visible, "{full}");
+            assert_eq!(
+                full.chars().filter(|character| *character == 'é').count(),
+                120
+            );
+            let screen = render(&mut state, 110, 10);
+            assert!(!state.ask_visible);
+            assert!(screen.contains("approvals disabled"), "{screen}");
+            assert!(!screen.contains("Alt+Y"), "{screen}");
             answer_ask(
                 &mut state,
-                &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                &KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
             );
-            answer_ask(
-                &mut state,
-                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            );
-            assert!(
-                state.gate.pending().is_some(),
-                "only the listed keys answer"
-            );
-            answer_ask(&mut state, &KeyEvent::new(key, KeyModifiers::NONE));
-            assert!(state.ask.is_none());
-            assert!(
-                state.entries.iter().any(|e| e.text.contains(note)),
-                "{note}"
-            );
-            // The agent's side received exactly that answer.
-            assert_eq!(agent_side.join().unwrap(), expected);
+            assert!(state.gate.pending().is_some());
+            render(&mut state, 220, 32);
+            assert!(state.ask_visible);
+            answer_ask(&mut state, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+        }
+    }
+
+    #[test]
+    fn repeated_or_released_alt_keys_never_approve() {
+        let (mut state, agent_side) = ask_state();
+        render(&mut state, 110, 32);
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            for letter in "ysaYSA".chars() {
+                answer_ask(
+                    &mut state,
+                    &KeyEvent::new_with_kind(KeyCode::Char(letter), KeyModifiers::ALT, kind),
+                );
+            }
+        }
+        assert!(state.ask.is_some());
+        assert!(state.gate.pending().is_some());
+        assert!(state.entries.is_empty());
+        state.gate.cancel();
+        assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+    }
+
+    #[test]
+    fn control_and_meta_combinations_never_approve() {
+        let (mut state, agent_side) = ask_state();
+        render(&mut state, 110, 32);
+        for forbidden in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::SUPER,
+            KeyModifiers::HYPER,
+            KeyModifiers::META,
+        ] {
+            for modifiers in [
+                forbidden,
+                KeyModifiers::ALT | forbidden,
+                KeyModifiers::ALT | KeyModifiers::SHIFT | forbidden,
+            ] {
+                for letter in "ysaYSA".chars() {
+                    answer_ask(&mut state, &KeyEvent::new(KeyCode::Char(letter), modifiers));
+                }
+            }
+        }
+        assert!(state.ask.is_some());
+        assert!(state.gate.pending().is_some());
+        assert!(state.entries.is_empty());
+        state.gate.cancel();
+        assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+    }
+
+    #[test]
+    fn denial_is_safe_before_render_and_in_every_layout() {
+        for size in [None, Some((110, 32)), Some((110, 10)), Some((30, 8))] {
+            for code in [KeyCode::Char('n'), KeyCode::Char('N'), KeyCode::Esc] {
+                let (mut state, agent_side) = ask_state();
+                if let Some((width, height)) = size {
+                    render(&mut state, width, height);
+                }
+                answer_ask(&mut state, &KeyEvent::new(code, KeyModifiers::NONE));
+                assert!(state.ask.is_none());
+                assert!(!state.ask_visible);
+                assert!(state
+                    .entries
+                    .iter()
+                    .any(|entry| entry.text == "denied: npm install left-pad"));
+                assert_eq!(agent_side.join().unwrap(), ConsentAnswer::Deny);
+            }
         }
     }
 }

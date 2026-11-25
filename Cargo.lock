@@ -824,12 +824,14 @@ name = "jani"
 version = "0.1.2"
 dependencies = [
  "ed25519-dalek",
+ "getrandom 0.2.17",
  "hex",
  "jani-core",
  "jani-mcp",
  "jani-mirror",
  "jani-native",
  "jani-store",
+ "jani-verifier",
  "libc",
  "ratatui",
  "regex",
@@ -886,10 +888,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "jani-issuer"
+version = "0.1.2"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "hex",
+ "jani-core",
+ "serde_json",
+]
+
+[[package]]
 name = "jani-jsmt"
 version = "0.1.2"
 dependencies = [
  "hex",
+ "jani-core",
  "serde",
  "serde_json",
  "sha2",
@@ -948,6 +962,17 @@ name = "jani-store"
 version = "0.1.2"
 dependencies = [
  "rusqlite",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "jani-verifier"
+version = "0.1.2"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "jani-core",
  "serde",
  "serde_json",
 ]

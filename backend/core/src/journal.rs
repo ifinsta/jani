@@ -1,7 +1,7 @@
 use crate::types::{new_id, now_unix, sha256_hex, AuditEvent, Classification};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 pub const JOURNAL_FILE: &str = "journal.jsonl";
@@ -58,7 +58,9 @@ pub mod reason {
 
 pub struct Journal {
     file: File,
+    anchor: Option<File>,
     previous_digest: String,
+    observed_len: u64,
 }
 
 pub struct EventInput<'a> {
@@ -83,18 +85,71 @@ impl Journal {
         fs::create_dir_all(state_dir)
             .map_err(|e| format!("cannot create state directory {}: {e}", state_dir.display()))?;
         let path = state_dir.join(JOURNAL_FILE);
-        let previous_digest = last_digest(&path)?;
         // `read` is needed so the handle can be locked on every platform.
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .read(true)
             .append(true)
             .open(&path)
             .map_err(|e| format!("cannot open audit journal {}: {e}", path.display()))?;
+        match file.lock() {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {}
+            Err(e) => return Err(format!("cannot lock audit journal: {e}")),
+        }
+        let opened = (|| {
+            let previous_digest = validated_last_digest_from(&mut file)?;
+            let observed_len = file
+                .metadata()
+                .map_err(|e| format!("cannot inspect audit journal: {e}"))?
+                .len();
+            Ok::<_, String>((previous_digest, observed_len))
+        })();
+        let _ = file.unlock();
+        let (previous_digest, observed_len) = opened?;
         Ok(Self {
             file,
+            anchor: None,
             previous_digest,
+            observed_len,
         })
+    }
+
+    pub fn open_with_anchor(state_dir: &Path, anchor_path: Option<&Path>) -> Result<Self, String> {
+        let mut journal = Self::open(state_dir)?;
+        if let Some(path) = anchor_path {
+            journal.set_anchor(path)?;
+        }
+        Ok(journal)
+    }
+
+    pub fn set_anchor(&mut self, anchor_path: &Path) -> Result<(), String> {
+        if let Ok(meta) = fs::symlink_metadata(anchor_path) {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "symlinked audit anchor refused: {}",
+                    anchor_path.display()
+                ));
+            }
+        }
+        if let Some(parent) = anchor_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("cannot create audit anchor directory: {e}"))?;
+            }
+        }
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts
+            .open(anchor_path)
+            .map_err(|e| format!("cannot open audit anchor {}: {e}", anchor_path.display()))?;
+        self.anchor = Some(file);
+        Ok(())
     }
 
     /// Append one event. Other writers (a second `Journal` in this process, or
@@ -114,10 +169,17 @@ impl Journal {
     }
 
     fn append_locked(&mut self, input: EventInput<'_>) -> Result<AuditEvent, String> {
-        // Re-read the tail through the handle that holds the lock. Opening a
-        // second handle here fails on Windows, where file locks are mandatory:
-        // the read is rejected with ERROR_LOCK_VIOLATION while the lock is held.
-        self.previous_digest = last_digest_from(&mut self.file)?;
+        // Re-read the tail through the handle that holds the lock only when
+        // another writer changed the file. Opening a second handle here fails
+        // on Windows, where file locks are mandatory.
+        let current_len = self
+            .file
+            .metadata()
+            .map_err(|e| format!("cannot inspect audit journal: {e}"))?
+            .len();
+        if current_len != self.observed_len {
+            self.previous_digest = last_digest_from(&mut self.file)?;
+        }
         let mut event = AuditEvent {
             event_version: "1.0".into(),
             event_id: new_id("evt"),
@@ -145,7 +207,18 @@ impl Journal {
             .write_all(format!("{line}\n").as_bytes())
             .and_then(|_| self.file.sync_data())
             .map_err(|e| format!("cannot append audit event: {e}"))?;
+        if let Some(anchor) = self.anchor.as_mut() {
+            let entry = format!(
+                "{} {} {}\n",
+                event.timestamp, event.event_id, event.event_digest
+            );
+            anchor
+                .write_all(entry.as_bytes())
+                .and_then(|_| anchor.sync_data())
+                .map_err(|e| format!("cannot write audit anchor: {e}"))?;
+        }
         self.previous_digest = event.event_digest.clone();
+        self.observed_len = current_len + line.len() as u64 + 1;
         Ok(event)
     }
 }
@@ -170,36 +243,80 @@ fn digest_for(event: &AuditEvent) -> Result<String, String> {
     Ok(sha256_hex(&bytes))
 }
 
-fn last_digest(path: &Path) -> Result<String, String> {
-    if !path.is_file() {
-        return Ok(String::new());
-    }
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
-    lock_shared(&file)?;
-    let result = last_digest_from(&mut file);
-    let _ = file.unlock();
-    result
-}
-
-/// Read the digest of the final event. The caller must own a lock on `file`
-/// (exclusive for appends, shared for inspection) so the tail cannot move
-/// between the read and the next write.
-fn last_digest_from(file: &mut File) -> Result<String, String> {
+fn validated_last_digest_from(file: &mut File) -> Result<String, String> {
     file.seek(SeekFrom::Start(0))
         .map_err(|e| format!("cannot seek audit journal: {e}"))?;
-    let mut last = None;
+    let mut last = String::new();
     for line in BufReader::new(&mut *file).lines() {
         let line = line.map_err(|e| e.to_string())?;
         if !line.trim().is_empty() {
-            last = Some(line);
-        }
-    }
-    match last {
-        None => Ok(String::new()),
-        Some(line) => {
             let event: AuditEvent =
                 serde_json::from_str(&line).map_err(|e| format!("journal tail is invalid: {e}"))?;
-            Ok(event.event_digest)
+            last = event.event_digest;
+        }
+    }
+    Ok(last)
+}
+
+/// Read the digest of the final non-empty event without scanning the journal
+/// prefix. The caller must own a lock on `file` so the tail cannot move.
+fn last_digest_from(file: &mut File) -> Result<String, String> {
+    let end = file
+        .seek(SeekFrom::End(0))
+        .map_err(|e| format!("cannot seek audit journal: {e}"))?;
+    if end == 0 {
+        return Ok(String::new());
+    }
+    let mut position = end;
+    let mut tail = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = usize::try_from(position.min(buffer.len() as u64))
+            .map_err(|_| "journal tail is too large".to_string())?;
+        position -= count as u64;
+        file.seek(SeekFrom::Start(position))
+            .map_err(|e| format!("cannot seek audit journal: {e}"))?;
+        file.read_exact(&mut buffer[..count])
+            .map_err(|e| format!("cannot read audit journal tail: {e}"))?;
+        let mut combined = Vec::with_capacity(count + tail.len());
+        combined.extend_from_slice(&buffer[..count]);
+        combined.extend_from_slice(&tail);
+        tail = combined;
+
+        let mut line_start = 0;
+        let mut last = None;
+        for (index, byte) in tail.iter().enumerate() {
+            if *byte == b'\n' {
+                if tail[line_start..index]
+                    .iter()
+                    .any(|byte| !byte.is_ascii_whitespace())
+                {
+                    last = Some((line_start, index));
+                }
+                line_start = index + 1;
+            }
+        }
+        if tail[line_start..]
+            .iter()
+            .any(|byte| !byte.is_ascii_whitespace())
+        {
+            last = Some((line_start, tail.len()));
+        }
+        if let Some((start, stop)) = last {
+            if start > 0 || position == 0 {
+                let mut line = &tail[start..stop];
+                if line.ends_with(b"\r") {
+                    line = &line[..line.len() - 1];
+                }
+                let line = std::str::from_utf8(line)
+                    .map_err(|_| "journal tail is not valid UTF-8".to_string())?;
+                let event: AuditEvent = serde_json::from_str(line)
+                    .map_err(|e| format!("journal tail is invalid: {e}"))?;
+                return Ok(event.event_digest);
+            }
+        }
+        if position == 0 {
+            return Ok(String::new());
         }
     }
 }
@@ -237,30 +354,58 @@ fn read_events_from(file: &File) -> Result<Vec<AuditEvent>, String> {
     Ok(events)
 }
 
-pub fn verify(state_dir: &Path) -> Result<Value, String> {
-    let path = state_dir.join(JOURNAL_FILE);
-    let events = read_events(&path)?;
+pub fn read_verified_events(path: &Path) -> Result<Vec<AuditEvent>, String> {
+    let events = read_events(path)?;
+    if let Some((line, reason)) = first_integrity_failure(&events)? {
+        return Err(format!(
+            "audit journal failed integrity verification at line {line}: {reason}"
+        ));
+    }
+    Ok(events)
+}
+
+pub fn verify_next(event: &AuditEvent, expected_prev: &str) -> Result<String, String> {
+    if event.previous_event_digest != expected_prev {
+        return Err("previous_event_digest does not match the preceding event".into());
+    }
+    if event.event_digest != digest_for(event)? {
+        return Err("event digest mismatch".into());
+    }
+    Ok(event.event_digest.clone())
+}
+
+fn first_integrity_failure(events: &[AuditEvent]) -> Result<Option<(usize, &'static str)>, String> {
     let mut previous = String::new();
     for (index, event) in events.iter().enumerate() {
         if event.previous_event_digest != previous {
-            return Ok(json!({
-                "ok": false,
-                "events": events.len(),
-                "failure_line": index + 1,
-                "reason": "previous_event_digest does not match the preceding event",
-            }));
+            return Ok(Some((
+                index + 1,
+                "previous_event_digest does not match the preceding event",
+            )));
         }
-        let expected = digest_for(event)?;
-        if event.event_digest != expected {
-            return Ok(json!({
-                "ok": false,
-                "events": events.len(),
-                "failure_line": index + 1,
-                "reason": "event digest mismatch",
-            }));
+        if event.event_digest != digest_for(event)? {
+            return Ok(Some((index + 1, "event digest mismatch")));
         }
         previous = event.event_digest.clone();
     }
+    Ok(None)
+}
+
+pub fn verify(state_dir: &Path) -> Result<Value, String> {
+    let path = state_dir.join(JOURNAL_FILE);
+    let events = read_events(&path)?;
+    if let Some((failure_line, reason)) = first_integrity_failure(&events)? {
+        return Ok(json!({
+            "ok": false,
+            "events": events.len(),
+            "failure_line": failure_line,
+            "reason": reason,
+        }));
+    }
+    let previous = events
+        .last()
+        .map(|event| event.event_digest.clone())
+        .unwrap_or_default();
     Ok(json!({
         "ok": true,
         "events": events.len(),
@@ -330,10 +475,80 @@ mod tests {
         assert_eq!(verify(&dir).unwrap()["ok"], true);
 
         let path = dir.join(JOURNAL_FILE);
+        assert_eq!(read_verified_events(&path).unwrap().len(), 2);
         let mut lines = fs::read_to_string(&path).unwrap();
         lines = lines.replace("repo.write", "repo.read");
         fs::write(&path, lines).unwrap();
         assert_eq!(verify(&dir).unwrap()["ok"], false);
+        assert!(read_verified_events(&path).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tail_lookup_handles_large_prefixes_and_trailing_blank_lines() {
+        let dir = temp_dir();
+        let mut journal = Journal::open(&dir).unwrap();
+        let event = journal.record(input("run-1", "repo.read")).unwrap();
+        drop(journal);
+        let path = dir.join(JOURNAL_FILE);
+        let line = fs::read_to_string(&path).unwrap();
+        let mut padded = vec![b' '; 20 * 1024];
+        padded.extend_from_slice(line.as_bytes());
+        padded.extend_from_slice(b"\r\n \t\r\n");
+        fs::write(&path, padded).unwrap();
+
+        let mut file = OpenOptions::new().read(true).open(&path).unwrap();
+        assert_eq!(last_digest_from(&mut file).unwrap(), event.event_digest);
+        drop(file);
+
+        let mut journal = Journal::open(&dir).unwrap();
+        journal.record(input("run-2", "repo.read")).unwrap();
+        drop(journal);
+        assert_eq!(verify(&dir).unwrap()["ok"], true);
+        assert_eq!(verify(&dir).unwrap()["events"], 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn large_tail_events_survive_interleaved_appends() {
+        let dir = temp_dir();
+        let mut first = Journal::open(&dir).unwrap();
+        let digest = "x".repeat(20 * 1024);
+        first
+            .record(EventInput {
+                resource_digest: &digest,
+                ..input("run-1", "repo.read")
+            })
+            .unwrap();
+        let mut second = Journal::open(&dir).unwrap();
+        second.record(input("run-2", "repo.read")).unwrap();
+        first.record(input("run-1", "repo.read")).unwrap();
+        drop(second);
+        drop(first);
+
+        assert_eq!(verify(&dir).unwrap()["ok"], true);
+        assert_eq!(
+            read_verified_events(&dir.join(JOURNAL_FILE)).unwrap().len(),
+            3
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_length_external_tampering_still_fails_verification_after_append() {
+        let dir = temp_dir();
+        let mut journal = Journal::open(&dir).unwrap();
+        journal.record(input("run-1", "repo.read")).unwrap();
+        let path = dir.join(JOURNAL_FILE);
+        let original = fs::read_to_string(&path).unwrap();
+        let tampered = original.replace("repo.read", "repo.test");
+        assert_eq!(tampered.len(), original.len());
+        fs::write(&path, tampered).unwrap();
+
+        journal.record(input("run-1", "repo.read")).unwrap();
+        drop(journal);
+        assert_eq!(verify(&dir).unwrap()["ok"], false);
+        assert!(read_verified_events(&path).is_err());
         let _ = fs::remove_dir_all(dir);
     }
 
