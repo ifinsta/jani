@@ -214,6 +214,18 @@ impl<'a> SandboxManager<'a> {
         argv: &[String],
         extra_writable: &[PathBuf],
     ) -> JResult<(Command, ProcessIsolation)> {
+        self.command_with_readonly(plan, argv, extra_writable, &[])
+    }
+
+    pub fn command_with_readonly(
+        &self,
+        plan: &SandboxPlan,
+        argv: &[String],
+        extra_writable: &[PathBuf],
+        extra_readonly: &[PathBuf],
+    ) -> JResult<(Command, ProcessIsolation)> {
+        #[cfg(not(unix))]
+        let _ = extra_readonly;
         let (program, args) = argv.split_first().ok_or("empty executable")?;
         match &plan.backend {
             Backend::None => {
@@ -228,11 +240,50 @@ impl<'a> SandboxManager<'a> {
                 Ok((cmd, ProcessIsolation::JobObject))
             }
             Backend::Bubblewrap(path) => {
+                let canon_root = self
+                    .cfg
+                    .root
+                    .canonicalize()
+                    .map_err(|e| format!("invalid worktree root: {e}"))?;
+                let mut verified_write_paths = Vec::new();
                 for scope in &self.cfg.write_paths {
+                    validate_relative(scope)?;
                     let full = self.cfg.root.join(scope);
-                    std::fs::create_dir_all(&full).map_err(|e| {
-                        format!("cannot prepare write scope {}: {e}", full.display())
+                    if let Ok(meta) = std::fs::symlink_metadata(&full) {
+                        if meta.file_type().is_symlink() {
+                            return Err(format!(
+                                "symlinked write scope refused: {}",
+                                full.display()
+                            ));
+                        }
+                    } else if scope.extension().is_none() {
+                        std::fs::create_dir_all(&full).map_err(|e| {
+                            format!("cannot prepare write scope {}: {e}", full.display())
+                        })?;
+                    } else {
+                        if let Some(parent) = full.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                format!("cannot prepare write parent {}: {e}", parent.display())
+                            })?;
+                        }
+                    }
+                    let check_target = if full.exists() {
+                        full.clone()
+                    } else {
+                        full.parent().unwrap_or(&self.cfg.root).to_path_buf()
+                    };
+                    let real = check_target.canonicalize().map_err(|e| {
+                        format!("cannot resolve write scope {}: {e}", full.display())
                     })?;
+                    if !real.starts_with(&canon_root) {
+                        return Err(format!(
+                            "write scope resolves outside worktree: {}",
+                            full.display()
+                        ));
+                    }
+                    if full.exists() {
+                        verified_write_paths.push(full);
+                    }
                 }
                 let mut cmd = Command::new(path);
                 let root = self
@@ -289,8 +340,24 @@ impl<'a> SandboxManager<'a> {
                     }
                 }
                 cmd.arg("--ro-bind").arg(root).arg(root);
-                for scope in &self.cfg.write_paths {
-                    let full = self.cfg.root.join(scope);
+                // Mask sensitive files and directories inside the worktree before exposing writable scopes.
+                for name in [
+                    ".env",
+                    ".git-credentials",
+                    ".npmrc",
+                    "credentials",
+                    "credentials.toml",
+                ] {
+                    let candidate = self.cfg.root.join(name);
+                    if candidate.is_file() && Path::new("/dev/null").exists() {
+                        cmd.arg("--ro-bind").arg("/dev/null").arg(&candidate);
+                    }
+                }
+                let jani_dir = self.cfg.root.join(".jani");
+                if jani_dir.is_dir() {
+                    cmd.arg("--tmpfs").arg(&jani_dir);
+                }
+                for full in verified_write_paths {
                     cmd.arg("--bind").arg(&full).arg(&full);
                 }
                 for dir in extra_writable {
@@ -311,6 +378,11 @@ impl<'a> SandboxManager<'a> {
                     };
                     if inside {
                         cmd.arg("--bind").arg(&full).arg(&full);
+                    }
+                }
+                for ro in extra_readonly {
+                    if ro.exists() {
+                        cmd.arg("--ro-bind").arg(ro).arg(ro);
                     }
                 }
                 cmd.arg("--chdir").arg(root).arg("--");
@@ -379,13 +451,25 @@ fn bwrap_version(path: &Path) -> Result<String, String> {
 
 fn toolchain_caches() -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for key in ["CARGO_HOME", "RUSTUP_HOME", "GOPATH"] {
+    let push_cargo_subdirs = |base: &Path, out: &mut Vec<PathBuf>| {
+        for sub in ["registry", "git", "bin"] {
+            let p = base.join(sub);
+            if p.is_dir() {
+                out.push(p);
+            }
+        }
+    };
+    if let Some(cargo) = std::env::var_os("CARGO_HOME") {
+        push_cargo_subdirs(Path::new(&cargo), &mut found);
+    }
+    for key in ["RUSTUP_HOME", "GOPATH"] {
         if let Some(value) = std::env::var_os(key) {
             found.push(PathBuf::from(value));
         }
     }
     if let Some(home) = crate::config::home_dir() {
-        for name in [".cargo", ".rustup", ".cache/go-build"] {
+        push_cargo_subdirs(&home.join(".cargo"), &mut found);
+        for name in [".rustup", ".cache/go-build"] {
             found.push(home.join(name));
         }
     }

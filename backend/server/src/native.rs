@@ -94,7 +94,7 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         journal::decision::STARTED,
         &digest,
     )?;
-    let value = jani_native::run(
+    let value = match jani_native::run(
         &cfg.root,
         &cfg.state_dir,
         &identity.tenant,
@@ -102,7 +102,21 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         tool,
         &cfg.positional,
         human,
-    )?;
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = record(
+                cfg,
+                &identity.tenant,
+                &identity.principal,
+                &action,
+                op,
+                journal::decision::FAILED,
+                &digest,
+            );
+            return Err(error);
+        }
+    };
     record(
         cfg,
         &identity.tenant,

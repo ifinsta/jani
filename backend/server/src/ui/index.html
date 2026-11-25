@@ -880,7 +880,7 @@ function approvalActions(ap){
     else wrap.appendChild(el('div',{class:'why warn',style:'width:100%'},el('span',{class:'eyebrow',text:'Waiting for an approver'}),'A designated approver decides this, not you. It will show here when they have.'));
     return wrap;
   }
-  if(!canDecide()){wrap.appendChild(el('div',{class:'why warn',style:'width:100%'},el('span',{class:'eyebrow',text:'Needs a verified identity'}),'Decisions need a signed identity assertion. Start jani ui with --identity FILE and --policy-key, then reload.'));return wrap}
+  if(!canDecide()){wrap.appendChild(el('div',{class:'why warn',style:'width:100%'},el('span',{class:'eyebrow',text:'Needs a verified identity'}),'Decisions need a signed identity assertion. Start jani ui with --identity FILE and --identity-key, then reload.'));return wrap}
   var yes=el('button',{class:'btn primary',type:'button',text:'Approve once'}),no=el('button',{class:'btn danger',type:'button',text:'Reject'});
   yes.addEventListener('click',function(){decide(ap,true)});no.addEventListener('click',function(){decide(ap,false)});
   wrap.appendChild(yes);wrap.appendChild(no);return wrap;
@@ -1255,13 +1255,13 @@ function renderAsk(){
     btn.addEventListener('click',function(){answerAsk(b[0])});row.appendChild(btn);
   });
   tAsk.appendChild(row);
-  if(S.view!=='term')setView('term');
+  if(S.view!=='term')banner('A command is waiting for your review in Terminal.');
   renderTermMeta();
-  setTimeout(function(){tAsk.focus()},0);
   tScroll.scrollTop=tScroll.scrollHeight;
 }
 document.addEventListener('keydown',function(e){
-  if(!T.consent||tAsk.hidden||e.ctrlKey||e.metaKey||e.altKey)return;
+  if(!T.consent||tAsk.hidden||e.repeat||e.ctrlKey||e.metaKey||e.altKey)return;
+  if(!tAsk.contains(document.activeElement))return;
   var tag=(document.activeElement&&document.activeElement.tagName)||'';
   if(tag==='TEXTAREA'||tag==='INPUT')return;
   var k={y:'once',s:'session',a:'always',n:'deny'}[e.key.toLowerCase()];

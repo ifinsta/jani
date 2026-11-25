@@ -1,12 +1,15 @@
 use crate::config::Config;
 use crate::crypto;
+use crate::identity::VerifiedIdentity;
 use crate::schema::glob_match;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+const POLICY_DOMAIN: &[u8] = b"jani.policy-bundle/v1\0";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicySignature {
     #[serde(default)]
     pub key_id: String,
@@ -14,7 +17,7 @@ pub struct PolicySignature {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyMetadata {
     pub organization: String,
     pub revision: String,
@@ -29,7 +32,7 @@ pub struct PolicyMetadata {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyDefaults {
     #[serde(default = "deny_default")]
     pub action: String,
@@ -69,7 +72,7 @@ impl Default for PolicyDefaults {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyRule {
     pub action: String,
     #[serde(default = "any_resource")]
@@ -91,7 +94,7 @@ fn any_resource() -> String {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DataPolicySpec {
     #[serde(default = "default_source_class")]
     pub source_default: Classification,
@@ -140,7 +143,7 @@ impl Default for DataPolicySpec {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PricingSpec {
     #[serde(default)]
     pub usd_per_1k_input_tokens: f64,
@@ -149,7 +152,7 @@ pub struct PricingSpec {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyBudgets {
     #[serde(default)]
     pub max_tool_calls: Option<u32>,
@@ -162,7 +165,7 @@ pub struct PolicyBudgets {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyOutage {
     #[serde(default = "true_default")]
     pub allow_offline_read: bool,
@@ -187,7 +190,7 @@ impl Default for PolicyOutage {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicySpec {
     #[serde(default)]
     pub defaults: PolicyDefaults,
@@ -204,7 +207,7 @@ pub struct PolicySpec {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyBundle {
     pub api_version: String,
     pub kind: String,
@@ -218,7 +221,9 @@ impl PolicyBundle {
     pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
         let mut clone = self.clone();
         clone.signature = None;
-        serde_json::to_vec(&clone).map_err(|e| e.to_string())
+        let mut bytes = POLICY_DOMAIN.to_vec();
+        bytes.extend(crypto::canonical_serialize(&clone)?);
+        Ok(bytes)
     }
 
     #[cfg(test)]
@@ -232,9 +237,18 @@ impl PolicyBundle {
     }
 
     pub fn verify(&self, trusted_keys: &[String]) -> Result<(), String> {
+        self.verify_with_revoked(trusted_keys, &[])
+    }
+
+    pub fn verify_with_revoked(
+        &self,
+        trusted_keys: &[String],
+        revoked_keys: &[String],
+    ) -> Result<(), String> {
         let signature = self.signature.as_ref().ok_or("policy bundle is unsigned")?;
-        crypto::verify_signature(
+        crypto::verify_signature_with_revoked(
             trusted_keys,
+            revoked_keys,
             &signature.key_id,
             &self.signing_bytes()?,
             &signature.value,
@@ -242,6 +256,14 @@ impl PolicyBundle {
     }
 
     pub fn load(path: &Path, trusted_keys: &[String]) -> Result<Self, String> {
+        Self::load_with_revoked(path, trusted_keys, &[])
+    }
+
+    pub fn load_with_revoked(
+        path: &Path,
+        trusted_keys: &[String],
+        revoked_keys: &[String],
+    ) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read policy {}: {e}", path.display()))?;
         let bundle: Self =
@@ -258,20 +280,37 @@ impl PolicyBundle {
         if bundle.spec.defaults.action != "deny" {
             return Err("policy defaults.action must remain deny".into());
         }
-        if let Some(rule) = bundle.spec.rules.iter().find(|rule| !rule.roles.is_empty()) {
-            return Err(format!(
-                "policy rule '{}' scopes by roles, but identity assertions carry no roles",
-                rule.action
-            ));
-        }
         if let Some(expires) = bundle.metadata.expires_at {
             if expires <= now_unix() {
                 return Err("policy bundle has expired".into());
             }
         }
-        bundle.verify(trusted_keys)?;
+        validate_finite_non_negative(bundle.spec.budgets.max_usd, "policy budgets.maxUsd")?;
+        validate_rate(
+            bundle.spec.budgets.pricing.usd_per_1k_input_tokens,
+            "policy budgets.pricing.usdPer1kInputTokens",
+        )?;
+        validate_rate(
+            bundle.spec.budgets.pricing.usd_per_1k_output_tokens,
+            "policy budgets.pricing.usdPer1kOutputTokens",
+        )?;
+        bundle.verify_with_revoked(trusted_keys, revoked_keys)?;
         Ok(bundle)
     }
+}
+
+pub(crate) fn validate_rate(value: f64, label: &str) -> Result<(), String> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("{label} must be finite and non-negative"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_finite_non_negative(value: Option<f64>, label: &str) -> Result<(), String> {
+    if let Some(v) = value {
+        validate_rate(v, label)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -290,7 +329,8 @@ pub struct PolicyEngine {
 impl PolicyEngine {
     pub fn load(cfg: &Config) -> Result<Self, String> {
         if let Some(path) = cfg.policy_path.as_ref() {
-            let bundle = PolicyBundle::load(path, &cfg.policy_keys)?;
+            let bundle =
+                PolicyBundle::load_with_revoked(path, &cfg.policy_keys, &cfg.revoked_keys)?;
             if let Some(tenant) = bundle.metadata.tenant.as_ref() {
                 if tenant != &cfg.tenant {
                     return Err(format!(
@@ -367,6 +407,15 @@ impl PolicyEngine {
     }
 
     pub fn evaluate(&self, cfg: &Config, request: &ActionRequest) -> PolicyDecision {
+        self.evaluate_with_identity(cfg, None, request)
+    }
+
+    pub fn evaluate_with_identity(
+        &self,
+        cfg: &Config,
+        identity: Option<&VerifiedIdentity>,
+        request: &ActionRequest,
+    ) -> PolicyDecision {
         let decision_id = new_id("dec");
         let revision = self.effective.revision.clone();
 
@@ -464,9 +513,10 @@ impl PolicyEngine {
                 );
             let risk_ok = rule.max_risk.is_none_or(|max| request.risk <= max);
             let effect_ok = rule.effect.is_none_or(|effect| effect == request.effect);
-            // Roles are not part of verified identity, so a role-scoped rule can
-            // never be satisfied. Treat it as non-matching (default deny).
-            let role_ok = rule.roles.is_empty();
+            let role_ok = rule.roles.is_empty()
+                || identity.is_some_and(|id| {
+                    id.verified && rule.roles.iter().any(|role| id.roles.contains(role))
+                });
             action_ok && resource_ok && risk_ok && effect_ok && role_ok
         });
 
@@ -578,6 +628,7 @@ pub fn effective_limits(
             limits.max_wall_seconds = Some(limits.max_wall_seconds.map_or(v, |x| x.min(v)));
         }
         if let Some(v) = contract.spec.budget.max_usd {
+            validate_rate(v, "work contract budget.maxUsd")?;
             limits.max_usd = Some(limits.max_usd.map_or(v, |x| x.min(v)));
         }
         if let Some(profile) = contract.spec.sandbox_profile {
@@ -780,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn role_scoped_rules_are_rejected_and_never_match() {
+    fn role_scoped_rules_require_matching_verified_role() {
         let secret = "77".repeat(32);
         let public = crate::crypto::public_key_hex(&secret).unwrap();
         let mut bundle = test_bundle();
@@ -791,8 +842,13 @@ mod tests {
             crate::process::unique_id()
         ));
         std::fs::write(&temp, serde_json::to_vec(&bundle).unwrap()).unwrap();
-        let err = PolicyBundle::load(&temp, &[format!("default:{public}")]).unwrap_err();
-        assert!(err.contains("roles"));
+        assert!(PolicyBundle::load(&temp, &[format!("default:{public}")]).is_ok());
+        assert!(PolicyBundle::load_with_revoked(
+            &temp,
+            &[format!("default:{public}")],
+            &["default".into()]
+        )
+        .is_err());
         let _ = std::fs::remove_file(temp);
 
         let engine = engine(bundle);
@@ -805,6 +861,19 @@ mod tests {
                 )
                 .decision,
             Decision::Deny
+        );
+        let mut reviewer = VerifiedIdentity::local(&cfg);
+        reviewer.verified = true;
+        reviewer.roles = vec!["reviewer".into()];
+        assert_eq!(
+            engine
+                .evaluate_with_identity(
+                    &cfg,
+                    Some(&reviewer),
+                    &req("repo.read", "repo:src/main.rs", Effect::Read, RiskTier::R0)
+                )
+                .decision,
+            Decision::Permit
         );
     }
 
@@ -893,6 +962,7 @@ mod tests {
                 data_classification: None,
                 budget: ContractBudget::default(),
                 acceptance: vec![],
+                acceptance_checks: vec![],
             },
         }
     }
@@ -950,5 +1020,21 @@ mod tests {
                 .decision,
             Decision::Permit
         );
+    }
+
+    #[test]
+    fn rejects_non_finite_and_negative_rates_in_bundle() {
+        let dir = std::env::temp_dir().join(format!("jani-pol-{}", crate::process::unique_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("policy.json");
+        let mut bundle = test_bundle();
+        bundle.spec.budgets.pricing.usd_per_1k_input_tokens = -0.5;
+        std::fs::write(&path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        assert!(PolicyBundle::load(&path, &[]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut c = contract(vec![], vec![]);
+        c.spec.budget.max_usd = Some(f64::NAN);
+        assert!(effective_limits(&engine(test_bundle()), Some(&c)).is_err());
     }
 }

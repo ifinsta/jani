@@ -3,6 +3,8 @@ param(
     [string]$Version,
     [string]$Target,
     [string]$Type = 'agent',
+    [string]$UpdateKeyPath,
+    [string]$UpdateKeyId,
     [switch]$AllowDirty,
     [switch]$Replace
 )
@@ -24,6 +26,27 @@ if ($Type -notin @($contract.types.PSObject.Properties.Name)) {
     Fail "unsupported release type '$Type'"
 }
 $packageName = [string]$contract.types.$Type
+if (-not $UpdateKeyPath -or -not $UpdateKeyId) {
+    Fail 'release publishing requires -UpdateKeyPath and -UpdateKeyId; private keys stay outside the repository'
+}
+if ($UpdateKeyId.Trim() -ne $UpdateKeyId -or -not $UpdateKeyId) {
+    Fail 'release key id must be nonempty and have no surrounding whitespace'
+}
+if (-not (Test-Path -LiteralPath $UpdateKeyPath -PathType Leaf)) {
+    Fail "release private key not found: $UpdateKeyPath"
+}
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Fail 'python 3 is required for release signing'
+}
+if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
+    Fail 'OpenSSL 3 with Ed25519 support is required for release signing'
+}
+$UpdateKeyPath = [IO.Path]::GetFullPath($UpdateKeyPath)
+$rootFull = [IO.Path]::GetFullPath($root)
+$rootPrefix = $rootFull.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+if ($UpdateKeyPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    Fail 'release private key must stay outside the repository'
+}
 
 function Get-HostTarget {
     $rustc = Get-Command rustc -ErrorAction SilentlyContinue
@@ -192,7 +215,20 @@ $manifest = [ordered]@{
     builtAt = $builtAt
     artifacts = @($artifacts)
 }
-[IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 6) + "`n"), $utf8)
+$manifestTmp = "$manifestPath.tmp.$([guid]::NewGuid().ToString('N'))"
+[IO.File]::WriteAllText($manifestTmp, (($manifest | ConvertTo-Json -Depth 6) + "`n"), $utf8)
+Move-Item -LiteralPath $manifestTmp -Destination $manifestPath -Force
+
+$signingTool = Join-Path $PSScriptRoot 'release_signing.py'
+& python $signingTool sign --manifest $manifestPath --key $UpdateKeyPath --key-id $UpdateKeyId
+if ($LASTEXITCODE -ne 0) {
+    Fail 'release manifest signing failed; channel pointer was not updated'
+}
+$publicKey = (& python $signingTool public-key --key $UpdateKeyPath)
+if ($LASTEXITCODE -ne 0 -or -not $publicKey) {
+    Fail 'cannot derive the release public key'
+}
+$publicKey = ([string]$publicKey).Trim()
 
 $latest = [ordered]@{
     schemaVersion = $contract.schemas.channel
@@ -201,12 +237,16 @@ $latest = [ordered]@{
     latest = $tag
 }
 $channelPath = Join-Path (Join-Path (Join-Path $root 'releases') $Type) $platform
-[IO.File]::WriteAllText((Join-Path $channelPath 'latest.json'), (($latest | ConvertTo-Json) + "`n"), $utf8)
+$latestTarget = Join-Path $channelPath 'latest.json'
+$latestTmp = "$latestTarget.tmp.$([guid]::NewGuid().ToString('N'))"
+[IO.File]::WriteAllText($latestTmp, (($latest | ConvertTo-Json) + "`n"), $utf8)
+Move-Item -LiteralPath $latestTmp -Destination $latestTarget -Force
 # Legacy channel is frozen as a compatibility pointer for existing v0.1.0 installers.
 
 Write-Host "Release $Type/$platform/$tag built from $commit (build inputs dirty: $dirty)"
 Write-Host "Binary:   $binaryPath"
 Write-Host "SHA-256:  $hash"
 Write-Host "Manifest: $manifestPath"
+Write-Host "Trust key: ${UpdateKeyId}:$publicKey"
 Write-Host "Channel:  releases\$Type\$platform\latest.json"
 Write-Host 'Commit the typed platform/version folder and its typed latest.json to publish the artifact.'

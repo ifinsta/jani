@@ -32,7 +32,7 @@ Each layer overrides the one below it. Settings files do not merge: Jani uses th
 | Default | `<worktree>/.jani/settings.json` | Falls through to the user file |
 | User | `~/.jani/settings.json` (`JANI_USER_SETTINGS` overrides) | Ignored if absent |
 
-A user-wide file is a convenience for personal defaults such as a model profile; project files shadow it entirely. Keep provider keys in environment variables or a user-only file, never in a committed worktree file.
+A user-wide file is a convenience for personal defaults such as a model profile; project files shadow it entirely. An automatically discovered worktree file must not set `apiBase` or `apiKeyEnv`, at the top level or in any profile (even an unused one). Startup refuses such a file before resolving credentials or contacting a provider. Keep endpoint and credential bindings in user settings, or review the project file and explicitly select it with `--settings .jani/settings.json` or `JANI_SETTINGS` to opt in. User settings remain trusted when running from their home directory. Keep provider keys in environment variables or a user-only file, never in a committed worktree file.
 
 ## Settings file
 
@@ -107,11 +107,14 @@ The full example is [settings.example.json](schemas/settings.example.json) and t
 - `--allow-write` requires explicit relative `--write-path` scopes. There is no implicit full-repository editing.
 - `--allow-exec` permits only approved commands; `--exec-program` adds a constrained list of extra test runners.
 - `JANI_WRITE_PATHS`, `JANI_EXEC_PROGRAMS` and `JANI_SKILL_DIRS` provide environment equivalents where supported.
-- `JANI_UPDATE_SOURCE` supplies the release origin for `jani update`; `--source` overrides it. It selects where artifacts are fetched from and grants no workspace, model or authority settings. `JANI_UPDATE_RETRY_BASE_MS` tunes the exponential backoff base for update fetches (default 400; the cap is 8 seconds).
+- `JANI_UPDATE_SOURCE` supplies the release origin for `jani update`; `--source` overrides it. It selects where artifacts are fetched from and grants no workspace, model or authority settings. `JANI_UPDATE_KEYS` supplies comma-separated trusted Ed25519 release signers (`ID:HEX` or bare `HEX`); repeatable `--update-key` appends CLI trust roots. Update trust roots are never read from worktree settings. `JANI_UPDATE_RETRY_BASE_MS` tunes the exponential backoff base for update fetches (default 400; the cap is 8 seconds).
 
 ## Enterprise inputs
 
-- Enterprise runs require a signed `--policy`, `--policy-key` trust roots, a signed `--identity` and a restricting `--contract`.
+- Enterprise runs require a signed `--policy` with `--policy-key` trust roots, a signed `--identity` with `--identity-key` trust roots (separate from `--policy-key`), and a restricting `--contract`.
+- `--revoked-key KEY_ID` rejects compromised signing keys across policies, identities, plugins, and receipts even if still listed in trust roots.
+- `--audit-anchor PATH` appends hash-chained journal digests to an external append-only anchor sink, and `--verifier-key` checks signed `VerificationReceipt` files in `jani evidence`.
+- `JANI_UPDATE_SOURCE` supports `--allow-insecure-local-update` only for explicit loopback plain-HTTP test origins.
 - A work contract and enterprise policy narrow operator scope; neither can widen it.
 - `--sandbox-mode` and network restrictions must not be used to weaken required confinement. `jani sandbox doctor` reports support, not certification.
 

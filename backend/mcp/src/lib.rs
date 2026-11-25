@@ -13,14 +13,14 @@ pub const MCP_VERSION: &str = "2026-07-28";
 pub const RECEIPT_META: &str = "com.ifinsta.jani/governance";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Signature {
     pub key_id: String,
     pub value: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Server {
     pub id: String,
     pub endpoint: String,
@@ -38,7 +38,7 @@ pub enum Mode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Operation {
     pub tool: String,
     pub mode: Mode,
@@ -50,7 +50,7 @@ pub struct Operation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpContract {
     pub api_version: String,
     pub kind: String,
@@ -60,10 +60,12 @@ pub struct McpContract {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Delegation {
     pub api_version: String,
     pub kind: String,
+    pub server_id: String,
+    pub audience: String,
     pub tenant: String,
     pub initiator: String,
     pub agent: String,
@@ -92,7 +94,7 @@ pub struct Context<'a> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthorizedCall {
     pub version: String,
     pub server_id: String,
@@ -109,11 +111,12 @@ pub struct AuthorizedCall {
     pub contract_digest: String,
     pub delegation_digest: String,
     pub arguments: Value,
+    pub request_classification: Classification,
     pub request_digest: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResponseReceipt {
     pub request_digest: String,
     pub result_digest: String,
@@ -132,13 +135,20 @@ pub struct ResponseReceipt {
     pub signature: Option<Signature>,
 }
 
+const CONTRACT_DOMAIN: &[u8] = b"jani.mcp-contract/v1\0";
+const DELEGATION_DOMAIN: &[u8] = b"jani.mcp-delegation/v1\0";
+const RECEIPT_DOMAIN: &[u8] = b"jani.mcp-receipt/v1\0";
+
 fn unsigned<T: Clone + Serialize>(
+    domain: &[u8],
     value: &T,
     strip: impl FnOnce(&mut T),
 ) -> Result<Vec<u8>, String> {
     let mut clone = value.clone();
     strip(&mut clone);
-    serde_json::to_vec(&clone).map_err(|e| e.to_string())
+    let mut out = domain.to_vec();
+    out.extend(crypto::canonical_serialize(&clone)?);
+    Ok(out)
 }
 
 impl McpContract {
@@ -201,26 +211,29 @@ impl McpContract {
             .signature
             .as_ref()
             .ok_or("CONTRACT_SIGNATURE_MISSING")?;
-        crypto::verify_signature(
-            keys,
-            &sig.key_id,
-            &unsigned(self, |x| x.signature = None)?,
-            &sig.value,
-        )
-        .map_err(|_| "CONTRACT_SIGNATURE_INVALID".into())
+        crypto::verify_signature(keys, &sig.key_id, &self.signing_bytes()?, &sig.value)
+            .map_err(|_| "CONTRACT_SIGNATURE_INVALID".into())
+    }
+
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
+        unsigned(CONTRACT_DOMAIN, self, |x| x.signature = None)
     }
 
     pub fn digest(&self) -> Result<String, String> {
-        Ok(sha256_hex(
-            &serde_json::to_vec(self).map_err(|e| e.to_string())?,
-        ))
+        Ok(sha256_hex(&crypto::canonical_serialize(self)?))
     }
 }
 
 impl Delegation {
-    pub fn verify(&self, context: &Context<'_>) -> Result<(), String> {
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
+        unsigned(DELEGATION_DOMAIN, self, |x| x.signature = None)
+    }
+    pub fn verify(&self, context: &Context<'_>, server: &Server) -> Result<(), String> {
         if self.api_version != PROTOCOL || self.kind != "McpDelegation" {
             return Err("DELEGATION_VERSION_UNSUPPORTED".into());
+        }
+        if self.server_id != server.id || self.audience != server.audience {
+            return Err("DELEGATION_SERVER_BINDING_MISMATCH".into());
         }
         if self.tenant != context.tenant
             || self.initiator != context.initiator
@@ -258,16 +271,14 @@ impl Delegation {
         crypto::verify_signature(
             context.delegation_keys,
             &sig.key_id,
-            &unsigned(self, |x| x.signature = None)?,
+            &self.signing_bytes()?,
             &sig.value,
         )
         .map_err(|_| "DELEGATION_SIGNATURE_INVALID".into())
     }
 
     pub fn digest(&self) -> Result<String, String> {
-        Ok(sha256_hex(
-            &serde_json::to_vec(self).map_err(|e| e.to_string())?,
-        ))
+        Ok(sha256_hex(&crypto::canonical_serialize(self)?))
     }
 }
 
@@ -339,15 +350,22 @@ pub fn authorize(
     operation: &str,
     resource: &str,
     arguments: Value,
+    request_classification: Classification,
 ) -> Result<AuthorizedCall, String> {
     contract.verify(context.contract_keys)?;
-    delegation.verify(context)?;
+    delegation.verify(context, &contract.server)?;
     let spec = contract
         .operations
         .get(operation)
         .ok_or("CONTRACT_UNSUPPORTED_OPERATION")?;
     if spec.mode == Mode::UserCommit {
         return Err("USER_COMMIT_REQUIRED: Jani never possesses final submission authority".into());
+    }
+    if request_classification == Classification::Secret
+        || request_classification > spec.max_request_classification
+        || request_classification > delegation.max_classification
+    {
+        return Err("DATA_CLASSIFICATION_DENIED".into());
     }
     if !delegation.operations.iter().any(|x| x == operation)
         || !delegation.resources.iter().any(|x| x == resource)
@@ -393,10 +411,17 @@ pub fn authorize(
         contract_digest: contract.digest()?,
         delegation_digest: delegation.digest()?,
         arguments,
+        request_classification,
         request_digest: String::new(),
     };
-    call.request_digest = sha256_hex(&serde_json::to_vec(&call).map_err(|e| e.to_string())?);
+    call.request_digest = sha256_hex(&crypto::canonical_serialize(&call)?);
     Ok(call)
+}
+
+impl ResponseReceipt {
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
+        unsigned(RECEIPT_DOMAIN, self, |x| x.signature = None)
+    }
 }
 
 /// Verified receipts must be signed by an explicitly trusted MCP server key and
@@ -441,9 +466,7 @@ pub fn verify_response(
     if drop_meta {
         payload.remove("_meta");
     }
-    let digest = sha256_hex(
-        &serde_json::to_vec(&Value::Object(payload.clone())).map_err(|e| e.to_string())?,
-    );
+    let digest = sha256_hex(&crypto::canonical_json(&Value::Object(payload.clone()))?);
     if receipt.request_digest != call.request_digest
         || receipt.result_digest != digest
         || receipt.tenant != call.tenant
@@ -479,13 +502,8 @@ pub fn verify_response(
     if sig.key_id != contract.server.receipt_key_id {
         return Err("CONTRACT_RESPONSE_VIOLATION: incorrect receipt signing key".into());
     }
-    crypto::verify_signature(
-        keys,
-        &sig.key_id,
-        &unsigned(&receipt, |x| x.signature = None)?,
-        &sig.value,
-    )
-    .map_err(|_| "CONTRACT_RESPONSE_VIOLATION: untrusted receipt")?;
+    crypto::verify_signature(keys, &sig.key_id, &receipt.signing_bytes()?, &sig.value)
+        .map_err(|_| "CONTRACT_RESPONSE_VIOLATION: untrusted receipt")?;
     Ok(
         json!({"result":Value::Object(payload),"classification":receipt.classification,
         "requestDigest":call.request_digest,"receiptVerified":true,
@@ -557,12 +575,14 @@ mod tests {
         };
         contract.signature = Some(signature(
             0x11,
-            &unsigned(&contract, |x| x.signature = None).unwrap(),
+            &contract.signing_bytes().unwrap(),
             "contract",
         ));
         let mut grant = Delegation {
             api_version: PROTOCOL.into(),
             kind: "McpDelegation".into(),
+            server_id: contract.server.id.clone(),
+            audience: contract.server.audience.clone(),
             tenant: "tenant-1".into(),
             initiator: "user-1".into(),
             agent: "jani".into(),
@@ -582,7 +602,7 @@ mod tests {
         };
         grant.signature = Some(signature(
             0x22,
-            &unsigned(&grant, |x| x.signature = None).unwrap(),
+            &grant.signing_bytes().unwrap(),
             "authorization",
         ));
         (contract, grant)
@@ -601,6 +621,22 @@ mod tests {
         }
     }
 
+    fn resign_contract(contract: &mut McpContract) {
+        contract.signature = Some(signature(
+            0x11,
+            &contract.signing_bytes().unwrap(),
+            "contract",
+        ));
+    }
+
+    fn resign_delegation(grant: &mut Delegation) {
+        grant.signature = Some(signature(
+            0x22,
+            &grant.signing_bytes().unwrap(),
+            "authorization",
+        ));
+    }
+
     fn read_call(contract: &McpContract, grant: &Delegation) -> AuthorizedCall {
         let c = trust(0x11, "contract");
         let d = trust(0x22, "authorization");
@@ -611,6 +647,7 @@ mod tests {
             "organization.news.read",
             "organization:news",
             json!({"resource":"organization:news","limit":5}),
+            Classification::Internal,
         )
         .unwrap()
     }
@@ -626,15 +663,134 @@ mod tests {
     }
 
     #[test]
+    fn delegation_is_bound_to_the_verified_server_and_audience() {
+        let (contract, grant) = sample();
+        let keys = trust(0x11, "contract");
+        let grant_keys = trust(0x22, "authorization");
+        let context = ctx(&keys, &grant_keys);
+        grant.verify(&context, &contract.server).unwrap();
+
+        let mut wrong_server = grant.clone();
+        wrong_server.server_id = "other-records".into();
+        resign_delegation(&mut wrong_server);
+        let error = authorize(
+            &contract,
+            &wrong_server,
+            &context,
+            "organization.news.read",
+            "organization:news",
+            json!({"resource":"organization:news"}),
+            Classification::Internal,
+        )
+        .unwrap_err();
+        assert!(error.contains("DELEGATION_SERVER_BINDING_MISMATCH"));
+
+        let mut wrong_audience = grant;
+        wrong_audience.audience = "https://other.example.com/mcp".into();
+        resign_delegation(&mut wrong_audience);
+        let error = authorize(
+            &contract,
+            &wrong_audience,
+            &context,
+            "organization.news.read",
+            "organization:news",
+            json!({"resource":"organization:news"}),
+            Classification::Internal,
+        )
+        .unwrap_err();
+        assert!(error.contains("DELEGATION_SERVER_BINDING_MISMATCH"));
+    }
+
+    #[test]
+    fn request_classification_is_limited_and_bound_into_the_digest() {
+        let (contract, grant) = sample();
+        let keys = trust(0x11, "contract");
+        let grant_keys = trust(0x22, "authorization");
+        let context = ctx(&keys, &grant_keys);
+        let arguments = json!({"resource":"organization:news"});
+        let error = authorize(
+            &contract,
+            &grant,
+            &context,
+            "organization.news.read",
+            "organization:news",
+            arguments.clone(),
+            Classification::Confidential,
+        )
+        .unwrap_err();
+        assert!(error.contains("DATA_CLASSIFICATION_DENIED"));
+
+        let mut narrow_grant = grant.clone();
+        narrow_grant.max_classification = Classification::Internal;
+        resign_delegation(&mut narrow_grant);
+        let error = authorize(
+            &contract,
+            &narrow_grant,
+            &context,
+            "records.remediation.prepare",
+            "records:case-3",
+            json!({"resource":"records:case-3"}),
+            Classification::Confidential,
+        )
+        .unwrap_err();
+        assert!(error.contains("DATA_CLASSIFICATION_DENIED"));
+
+        let mut permissive_contract = contract;
+        permissive_contract
+            .operations
+            .get_mut("organization.news.read")
+            .unwrap()
+            .max_request_classification = Classification::Secret;
+        resign_contract(&mut permissive_contract);
+        let mut permissive_grant = grant;
+        permissive_grant.max_classification = Classification::Secret;
+        resign_delegation(&mut permissive_grant);
+        let error = authorize(
+            &permissive_contract,
+            &permissive_grant,
+            &context,
+            "organization.news.read",
+            "organization:news",
+            arguments.clone(),
+            Classification::Secret,
+        )
+        .unwrap_err();
+        assert!(error.contains("DATA_CLASSIFICATION_DENIED"));
+
+        let public = authorize(
+            &permissive_contract,
+            &permissive_grant,
+            &context,
+            "organization.news.read",
+            "organization:news",
+            arguments.clone(),
+            Classification::Public,
+        )
+        .unwrap();
+        let internal = authorize(
+            &permissive_contract,
+            &permissive_grant,
+            &context,
+            "organization.news.read",
+            "organization:news",
+            arguments,
+            Classification::Internal,
+        )
+        .unwrap();
+        assert_eq!(public.request_classification, Classification::Public);
+        assert_eq!(internal.request_classification, Classification::Internal);
+        assert_ne!(public.request_digest, internal.request_digest);
+    }
+
+    #[test]
     fn prohibits_user_only_commit_under_all_grants() {
         let (c, mut d) = sample();
         d.roles.push("admin".into());
         d.entitlements.push("records.update".into());
         d.operations.push("records.update".into());
-        d.signature = None;
         d.signature = Some(signature(
             0x22,
-            &unsigned(&d, |x| x.signature = None).unwrap(),
+            &d.signing_bytes().unwrap(),
             "authorization",
         ));
         let keys = trust(0x11, "contract");
@@ -646,6 +802,7 @@ mod tests {
             "records.update",
             "records:case-3",
             json!({"resource":"records:case-3"}),
+            Classification::Internal,
         );
         assert!(result.unwrap_err().contains("USER_COMMIT_REQUIRED"));
     }
@@ -664,7 +821,8 @@ mod tests {
             &context,
             "organization.news.read",
             "organization:news",
-            json!({"resource":"organization:news"})
+            json!({"resource":"organization:news"}),
+            Classification::Internal
         )
         .is_err());
         let mut expired = ctx(&keys, &grant_keys);
@@ -675,7 +833,8 @@ mod tests {
             &expired,
             "organization.news.read",
             "organization:news",
-            json!({"resource":"organization:news"})
+            json!({"resource":"organization:news"}),
+            Classification::Internal
         )
         .is_err());
         let wrong_user = Context {
@@ -688,7 +847,8 @@ mod tests {
             &wrong_user,
             "organization.news.read",
             "organization:news",
-            json!({"resource":"organization:news"})
+            json!({"resource":"organization:news"}),
+            Classification::Internal
         )
         .is_err());
         assert!(authorize(
@@ -697,7 +857,8 @@ mod tests {
             &context,
             "records.remediation.prepare",
             "records:other",
-            json!({"resource":"records:other"})
+            json!({"resource":"records:other"}),
+            Classification::Internal
         )
         .is_err());
         assert!(authorize(
@@ -706,7 +867,8 @@ mod tests {
             &context,
             "unknown.write",
             "organization:news",
-            json!({"resource":"organization:news"})
+            json!({"resource":"organization:news"}),
+            Classification::Internal
         )
         .is_err());
         assert!(authorize(
@@ -715,7 +877,8 @@ mod tests {
             &context,
             "organization.news.read",
             "organization:news",
-            json!({"resource":"organization:other"})
+            json!({"resource":"organization:other"}),
+            Classification::Internal
         )
         .is_err());
         assert!(authorize(
@@ -724,16 +887,16 @@ mod tests {
             &context,
             "organization.news.read",
             "*",
-            json!({"resource":"*"})
+            json!({"resource":"*"}),
+            Classification::Internal
         )
         .is_err());
 
         let mut no_role = d.clone();
         no_role.roles = vec!["reader".into()];
-        no_role.signature = None;
         no_role.signature = Some(signature(
             0x22,
-            &unsigned(&no_role, |x| x.signature = None).unwrap(),
+            &no_role.signing_bytes().unwrap(),
             "authorization",
         ));
         assert!(authorize(
@@ -742,17 +905,17 @@ mod tests {
             &context,
             "organization.news.read",
             "organization:news",
-            json!({"resource":"organization:news"})
+            json!({"resource":"organization:news"}),
+            Classification::Internal
         )
         .unwrap_err()
         .contains("ENTITLEMENT"));
 
         let mut no_permission = d.clone();
         no_permission.entitlements = vec!["other.read".into()];
-        no_permission.signature = None;
         no_permission.signature = Some(signature(
             0x22,
-            &unsigned(&no_permission, |x| x.signature = None).unwrap(),
+            &no_permission.signing_bytes().unwrap(),
             "authorization",
         ));
         assert!(authorize(
@@ -761,7 +924,8 @@ mod tests {
             &context,
             "organization.news.read",
             "organization:news",
-            json!({"resource":"organization:news"})
+            json!({"resource":"organization:news"}),
+            Classification::Internal
         )
         .unwrap_err()
         .contains("PERMISSION_DENIED"));
@@ -772,7 +936,7 @@ mod tests {
             "isError":false});
         let mut receipt = ResponseReceipt {
             request_digest: call.request_digest.clone(),
-            result_digest: sha256_hex(&serde_json::to_vec(&body).unwrap()),
+            result_digest: sha256_hex(&crypto::canonical_json(&body).unwrap()),
             tenant: call.tenant.clone(),
             initiator: call.initiator.clone(),
             agent: call.agent.clone(),
@@ -789,7 +953,7 @@ mod tests {
         };
         receipt.signature = Some(signature(
             0x33,
-            &unsigned(&receipt, |r| r.signature = None).unwrap(),
+            &receipt.signing_bytes().unwrap(),
             "mcp-server",
         ));
         let mut body = body;

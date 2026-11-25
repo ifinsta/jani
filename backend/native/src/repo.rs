@@ -35,7 +35,7 @@ fn allowed(path: &Path) -> bool {
     })
 }
 fn visit(
-    root: &Path,
+    s: &State,
     dir: &Path,
     found: &mut Vec<PathBuf>,
     skip: Option<&Path>,
@@ -43,7 +43,15 @@ fn visit(
     if found.len() > MAX_INDEX_ENTRIES {
         return Err("index file limit exceeded".into());
     }
-    let mut entries = fs::read_dir(root.join(dir))
+    let directory = dir.to_string_lossy().replace('\\', "/");
+    if !s.dir_traversable(if directory.is_empty() {
+        "."
+    } else {
+        &directory
+    }) {
+        return Err(format!("directory traversal denied for '{directory}'"));
+    }
+    let mut entries = fs::read_dir(s.root.join(dir))
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -53,12 +61,16 @@ fn visit(
         if skip == Some(relative.as_path()) || !allowed(&relative) {
             continue;
         }
-        let kind = entry.file_type().map_err(|e| e.to_string())?;
-        if kind.is_symlink() {
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+        if crate::metadata_is_link(&metadata) {
             continue;
         }
+        let kind = metadata.file_type();
         if kind.is_dir() {
-            visit(root, &relative, found, skip)?;
+            let name = relative.to_string_lossy().replace('\\', "/");
+            if s.dir_traversable(&name) {
+                visit(s, &relative, found, skip)?;
+            }
         } else if kind.is_file()
             && matches!(
                 relative.extension().and_then(|x| x.to_str()).unwrap_or(""),
@@ -79,7 +91,10 @@ fn visit(
                     | "yaml"
             )
         {
-            found.push(relative);
+            let name = relative.to_string_lossy().replace('\\', "/");
+            if s.read_allowed(&name, false).is_ok() {
+                found.push(relative);
+            }
         }
         if found.len() > MAX_INDEX_ENTRIES {
             return Err("index file limit exceeded".into());
@@ -88,7 +103,11 @@ fn visit(
     Ok(())
 }
 fn symbols(text: &str) -> Vec<String> {
-    let re=Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|mod|class|def|interface)\s+([A-Za-z_][A-Za-z_0-9]*)").unwrap();
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|mod|class|def|interface)\s+([A-Za-z_][A-Za-z_0-9]*)")
+            .expect("constant symbol regex")
+    });
     let mut found = BTreeSet::new();
     for cap in re.captures_iter(text) {
         found.insert(cap[1].to_string());
@@ -102,14 +121,19 @@ fn symbols(text: &str) -> Vec<String> {
 /// edges: dynamic imports, macro expansion, generated code and external packages
 /// deliberately remain outside the guarantee.
 fn dependencies(text: &str) -> Vec<String> {
-    let patterns = [
-        r"(?m)^\s*(?:pub\s+)?(?:use|mod)\s+(?:(?:crate|self|super)::)?([A-Za-z_][A-Za-z_0-9:]*)",
-        r"(?m)^\s*(?:from|import)\s+([A-Za-z_][A-Za-z_0-9.]*)",
-        r#"(?m)\b(?:from\s*|require\s*\(\s*|import\s*\(\s*)['"](?:\./|\.\./)?([A-Za-z_][A-Za-z_0-9./-]*)"#,
-    ];
+    static RES: std::sync::OnceLock<Vec<Regex>> = std::sync::OnceLock::new();
+    let compiled = RES.get_or_init(|| {
+        [
+            r"(?m)^\s*(?:pub\s+)?(?:use|mod)\s+(?:(?:crate|self|super)::)?([A-Za-z_][A-Za-z_0-9:]*)",
+            r"(?m)^\s*(?:from|import)\s+([A-Za-z_][A-Za-z_0-9.]*)",
+            r#"(?m)\b(?:from\s*|require\s*\(\s*|import\s*\(\s*)['"](?:\./|\.\./)?([A-Za-z_][A-Za-z_0-9./-]*)"#,
+        ]
+        .into_iter()
+        .map(|pattern| Regex::new(pattern).expect("constant dependency regex"))
+        .collect()
+    });
     let mut out = BTreeSet::new();
-    for pattern in patterns {
-        let re = Regex::new(pattern).expect("constant dependency regex");
+    for re in compiled {
         for capture in re.captures_iter(text) {
             for token in capture[1].split([':', '.', '/', '-']) {
                 if token.len() > 1 && token.len() <= 80 {
@@ -137,62 +161,78 @@ pub fn build(s: &mut State) -> Result<Value, String> {
     let mut found = Vec::new();
     // Skip the state directory wherever it lives, not only when it is .jani.
     let skip = s.state_dir.strip_prefix(&s.root).ok();
-    visit(&s.root, Path::new(""), &mut found, skip)?;
-    let prev = s.list("index", MAX_INDEX_ENTRIES)?;
-    let mut seen = BTreeSet::new();
-    let mut updated = 0;
-    let mut unchanged = 0;
-    for relative in found {
-        let name = relative.to_string_lossy().replace('\\', "/");
-        let path = s.root.join(&relative);
-        let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_FILE_BYTES {
-            continue;
+    visit(s, Path::new(""), &mut found, skip)?;
+    s.transact(|s| {
+        let prev = s.list("index", MAX_INDEX_ENTRIES)?;
+        let mut seen = BTreeSet::new();
+        let mut updated = 0;
+        let mut unchanged = 0;
+        for relative in &found {
+            let name = relative.to_string_lossy().replace('\\', "/");
+            let bytes = match s.read_worktree_file(relative, MAX_FILE_BYTES) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let hash = digest(&bytes);
+            let id = file_id(&name);
+            seen.insert(id.clone());
+            if let Some(old) = s.get("index", &id)? {
+                if old["sha256"].as_str() == Some(hash.as_str())
+                    && old["dependencies"].is_array()
+                {
+                    unchanged += 1;
+                    continue;
+                }
+            }
+            let extracted = std::str::from_utf8(&bytes).map(symbols).unwrap_or_default();
+            let refs = std::str::from_utf8(&bytes)
+                .map(dependencies)
+                .unwrap_or_default();
+            s.set(
+                "index",
+                &id,
+                &json!({
+                    "path":name,"sha256":hash,"bytes":bytes.len(),"symbols":extracted,"dependencies":refs
+                }),
+            )?;
+            updated += 1;
         }
-        let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            continue;
-        }
-        let hash = digest(&bytes);
-        let id = file_id(&name);
-        seen.insert(id.clone());
-        if let Some(old) = s.get("index", &id)? {
-            if old["sha256"].as_str() == Some(hash.as_str()) && old["dependencies"].is_array() {
-                unchanged += 1;
-                continue;
+        let mut removed = 0;
+        if s.read_policy.is_none() {
+            for (id, _) in prev {
+                if !seen.contains(&id) {
+                    removed += s.delete("index", &id)?;
+                }
             }
         }
-        let extracted = std::str::from_utf8(&bytes).map(symbols).unwrap_or_default();
-        let refs = std::str::from_utf8(&bytes)
-            .map(dependencies)
-            .unwrap_or_default();
-        s.set(
-            "index",
-            &id,
-            &json!({
-                "path":name,"sha256":hash,"bytes":bytes.len(),"symbols":extracted,"dependencies":refs
-            }),
-        )?;
-        updated += 1;
-    }
-    let mut removed = 0;
-    for (id, _) in prev {
-        if !seen.contains(&id) {
-            removed += s.delete("index", &id)?;
-        }
-    }
-    Ok(
-        json!({"tool":"index","updated":updated,"unchanged":unchanged,
-        "removed":removed,"total":s.count("index")?,"contentStored":false}),
-    )
+        Ok(json!({
+            "tool": "index",
+            "updated": updated,
+            "unchanged": unchanged,
+            "removed": removed,
+            "total": s.count("index")?,
+            "contentStored": false
+        }))
+    })
 }
+fn visible_records(s: &State) -> Result<Vec<(String, Value)>, String> {
+    Ok(s.list("index", MAX_INDEX_ENTRIES)?
+        .into_iter()
+        .filter(|(_, record)| {
+            record["path"]
+                .as_str()
+                .is_some_and(|path| s.read_allowed(path, false).is_ok())
+        })
+        .collect())
+}
+
 pub fn search(s: &State, term: &str) -> Result<Value, String> {
     if term.is_empty() || term.len() > MAX_QUERY_LEN {
         return Err("index search term must be 1..100 chars".into());
     }
     let query = term.to_ascii_lowercase();
     let mut matches = Vec::new();
-    for (_, record) in s.list("index", MAX_INDEX_ENTRIES)? {
+    for (_, record) in visible_records(s)? {
         let path = record["path"].as_str().unwrap_or("");
         let names = record["symbols"].as_array().cloned().unwrap_or_default();
         let path_match = path.to_ascii_lowercase().contains(&query);
@@ -232,7 +272,8 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
     if stem.len() < 2 {
         return Err("unable to derive module identifier".into());
     }
-    let records = s.list("index", MAX_INDEX_ENTRIES)?;
+    s.read_allowed(path, false)?;
+    let records = visible_records(s)?;
     let source = records
         .iter()
         .find(|(_, entry)| entry["path"].as_str() == Some(path))
@@ -244,14 +285,10 @@ pub fn impact(s: &State, path: &str) -> Result<Value, String> {
     // This also blocks reviews against deleted or symlink-replaced files.
     for (_, entry) in &records {
         let name = entry["path"].as_str().ok_or("index path missing")?;
-        let meta = fs::symlink_metadata(s.root.join(name))
-            .map_err(|_| "index is stale; rebuild before impact analysis".to_string())?;
-        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_FILE_BYTES {
-            return Err("index is stale or unsafe; rebuild before impact analysis".into());
-        }
-        let current = digest(
-            &fs::read(s.root.join(name)).map_err(|_| "indexed file unavailable".to_string())?,
-        );
+        let bytes = s
+            .read_worktree_file(Path::new(name), MAX_FILE_BYTES)
+            .map_err(|_| "index is stale or unsafe; rebuild before impact analysis".to_string())?;
+        let current = digest(&bytes);
         if entry["sha256"].as_str() != Some(current.as_str()) {
             return Err("index is stale; rebuild before impact analysis".into());
         }
@@ -302,15 +339,23 @@ pub fn workspace(s: &mut State, op: &str) -> Result<Value, String> {
     match op {
         "status"|"snapshot"=>{
             let mut changed=Vec::new();let mut missing=Vec::new();
-            for (_,entry) in s.list("index",MAX_INDEX_ENTRIES)?{
-                let name=entry["path"].as_str().unwrap_or("");
-                let full=s.root.join(name);
-                if !full.is_file(){missing.push(name.to_owned());continue;}
-                let meta=fs::symlink_metadata(&full).map_err(|e|e.to_string())?;
-                if meta.file_type().is_symlink(){missing.push(name.to_owned());continue;}
-                if meta.len()>MAX_FILE_BYTES {changed.push(name.to_owned());continue;}
-                if digest(&fs::read(full).map_err(|e|e.to_string())?)!=entry["sha256"].as_str().unwrap_or(""){
-                    changed.push(name.to_owned());
+            for (_, entry) in visible_records(s)? {
+                let name = entry["path"].as_str().unwrap_or("");
+                match s.read_worktree_file(Path::new(name), MAX_FILE_BYTES) {
+                    Ok(bytes) => {
+                        if digest(&bytes) != entry["sha256"].as_str().unwrap_or("") {
+                            changed.push(name.to_owned());
+                        }
+                    }
+                    Err(_) => {
+                        let full = s.root.join(name);
+                        match fs::symlink_metadata(&full) {
+                            Ok(meta) if !crate::metadata_is_link(&meta) && meta.is_file() && meta.len() > MAX_FILE_BYTES => {
+                                changed.push(name.to_owned());
+                            }
+                            _ => missing.push(name.to_owned()),
+                        }
+                    }
                 }
             }
             if op=="snapshot"{
@@ -330,7 +375,7 @@ pub fn workspace(s: &mut State, op: &str) -> Result<Value, String> {
 pub fn verifier(s: &State, op: &str) -> Result<Value, String> {
     match op {
         "select"=>{
-            let rows=s.list("index",MAX_INDEX_ENTRIES)?;
+            let rows=visible_records(s)?;
             let mut tests=rows.iter().filter_map(|(_,r)|{
                 let path=r["path"].as_str()?;
                 if path.contains("test")||path.ends_with("_spec.rs") {Some(path.to_owned())}else{None}
@@ -369,7 +414,13 @@ mod tests {
         fs::write(root.join("src/client.rs"), "use crate::payments::charge;\n").unwrap();
         let state_dir = root.join(".jani");
         let mut state = State::open(&root, &state_dir, "tenant-a", "task-a").unwrap();
+        assert!(state.state_dir.starts_with(&state.root));
         build(&mut state).unwrap();
+        assert!(state
+            .list("index", MAX_INDEX_ENTRIES)
+            .unwrap()
+            .iter()
+            .all(|(_, entry)| !entry["path"].as_str().unwrap_or("").starts_with(".jani/")));
         let report = impact(&state, "src/payments.rs").unwrap();
         assert!(report["affected"]
             .as_array()

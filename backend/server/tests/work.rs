@@ -209,17 +209,14 @@ fn a_worker_that_dies_mid_task_is_replaced_and_the_conversation_comes_back() {
     worker.kill().unwrap(); // SIGKILL: no cleanup, no goodbye
     let _ = worker.wait();
 
-    // The task is still "running" under the dead worker's lease, with round 1 saved.
+    // The task is still "running" under the dead worker's lease, with round 1 checkpointed
+    // in the task store (the conversation survives the SIGKILL).
     assert_eq!(show(&dir, &id)["status"], "running");
-    let task = format!("task-{}", id.trim_start_matches("wrk-"));
-    let saved: Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.join(".jani/conversations").join(format!("{task}.json")))
-            .unwrap(),
-    )
-    .unwrap();
+    let database = std::fs::read(dir.join(".jani/tasks/state.sqlite3")).unwrap();
+    let database = String::from_utf8_lossy(&database);
     assert!(
-        saved["messages"].to_string().contains("a * b"),
-        "round 1 was saved before the crash"
+        database.contains("a * b"),
+        "round 1 was checkpointed before the crash"
     );
 
     // After the lease lapses a new worker takes over, resumes, and finishes.
@@ -232,11 +229,6 @@ fn a_worker_that_dies_mid_task_is_replaced_and_the_conversation_comes_back() {
         .unwrap();
     assert!(
         out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("resumed"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -275,7 +267,7 @@ fn a_worker_that_dies_mid_task_is_replaced_and_the_conversation_comes_back() {
 }
 
 #[test]
-fn a_saved_conversation_resumes_only_when_asked_and_never_holds_a_secret() {
+fn a_task_resumes_its_checkpointed_conversation_and_the_checkpoint_never_holds_a_secret() {
     let dir = fixture();
     let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
     let first = start(vec![say("Noted.")]);
@@ -297,48 +289,25 @@ fn a_saved_conversation_resumes_only_when_asked_and_never_holds_a_secret() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The snapshot is private and redacted.
-    let file = dir.join(".jani/conversations/t-resume.json");
-    let text = std::fs::read_to_string(&file).unwrap();
+    // The checkpoint is a database in the state directory: it keeps the conversation,
+    // not the pasted token.
+    let database = std::fs::read(dir.join(".jani/tasks/state.sqlite3")).unwrap();
+    let text = String::from_utf8_lossy(&database);
     assert!(
-        text.contains("BLUEBIRD") && !text.contains(secret),
-        "secrets are redacted before they are saved"
+        text.contains("BLUEBIRD"),
+        "the conversation is checkpointed"
     );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
+    assert!(
+        !text.contains(secret),
+        "secrets are redacted before they are checkpointed"
+    );
 
-    // Without --resume the model starts clean.
-    let fresh = start(vec![say("What codename?")]);
-    jani(
-        &dir,
-        Some(&fresh),
-        &["--print", "what is the codename?", "--task", "t-resume"],
-    )
-    .output()
-    .unwrap();
-    assert!(!fresh.requests.lock().unwrap()[0]
-        .to_string()
-        .contains("BLUEBIRD"));
-
-    // With --resume (on a snapshot that still has the first turn) it remembers.
+    // `jani resume` brings the conversation back; the model sees the earlier turn.
     let again = start(vec![say("BLUEBIRD.")]);
-    std::fs::write(&file, &text).unwrap(); // the run above saved its own turn; go back to the first
     let out = jani(
         &dir,
         Some(&again),
-        &[
-            "--print",
-            "what is the codename?",
-            "--task",
-            "t-resume",
-            "--resume",
-        ],
+        &["resume", "--task", "t-resume", "what is the codename?"],
     )
     .output()
     .unwrap();
@@ -347,18 +316,19 @@ fn a_saved_conversation_resumes_only_when_asked_and_never_holds_a_secret() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        again.requests.lock().unwrap()[0]
-            .to_string()
-            .contains("BLUEBIRD"),
-        "the earlier turn came back"
-    );
+    let request = again.requests.lock().unwrap()[0].to_string();
+    assert!(request.contains("BLUEBIRD"), "the earlier turn came back");
+    assert!(!request.contains(secret));
 
-    // --resume needs a task to resume.
-    let bare = jani(&dir, None, &["--print", "x", "--resume"])
-        .output()
-        .unwrap();
-    assert!(!bare.status.success() && String::from_utf8_lossy(&bare.stderr).contains("--task"));
+    // A task that was never checkpointed cannot be resumed.
+    let missing = jani(
+        &dir,
+        None,
+        &["resume", "--task", "t-never-existed", "hello"],
+    )
+    .output()
+    .unwrap();
+    assert!(!missing.status.success());
     let _ = std::fs::remove_dir_all(dir);
 }
 

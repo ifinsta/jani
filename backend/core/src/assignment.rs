@@ -164,6 +164,9 @@ mod tests {
             tenant: "bank-a".into(),
             subject_type: "human".into(),
             issuer: "test-idp".into(),
+            roles: Vec::new(),
+            groups: Vec::new(),
+            approval_scopes: Vec::new(),
             verified: true,
             expires_at: Some(1200),
         };

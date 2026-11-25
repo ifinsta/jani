@@ -8,13 +8,26 @@ use std::time::Duration;
 /// Authority portion (host[:port]) of a URL, or of a bare authority string.
 /// Returns an empty slice when the input is empty.
 pub fn url_authority(url: &str) -> &str {
+    if url.contains('\\') || url.chars().any(char::is_control) {
+        return "";
+    }
     let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    rest.split('/').next().unwrap_or("")
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') || authority.chars().any(char::is_whitespace) {
+        return "";
+    }
+    authority
 }
 
 /// Host portion of an authority, without the port or IPv6 brackets.
 /// Returns an empty slice for malformed bracketed authorities.
 pub fn authority_host(authority: &str) -> &str {
+    if authority.contains(['@', '\\', '/', '?', '#'])
+        || authority.chars().any(char::is_whitespace)
+        || authority.chars().any(char::is_control)
+    {
+        return "";
+    }
     if let Some(rest) = authority.strip_prefix('[') {
         return match rest.split_once(']') {
             Some((host, tail)) if tail.is_empty() || tail.starts_with(':') => host,
@@ -29,10 +42,21 @@ pub fn authority_host(authority: &str) -> &str {
 
 /// True when the authority ends with an explicit `:port`.
 pub fn authority_has_port(authority: &str) -> bool {
-    match authority.rsplit_once(']') {
-        Some((_, tail)) => tail.starts_with(':'),
-        None => authority.contains(':'),
+    if authority_host(authority).is_empty() {
+        return false;
     }
+    let port = if authority.starts_with('[') {
+        authority
+            .split_once(']')
+            .and_then(|(_, tail)| tail.strip_prefix(':'))
+    } else {
+        authority.split_once(':').map(|(_, port)| port)
+    };
+    port.is_some_and(|port| {
+        !port.is_empty()
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && port.parse::<u16>().is_ok()
+    })
 }
 
 /// True when the authority identifies the local host: `localhost`, `127.0.0.1`
@@ -107,6 +131,35 @@ mod tests {
         assert!(authority_has_port("[::1]:8080"));
         assert!(!authority_has_port("localhost"));
         assert!(!authority_has_port("[::1]"));
+    }
+
+    #[test]
+    fn ambiguous_authorities_and_malformed_ports_are_rejected() {
+        for url in [
+            "http://localhost:80@attacker.example/v1",
+            "https://user:password@provider.example/v1",
+            "http://localhost:80\\@attacker.example/v1",
+            "http://localhost:80\n@attacker.example/v1",
+            "https://provider .example/v1",
+        ] {
+            assert_eq!(url_authority(url), "", "{url}");
+        }
+        for authority in [
+            "localhost:80@attacker.example",
+            "localhost:80\\attacker.example",
+            "localhost:bad",
+            "localhost:",
+            "localhost:+80",
+            "localhost:65536",
+            "[::1]:80@attacker.example",
+            "[::1]:bad",
+            "[::1]:",
+        ] {
+            assert!(!authority_has_port(authority), "{authority}");
+        }
+        for authority in ["localhost:80@attacker.example", "[::1]:80@attacker.example"] {
+            assert!(!is_loopback_authority(authority), "{authority}");
+        }
     }
 
     #[test]

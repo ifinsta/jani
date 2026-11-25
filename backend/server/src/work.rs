@@ -9,7 +9,7 @@
 //! Claims are **leases**. A worker renews its lease while it works; if it dies,
 //! the lease expires and the task goes back in the queue. The next worker
 //! reuses the dead one's worktree and **resumes its saved conversation**
-//! (`--resume`), so a crash costs the current turn, not the whole task. A task
+//! (the task store's checkpoint, via `Agent::resume`), so a crash costs the current turn, not the whole task. A task
 //! interrupted three times is failed rather than retried forever.
 //!
 //! Every state change is checked against the claim's owner token, so a worker

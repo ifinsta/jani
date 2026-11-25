@@ -211,6 +211,47 @@ pub fn command(cfg: &Config) -> JResult<Value> {
         .sub
         .as_deref()
         .ok_or("attention command needs a subcommand")?;
+    if cfg.command == "agent" && verb == "kill-switch" {
+        let sub = cfg
+            .positional
+            .first()
+            .map(String::as_str)
+            .ok_or("agent kill-switch requires enable|clear|status")?;
+        let action = "attention.agent.kill_switch";
+        let (effect, risk) = if sub == "status" {
+            (Effect::Read, RiskTier::R0)
+        } else {
+            (Effect::Control, RiskTier::R3)
+        };
+        let id = actor(cfg, action, "fleet", risk, effect, false)?;
+        return match sub {
+            "status" => {
+                let rec = jani_core::kill::is_killed(&cfg.state_dir, &id.tenant)?;
+                Ok(json!({"active": rec.is_some(), "record": rec}))
+            }
+            "enable" => {
+                let reason = cfg
+                    .positional
+                    .get(1)
+                    .map(String::as_str)
+                    .unwrap_or("operator emergency kill switch");
+                let rec = jani_core::kill::activate(
+                    &cfg.state_dir,
+                    Some(&id.tenant),
+                    &id.principal,
+                    reason,
+                )?;
+                let killed =
+                    jani_store::tasks::TaskStore::open(&cfg.state_dir)?.kill_tenant(&id.tenant)?;
+                Ok(json!({"active": true, "killedTasks": killed, "record": rec}))
+            }
+            "clear" => {
+                let cleared = jani_core::kill::clear(&cfg.state_dir)?;
+                Ok(json!({"active": false, "cleared": cleared}))
+            }
+            other => Err(format!("unknown kill-switch action '{other}'")),
+        };
+    }
     if cfg.command == "wake" && verb == "watch" {
         // The watcher is only a lightweight poller; it never runs the model or
         // accepts a message as permission. Recheck identity and policy each tick.

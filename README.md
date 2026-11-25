@@ -108,7 +108,7 @@ Writes require explicit relative scopes, and commands must match the allowlist. 
 
 ## Settings
 
-Settings hold model profiles, a model selector and Claude-style permission rules. Jani reads `<worktree>/.jani/settings.json` when present, otherwise the user-wide `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows); the first file found wins and files are not merged. A missing file is fine. Precedence is **CLI flag > environment variable > settings file > built-in default**.
+Settings hold model profiles, a model selector and Claude-style permission rules. Jani reads `<worktree>/.jani/settings.json` when present, otherwise the user-wide `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows); the first file found wins and files are not merged. A missing file is fine. Automatically discovered worktree files cannot set `apiBase` or `apiKeyEnv`, including in unused profiles: startup refuses them before contacting a provider. Put the example below in user settings, or review the project file and explicitly opt in with `--settings .jani/settings.json` or `JANI_SETTINGS`. Precedence is **CLI flag > environment variable > settings file > built-in default**.
 
 ```json
 {

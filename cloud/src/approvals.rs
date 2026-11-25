@@ -14,9 +14,14 @@ use crate::workspace::{principal_for, user_key};
 use anyhow::{bail, Context, Result};
 use jani_core::{
     approvals::ApprovalStore,
+    data::redact_text,
     journal::{self, EventInput, Journal},
-    types::{now_unix, ApprovalRequest, ApprovalStatus, Classification},
+    types::{
+        now_unix, verification_receipt_path, ApprovalRequest, ApprovalStatus, Classification,
+        VerificationReceipt,
+    },
 };
+use jani_store::tasks::TaskStore;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -185,7 +190,8 @@ pub fn list_pending(data_dir: &Path, profiles: &Profiles, me: &str) -> Vec<Value
         if !is_key(&key) {
             continue;
         }
-        let file = user.path().join("state/approvals.json");
+        let state_dir = user.path().join("state");
+        let file = state_dir.join("approvals.json");
         if !plain_file(&file) {
             continue;
         }
@@ -195,10 +201,35 @@ pub fn list_pending(data_dir: &Path, profiles: &Profiles, me: &str) -> Vec<Value
         let Ok(list) = serde_json::from_str::<Vec<ApprovalRequest>>(&text) else {
             continue;
         };
+        let task_store = TaskStore::open(&state_dir).ok();
         for r in list {
             if r.status != ApprovalStatus::Pending || r.expires_at <= now {
                 continue;
             }
+            let (resource_preview, redacted_count) = redact_text(&r.resource);
+            let task_ctx = task_store
+                .as_ref()
+                .and_then(|s| s.load(&r.tenant_id, &r.task_id).ok().flatten())
+                .map(|cp| {
+                    json!({
+                        "purpose": cp.purpose,
+                        "status": cp.status,
+                        "epoch": cp.epoch,
+                    })
+                });
+            let verification = verification_receipt_path(&state_dir, &r.task_id)
+                .ok()
+                .filter(|p| plain_file(p))
+                .and_then(|p| VerificationReceipt::load(&p).ok())
+                .filter(|vr| vr.task_id == r.task_id && vr.tenant_id == r.tenant_id)
+                .map(|vr| {
+                    json!({
+                        "present": true,
+                        "passed": vr.passed,
+                        "signed": vr.signature.is_some(),
+                        "verificationId": vr.verification_id,
+                    })
+                });
             out.push(json!({
                 "user": key,
                 "own": key == me,
@@ -206,9 +237,13 @@ pub fn list_pending(data_dir: &Path, profiles: &Profiles, me: &str) -> Vec<Value
                 "approvalId": r.approval_id,
                 "capability": r.capability,
                 "resource": r.resource,
+                "resourcePreview": resource_preview,
+                "redactedTokens": redacted_count,
                 "risk": r.risk,
                 "approvalClass": r.approval_class,
                 "taskId": r.task_id,
+                "taskContext": task_ctx,
+                "verification": verification,
                 "payloadDigest": r.payload_digest,
                 "createdAt": r.created_at,
                 "expiresAt": r.expires_at,
@@ -255,11 +290,15 @@ pub async fn decide(
     data_dir: &Path,
     self_bin: &Path,
     uid_base_enabled: bool,
+    tenant: &str,
     approver: &Person,
     user: &str,
     id: &str,
     approve: bool,
 ) -> Result<Value> {
+    if approver.degraded {
+        bail!("approval decisions require a live identity provider session, not outage grace mode");
+    }
     if !is_key(user) {
         bail!("unknown workspace");
     }
@@ -278,9 +317,13 @@ pub async fn decide(
     }
     let principal = principal_for(&user_key(&approver.sub));
     let uid: Option<u32> = if uid_base_enabled {
-        std::fs::read_to_string(data_dir.join("uids").join(user))
-            .ok()
-            .and_then(|t| t.trim().parse().ok())
+        let uid_text = std::fs::read_to_string(data_dir.join("uids").join(user))
+            .context("missing per-user UID allocation; refusing to fall back to privileged UID")?;
+        let parsed = uid_text
+            .trim()
+            .parse()
+            .context("corrupt per-user UID allocation; refusing to fall back to privileged UID")?;
+        Some(parsed)
     } else {
         None
     };
@@ -294,6 +337,8 @@ pub async fn decide(
             id,
             "--principal",
             &principal,
+            "--tenant",
+            tenant,
         ])
         .arg(if approve { "--approve" } else { "--reject" })
         .env_clear()
@@ -337,28 +382,31 @@ pub async fn decide(
 
 /// `jani-cloud decide-approval ...`: runs as the requester's own Unix user.
 pub fn helper(args: &[String]) -> Result<()> {
-    let (mut state, mut id, mut principal, mut approve) = (None, None, None, None);
+    let (mut state, mut id, mut principal, mut tenant, mut approve) =
+        (None, None, None, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--state" => state = it.next().cloned(),
             "--id" => id = it.next().cloned(),
             "--principal" => principal = it.next().cloned(),
+            "--tenant" => tenant = it.next().cloned(),
             "--approve" => approve = Some(true),
             "--reject" => approve = Some(false),
             other => bail!("unexpected argument {other:?}"),
         }
     }
-    let (state, id, principal, approve) = (
+    let (state, id, principal, tenant, approve) = (
         state.context("--state")?,
         id.context("--id")?,
         principal.context("--principal")?,
+        tenant.context("--tenant")?,
         approve.context("--approve or --reject")?,
     );
     let mut store = ApprovalStore::open(Path::new(&state)).map_err(|e| anyhow::anyhow!(e))?;
     // The role is fixed: reaching this helper at all means the gateway verified an approver.
     let decided = store
-        .decide(&id, &principal, "approver", approve)
+        .decide(&id, &tenant, &principal, "human", "approver", approve)
         .map_err(|e| anyhow::anyhow!(e))?;
     println!("{}", serde_json::to_string(&decided)?);
     Ok(())
@@ -374,6 +422,7 @@ mod tests {
             email: email.map(str::to_string),
             email_verified: verified,
             name: None,
+            degraded: false,
         }
     }
 
@@ -446,5 +495,75 @@ mod tests {
         assert!(is_key(&user_key("x")));
         assert!(!is_key("../../etc"));
         assert!(!is_key(&"g".repeat(24)));
+    }
+
+    #[test]
+    fn list_pending_enriches_redacted_preview_and_verification_summary() {
+        let dir = std::env::temp_dir().join(format!("jani-cloud-pending-{}", std::process::id()));
+        let key = user_key("alice");
+        let state = dir.join("users").join(&key).join("state");
+        std::fs::create_dir_all(&state).unwrap();
+
+        let mut store = ApprovalStore::open(&state).unwrap();
+        let req = store
+            .create(jani_core::approvals::NewApproval {
+                tenant_id: "acme",
+                task_id: "task-enrich-1",
+                requester: "bot-1",
+                capability: "connector.github.comment",
+                resource: "https://api.github.com/repos/org/repo?token=ghp_1234567890abcdef",
+                payload_digest: "deadbeef",
+                risk: jani_core::types::RiskTier::R2,
+                approval_class: "external-write",
+                required_role: "approver",
+                ttl_seconds: 600,
+            })
+            .unwrap();
+
+        TaskStore::open(&state)
+            .unwrap()
+            .checkpoint(
+                "acme",
+                "task-enrich-1",
+                1,
+                "waiting_approval",
+                None,
+                Some(&req.approval_id),
+                "bot-1",
+                "pr-review",
+                "/work/repo",
+                &[],
+            )
+            .unwrap();
+
+        let vr = VerificationReceipt {
+            api_version: "jani.dev/v1alpha1".into(),
+            kind: "VerificationReceipt".into(),
+            verification_id: "ver-99".into(),
+            tenant_id: "acme".into(),
+            task_id: "task-enrich-1".into(),
+            contract_digest: "cfg".into(),
+            verified_at: now_unix(),
+            passed: true,
+            verifier_id: "verifier".into(),
+            checks: vec![],
+            changed_files: vec![],
+            out_of_scope_files: vec![],
+            signature: None,
+        };
+        let vr_path = verification_receipt_path(&state, "task-enrich-1").unwrap();
+        std::fs::create_dir_all(vr_path.parent().unwrap()).unwrap();
+        std::fs::write(&vr_path, serde_json::to_vec(&vr).unwrap()).unwrap();
+
+        let profiles = Profiles::new(&dir);
+        let pending = list_pending(&dir, &profiles, "other-user");
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0]["resourcePreview"]
+            .as_str()
+            .unwrap()
+            .contains("[REDACTED]"));
+        assert_eq!(pending[0]["taskContext"]["purpose"], "pr-review");
+        assert_eq!(pending[0]["verification"]["passed"], true);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

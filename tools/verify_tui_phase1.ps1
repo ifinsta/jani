@@ -34,12 +34,12 @@ try {
     }
     # PowerShell 5.1 has no IsWindows variable; in that host, OS is Windows.
     Invoke-Checked -Program "cargo" -Arguments @("fmt", "--all", "--", "--check")
-    Invoke-Checked -Program "cargo" -Arguments @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
-    Invoke-Checked -Program "cargo" -Arguments @("test", "--workspace", "--all-targets")
+    Invoke-Checked -Program "cargo" -Arguments @("clippy", "--workspace", "--all-targets", "-j", "1", "--", "-D", "warnings")
+    Invoke-Checked -Program "cargo" -Arguments @("test", "--workspace", "--all-targets", "-j", "1")
     Invoke-Checked -Program "cargo" -Arguments @("run", "-p", "jani-check")
-    Invoke-Checked -Program "cargo" -Arguments @("run", "-p", "jani-claims", "--", "check")
+    Invoke-Checked -Program "cargo" -Arguments @("run", "-p", "jani-claims", "--", "strict")
     Invoke-Checked -Program "python" -Arguments @("tools/doccheck.py")
-    Invoke-Checked -Program "cargo" -Arguments @("build", "--locked", "--release", "-p", "jani")
+    Invoke-Checked -Program "cargo" -Arguments @("build", "--locked", "--release", "-p", "jani", "-j", "1")
     if (-not (Test-Path $Binary -PathType Leaf)) {
         throw "Built Jani binary not found: $Binary"
     }

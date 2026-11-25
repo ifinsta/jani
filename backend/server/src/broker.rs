@@ -8,6 +8,7 @@ use crate::execpolicy::{self, Basis, Verdict};
 use crate::identity::VerifiedIdentity;
 use crate::journal::{decision as journal_decision, reason, EventInput, Journal};
 use crate::permissions::{Request as PermissionRequest, Verdict as PermissionVerdict};
+use crate::plugins::{self, PluginRegistry};
 use crate::policy::{action_profile, contract_allows_action, contract_allows_write, PolicyEngine};
 use crate::skills::Catalog;
 use crate::tools::{action, Tool};
@@ -17,7 +18,10 @@ use crate::types::{
     ToolResult,
 };
 use crate::workspace::Workspace;
+use jani_store::tasks::{EffectGate, TaskStore};
 use serde_json::{json, Value};
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Broker<'a> {
     pub cfg: &'a Config,
@@ -26,9 +30,12 @@ pub struct Broker<'a> {
     pub governance: &'a Governance,
     pub contract: Option<&'a crate::types::WorkContract>,
     pub catalog: &'a Catalog,
+    pub plugins: Option<&'a PluginRegistry>,
     pub journal: &'a mut Journal,
     pub approvals: &'a mut ApprovalStore,
     pub budget: &'a mut BudgetLedger,
+    pub tasks: Option<&'a mut TaskStore>,
+    pub task_epoch: u64,
     pub run_id: String,
     pub task_id: String,
     pub default_profile: SandboxProfile,
@@ -40,10 +47,12 @@ pub struct Broker<'a> {
     pub session_exec: &'a mut Vec<Vec<String>>,
     /// Set when the agent asked a question nobody could answer yet; the turn ends on it.
     pub asked: &'a mut Option<Question>,
+    /// Cooperative/preemptive cancellation signal for child processes & gates.
+    pub cancelled: Option<&'a AtomicBool>,
 }
 
 struct Call {
-    action: &'static str,
+    action: Cow<'static, str>,
     effect: Effect,
     risk: RiskTier,
     resource: String,
@@ -123,7 +132,7 @@ impl<'a> Broker<'a> {
                 let name = get_str(args, "name")?;
                 safe_label(name)?;
                 Ok(Call {
-                    action: action::SKILL_READ,
+                    action: Cow::Borrowed(action::SKILL_READ),
                     effect: Effect::Read,
                     risk: RiskTier::R0,
                     resource: format!("skill:{name}"),
@@ -132,14 +141,14 @@ impl<'a> Broker<'a> {
             Tool::List => {
                 let directory = args.get("directory").and_then(Value::as_str).unwrap_or(".");
                 Ok(Call {
-                    action: action::REPO_LIST,
+                    action: Cow::Borrowed(action::REPO_LIST),
                     effect: Effect::Read,
                     risk: RiskTier::R0,
                     resource: canonical_resource("repo", directory)?,
                 })
             }
             Tool::Read => Ok(Call {
-                action: action::REPO_READ,
+                action: Cow::Borrowed(action::REPO_READ),
                 effect: Effect::Read,
                 risk: RiskTier::R0,
                 resource: canonical_resource("repo", get_str(args, "path")?)?,
@@ -147,7 +156,7 @@ impl<'a> Broker<'a> {
             Tool::Write => {
                 get_str(args, "content")?;
                 Ok(Call {
-                    action: action::REPO_WRITE,
+                    action: Cow::Borrowed(action::REPO_WRITE),
                     effect: Effect::LocalWrite,
                     risk: RiskTier::R2,
                     resource: canonical_resource("repo", get_str(args, "path")?)?,
@@ -164,11 +173,11 @@ impl<'a> Broker<'a> {
                 }
                 let is_mutation = jani_native::mutation(native, operation);
                 Ok(Call {
-                    action: if is_mutation {
+                    action: Cow::Borrowed(if is_mutation {
                         action::NATIVE_CONTROL
                     } else {
                         action::NATIVE_READ
-                    },
+                    }),
                     effect: if is_mutation {
                         Effect::Control
                     } else {
@@ -188,7 +197,7 @@ impl<'a> Broker<'a> {
             Tool::Ask => {
                 question_from(args)?;
                 Ok(Call {
-                    action: action::AGENT_ASK,
+                    action: action::AGENT_ASK.into(),
                     // Asking changes nothing: read-level, so it needs no write or exec grant.
                     effect: Effect::Read,
                     risk: RiskTier::R0,
@@ -199,7 +208,7 @@ impl<'a> Broker<'a> {
                 get_str(args, "topic")?;
                 get_str(args, "note")?;
                 Ok(Call {
-                    action: action::MEMORY_WRITE,
+                    action: action::MEMORY_WRITE.into(),
                     // Writes to the operator's state directory, not the worktree, so it is
                     // a control action: it needs a policy that permits `memory.write`, not
                     // the operator's file-editing grant.
@@ -214,17 +223,44 @@ impl<'a> Broker<'a> {
                 safe_label(program)?;
                 let (effect, risk) = action_profile(action::COMMAND_EXEC);
                 Ok(Call {
-                    action: action::COMMAND_EXEC,
+                    action: Cow::Borrowed(action::COMMAND_EXEC),
                     effect,
                     risk,
                     resource: format!("command:{program}"),
+                })
+            }
+            Tool::Plugin => {
+                let plugin_id = get_str(args, "plugin_id")?;
+                let cap_name = get_str(args, "capability")?;
+                safe_label(plugin_id)?;
+                safe_label(cap_name)?;
+                let registry = self.plugins.ok_or("plugin registry unavailable")?;
+                let (_, cap) = registry.capability(plugin_id, cap_name)?;
+                let inner = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                plugins::enforce_human_commit_invariant(cap, &inner)?;
+                let mut effect = cap.effect;
+                let mut risk = cap.risk_tier;
+                if plugins::is_commit_or_merge_cap(&cap.name) {
+                    effect = Effect::ExternalWrite;
+                    if risk < RiskTier::R3 {
+                        risk = RiskTier::R3;
+                    }
+                }
+                Ok(Call {
+                    action: Cow::Owned(format!(
+                        "{}{plugin_id}.{cap_name}",
+                        action::CONNECTOR_PREFIX
+                    )),
+                    effect,
+                    risk,
+                    resource: format!("connector:{plugin_id}:{cap_name}"),
                 })
             }
         }
     }
 
     fn permission_request<'v>(
-        &self,
+        &'v self,
         tool: Tool,
         args: &'v Value,
     ) -> Result<Option<PermissionRequest<'v>>, String> {
@@ -233,6 +269,13 @@ impl<'a> Broker<'a> {
                 path: get_str(args, "path")?,
                 directory: false,
             })),
+            Tool::SkillRead => Ok(self
+                .catalog
+                .worktree_path(get_str(args, "name")?)
+                .map(|path| PermissionRequest::Read {
+                    path,
+                    directory: false,
+                })),
             Tool::List => Ok(Some(PermissionRequest::Read {
                 path: args.get("directory").and_then(Value::as_str).unwrap_or("."),
                 directory: true,
@@ -243,7 +286,35 @@ impl<'a> Broker<'a> {
             Tool::Command => Ok(Some(PermissionRequest::Command {
                 line: get_argv(args)?.join(" "),
             })),
-            _ => Ok(None),
+            Tool::NativeTool => {
+                let native = get_str(args, "tool")?;
+                let operation = get_str(args, "operation")?;
+                let extra = args
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .ok_or("native args must be an array")?;
+                let index = match (native, operation) {
+                    ("planner", "create")
+                    | ("index", "cargo-graph")
+                    | ("context", "pin")
+                    | ("impact", "analyze") => Some(0),
+                    ("evidence", "record") => Some(1),
+                    _ => None,
+                };
+                Ok(index
+                    .and_then(|index| extra.get(index))
+                    .map(|path| {
+                        path.as_str()
+                            .map(|path| PermissionRequest::Read {
+                                path,
+                                directory: false,
+                            })
+                            .ok_or_else(|| "native path argument must be a string".to_string())
+                    })
+                    .transpose()?)
+            }
+            // Notes and questions touch no path or command: nothing for settings permissions to match.
+            Tool::Plugin | Tool::Remember | Tool::Ask => Ok(None),
         }
     }
 
@@ -267,7 +338,7 @@ impl<'a> Broker<'a> {
             invocation_id,
             actor_id: &self.identity.principal,
             worker_id: &self.identity.principal,
-            action: call.action,
+            action: call.action.as_ref(),
             resource_digest: &sha256_hex(call.resource.as_bytes()),
             decision,
             reason_code,
@@ -391,11 +462,23 @@ impl<'a> Broker<'a> {
                     reason: reason.clone(),
                     suggest: suggest.clone(),
                 }) {
-                    ConsentAnswer::Deny => Err(refuse(
-                        self,
-                        "exec_operator_declined",
-                        format!("the operator declined `{line}`. Do not retry it or a variant; continue without it or report what you need"),
-                    )),
+                    ConsentAnswer::Deny => {
+                        if self
+                            .cancelled
+                            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                        {
+                            return Err(refuse(
+                                self,
+                                reason::CANCELLED_BY_OPERATOR,
+                                format!("cancelled before executing `{line}`"),
+                            ));
+                        }
+                        Err(refuse(
+                            self,
+                            "exec_operator_declined",
+                            format!("the operator declined `{line}`. Do not retry it or a variant; continue without it or report what you need"),
+                        ))
+                    }
                     ConsentAnswer::Once => {
                         decision.reason_code = Basis::OperatorOnce.code().into();
                         Ok(granted())
@@ -419,7 +502,9 @@ impl<'a> Broker<'a> {
                             Err(error) => Err(refuse(
                                 self,
                                 "exec_rule_not_saved",
-                                format!("the rule could not be saved, so `{line}` was not run: {error}"),
+                                format!(
+                                    "the rule could not be saved, so `{line}` was not run: {error}"
+                                ),
                             )),
                         }
                     }
@@ -454,13 +539,13 @@ impl<'a> Broker<'a> {
     fn reject(
         &mut self,
         invocation_id: &str,
-        action: &'static str,
+        action: &str,
         resource: String,
         reason_code: &str,
         reason: String,
     ) -> ToolResult {
         let call = Call {
-            action,
+            action: Cow::Owned(action.to_string()),
             effect: Effect::Read,
             risk: RiskTier::R0,
             resource,
@@ -490,29 +575,36 @@ impl<'a> Broker<'a> {
     ) -> Result<Option<String>, String> {
         let ids = self.approval_ids.to_vec();
         for id in ids {
-            let Some(request) = self.approvals.find(&id) else {
+            let Some(request) = self.approvals.find_live(&id)? else {
                 continue;
             };
             if request.tenant_id != self.identity.tenant || request.task_id != self.task_id {
                 continue;
             }
-            if request.capability != call.action || request.resource != call.resource {
+            if request.capability != call.action.as_ref() || request.resource != call.resource {
                 continue;
             }
             if request.payload_digest != payload_digest {
                 continue;
             }
-            let consumed = self
-                .approvals
-                .consume(&id, call.action, &call.resource, payload_digest);
+            self.budget.check_tool_budget()?;
+            let consumed = self.approvals.consume(
+                &id,
+                &self.identity.tenant,
+                &self.task_id,
+                call.action.as_ref(),
+                &call.resource,
+                payload_digest,
+            );
             if let Ok(consumed) = consumed {
                 return Ok(Some(consumed.approval_id));
             }
         }
+        self.approvals.refresh()?;
         if let Some(existing) = self.approvals.find_pending(
             &self.identity.tenant,
             &self.task_id,
-            call.action,
+            call.action.as_ref(),
             &call.resource,
             payload_digest,
         ) {
@@ -522,7 +614,7 @@ impl<'a> Broker<'a> {
             tenant_id: &self.identity.tenant,
             task_id: &self.task_id,
             requester: &self.identity.principal,
-            capability: call.action,
+            capability: call.action.as_ref(),
             resource: &call.resource,
             payload_digest,
             risk,
@@ -567,8 +659,21 @@ impl<'a> Broker<'a> {
             }
         };
         let payload_digest = json_digest(args);
+        if self
+            .cancelled
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            let cancel_action = call.action.into_owned();
+            return self.reject(
+                invocation_id,
+                &cancel_action,
+                call.resource,
+                reason::CANCELLED_BY_OPERATOR,
+                "cancelled by operator".into(),
+            );
+        }
 
-        if !contract_allows_action(self.contract, call.action, &call.resource) {
+        if !contract_allows_action(self.contract, call.action.as_ref(), &call.resource) {
             let decision = PolicyDecision {
                 decision: Decision::Deny,
                 reason_code: "contract_capability_denied".into(),
@@ -651,14 +756,16 @@ impl<'a> Broker<'a> {
             invocation_id: invocation_id.to_string(),
             tenant_id: self.identity.tenant.clone(),
             principal_id: self.identity.principal.clone(),
-            action: call.action.into(),
+            action: call.action.to_string(),
             resource: call.resource.clone(),
             effect: call.effect,
             risk: call.risk,
             arguments_digest: payload_digest.clone(),
             idempotency_key: None,
         };
-        let mut decision = self.policy.evaluate(self.cfg, &request);
+        let mut decision =
+            self.policy
+                .evaluate_with_identity(self.cfg, Some(self.identity), &request);
         if decision.decision == Decision::Permit {
             if let Some(rule) = settings_ask.as_ref() {
                 decision = PolicyDecision {
@@ -809,10 +916,81 @@ impl<'a> Broker<'a> {
             );
         }
 
+        let idempotency_key = args
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        if let (Some(key), Some(tasks)) = (idempotency_key.as_deref(), self.tasks.as_deref_mut()) {
+            match tasks.begin_effect(
+                &self.identity.tenant,
+                &self.task_id,
+                self.task_epoch,
+                key,
+                tool.name(),
+                &call.resource,
+                &payload_digest,
+            ) {
+                Ok(EffectGate::Proceed) => {}
+                Ok(EffectGate::AlreadyApplied(cached)) => {
+                    let data = cached.unwrap_or_else(|| json!({"idempotent_replay": true}));
+                    let _ = self.audit(
+                        invocation_id,
+                        &call,
+                        journal_decision::EXECUTED,
+                        "idempotent_replay",
+                        Classification::Internal,
+                        approval_id.as_deref(),
+                        None,
+                    );
+                    return ToolResult {
+                        invocation_id: invocation_id.into(),
+                        status: crate::types::tool_status::OK.into(),
+                        effect: call.effect,
+                        data: Some(data),
+                        error: None,
+                        decision_id: decision.decision_id,
+                        classification: Classification::Internal,
+                        sandbox: None,
+                        approval_id,
+                        retryable: false,
+                    };
+                }
+                Ok(EffectGate::InFlight) => {
+                    return ToolResult::denied(
+                        invocation_id,
+                        call.effect,
+                        &decision.decision_id,
+                        "effect with this idempotency_key is already in flight",
+                    );
+                }
+                Err(error) => {
+                    return ToolResult::denied(
+                        invocation_id,
+                        call.effect,
+                        &decision.decision_id,
+                        format!("idempotency guard refused execution: {error}"),
+                    );
+                }
+            }
+        }
+
         let execution = self.execute(tool, args, &decision, exec_grant.unwrap_or_default());
         let (data, receipt, error) = match execution {
             Ok(output) => output,
             Err(error) => {
+                if let (Some(key), Some(tasks)) =
+                    (idempotency_key.as_deref(), self.tasks.as_deref_mut())
+                {
+                    let _ = tasks.finish_effect(
+                        &self.identity.tenant,
+                        &self.task_id,
+                        key,
+                        false,
+                        Some(&json!({"error": &error})),
+                    );
+                }
                 let _ = self.audit(
                     invocation_id,
                     &call,
@@ -862,6 +1040,17 @@ impl<'a> Broker<'a> {
             .and_then(|contract| contract.spec.data_classification)
         {
             if classified.effective > max {
+                if let (Some(key), Some(tasks)) =
+                    (idempotency_key.as_deref(), self.tasks.as_deref_mut())
+                {
+                    let _ = tasks.finish_effect(
+                        &self.identity.tenant,
+                        &self.task_id,
+                        key,
+                        false,
+                        Some(&json!({"error": "contract_data_classification_denied"})),
+                    );
+                }
                 let _ = self.audit(
                     invocation_id,
                     &call,
@@ -887,6 +1076,16 @@ impl<'a> Broker<'a> {
                     retryable: false,
                 };
             }
+        }
+
+        if let (Some(key), Some(tasks)) = (idempotency_key.as_deref(), self.tasks.as_deref_mut()) {
+            let _ = tasks.finish_effect(
+                &self.identity.tenant,
+                &self.task_id,
+                key,
+                error.is_none(),
+                Some(&data),
+            );
         }
 
         let receipt_id = receipt.as_ref().map(|r| r.sandbox_id.clone());
@@ -991,7 +1190,7 @@ impl<'a> Broker<'a> {
                         "native tool cannot perform user-only or ungoverned operations".into(),
                     );
                 }
-                let data = jani_native::run(
+                let data = jani_native::run_governed(
                     &self.cfg.root,
                     &self.cfg.state_dir,
                     &self.identity.tenant,
@@ -999,6 +1198,7 @@ impl<'a> Broker<'a> {
                     name,
                     &parts,
                     false,
+                    self.cfg.permissions.as_ref(),
                 )?;
                 Ok((data, None, None))
             }
@@ -1057,8 +1257,30 @@ impl<'a> Broker<'a> {
                     .as_deref()
                     .and_then(NetworkPolicy::parse)
                     .unwrap_or(self.default_network);
-                let (value, receipt) =
-                    exec::run_confined(self.cfg, &argv, timeout, profile, network, &grant)?;
+                let (value, receipt) = exec::run_confined(
+                    self.cfg,
+                    &argv,
+                    timeout,
+                    profile,
+                    network,
+                    &grant,
+                    self.cancelled,
+                )?;
+                Ok((value, Some(receipt), None))
+            }
+            Tool::Plugin => {
+                let plugin_id = get_str(args, "plugin_id")?;
+                let cap_name = get_str(args, "capability")?;
+                let inner = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                let registry = self.plugins.ok_or("plugin registry unavailable")?;
+                let (value, receipt) = registry.invoke_sidecar(
+                    self.cfg,
+                    plugin_id,
+                    cap_name,
+                    &inner,
+                    self.governance,
+                    self.cancelled,
+                )?;
                 Ok((value, Some(receipt), None))
             }
         }
@@ -1151,6 +1373,7 @@ mod tests {
                 data_classification: ceiling,
                 budget: ContractBudget::default(),
                 acceptance: vec![],
+                acceptance_checks: vec![],
             },
         }
     }
@@ -1196,6 +1419,9 @@ mod tests {
                 tenant: "t1".into(),
                 subject_type: "human".into(),
                 issuer: "test".into(),
+                roles: Vec::new(),
+                groups: Vec::new(),
+                approval_scopes: Vec::new(),
                 verified: true,
                 expires_at: None,
             };
@@ -1229,9 +1455,12 @@ mod tests {
                 governance: &self.governance,
                 contract: self.contract.as_ref(),
                 catalog: &self.catalog,
+                plugins: None,
                 journal: &mut self.journal,
                 approvals: &mut self.approvals,
                 budget: &mut self.budget,
+                tasks: None,
+                task_epoch: 1,
                 run_id: "run-test".into(),
                 task_id: "task-1".into(),
                 default_profile: SandboxProfile::TrustedDev,
@@ -1240,6 +1469,7 @@ mod tests {
                 consent: self.consent.as_deref(),
                 session_exec: &mut self.session_exec,
                 asked: &mut self.asked,
+                cancelled: None,
             }
         }
     }
@@ -1418,10 +1648,10 @@ mod tests {
         };
         assert!(env
             .approvals
-            .decide(&approval_id, "p1", "approver", true)
+            .decide(&approval_id, "t1", "p1", "human", "approver", true)
             .is_err());
         env.approvals
-            .decide(&approval_id, "p2", "approver", true)
+            .decide(&approval_id, "t1", "p2", "human", "approver", true)
             .unwrap();
         env.cfg.approval_ids = vec![approval_id.clone()];
         {
@@ -1875,6 +2105,81 @@ mod tests {
             "keyboard consent must not stand in for a signed approval"
         );
         assert!(!env.dir.join("src/x.txt").exists());
+        cleanup(env);
+    }
+
+    #[test]
+    fn idempotency_key_deduplicates_replayed_writes_across_epochs() {
+        let mut env = TestEnv::new(
+            Some(contract(&["repo.write", "repo.read"], &["src"], None)),
+            &EffectiveLimits::default(),
+            false,
+        );
+        env.cfg.allow_write = true;
+        env.cfg.write_paths = vec![PathBuf::from("src")];
+        let mut tasks = TaskStore::open(&env.dir).unwrap();
+        tasks
+            .checkpoint(
+                &env.identity.tenant,
+                "task-1",
+                1,
+                "running",
+                None,
+                None,
+                &env.identity.principal,
+                "testing",
+                &env.dir.display().to_string(),
+                &[],
+            )
+            .unwrap();
+        let next_epoch = tasks
+            .claim_resume_epoch(&env.identity.tenant, "task-1")
+            .unwrap();
+        assert_eq!(next_epoch, 2);
+
+        {
+            let mut broker = Broker {
+                cfg: &env.cfg,
+                policy: &env.policy,
+                identity: &env.identity,
+                governance: &env.governance,
+                contract: env.contract.as_ref(),
+                catalog: &env.catalog,
+                plugins: None,
+                journal: &mut env.journal,
+                approvals: &mut env.approvals,
+                budget: &mut env.budget,
+                tasks: Some(&mut tasks),
+                task_epoch: next_epoch,
+                run_id: "run-1".into(),
+                task_id: "task-1".into(),
+                default_profile: SandboxProfile::TrustedDev,
+                default_network: NetworkPolicy::Deny,
+                approval_ids: &env.cfg.approval_ids,
+                consent: None,
+                session_exec: &mut env.session_exec,
+                asked: &mut env.asked,
+                cancelled: None,
+            };
+            let first = broker.invoke(
+                "inv-1",
+                "write",
+                &json!({"path": "src/one.txt", "content": "first-write", "idempotency_key": "k-write-1"}),
+            );
+            assert_eq!(first.status, "ok", "{:?}", first.error);
+            // Modify the file manually to verify the second invocation replays cached output instead of overwriting.
+            fs::write(env.dir.join("src/one.txt"), "edited-outside").unwrap();
+            let replay = broker.invoke(
+                "inv-2",
+                "write",
+                &json!({"path": "src/one.txt", "content": "first-write", "idempotency_key": "k-write-1"}),
+            );
+            assert_eq!(replay.status, "ok", "{:?}", replay.error);
+            assert_eq!(
+                fs::read_to_string(env.dir.join("src/one.txt")).unwrap(),
+                "edited-outside"
+            );
+        }
         cleanup(env);
     }
 }

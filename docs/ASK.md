@@ -12,7 +12,8 @@ source:
 tests:
   - backend/server/tests/ask.rs
   - backend/server/tests/ui.rs
-  - backend/server/tests/pty/
+  - backend/server/tests/pty/tui_e2e.py
+  - backend/server/tests/pty/line_e2e.py
 ---
 
 # Ask before guessing
@@ -26,7 +27,7 @@ A good colleague asks "which of these two did you mean?" before spending four ho
 | Where the agent runs | The question |
 |---|---|
 | **Web workspace** | A card in the terminal: the question, one button per option (keys `1`..`9`), a text box for your own words, and **Leave for later**. Cancelling the turn leaves it unanswered. |
-| **Terminal UI** | A panel above the composer: press a digit to pick an option, or type your own words and press Enter; Esc leaves it for later. A digit typed mid-sentence is text. |
+| **Terminal UI** | A panel above the composer: press a digit to pick an option, or type your own words and press Enter; Esc leaves it for later. A digit typed mid-sentence is text, and choosing or sending is only possible while the panel is fully on screen (a clipped layout disables it; Esc still declines). |
 | **`--print` and the line REPL**, with a person at a terminal | Asked on stderr, answered from the terminal itself (as the consent prompt is): a number picks an option, anything else is your words, an empty line leaves it for later. |
 | **Nobody there** (CI, pipes, `jani work run`) | The question is recorded and **the turn ends on it**. Nothing more is guessed. |
 

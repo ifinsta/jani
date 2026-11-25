@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install an existing locally committed Jani macOS/Linux release, with SHA-256 verification."""
+"""Install an existing locally committed Jani macOS/Linux release with signed-manifest and SHA-256 verification."""
 import argparse
 import hashlib
 import json
@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from release_signing import verify_manifest
 
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / 'contract' / 'releases.json'
 CONTRACT = json.loads(CONTRACT_PATH.read_text('utf-8'))
@@ -47,7 +49,7 @@ def target_platform(target):
     return next((p for p, pattern in CONTRACT['platforms'].items() if re.search(pattern, target)), None)
 
 
-def verify(root: Path, kind: str, target: str, version: str | None):
+def verify(root: Path, kind: str, target: str, version: str | None, trusted_keys):
     system = target_platform(target)
     if system not in SUPPORTED or kind not in TYPES:
         raise ValueError('unsupported component or host target')
@@ -65,6 +67,7 @@ def verify(root: Path, kind: str, target: str, version: str | None):
     m = json.loads((folder / 'manifest.json').read_text())
     if m['schemaVersion'] != SCHEMAS['manifest'] or m['type'] != kind or m['platform'] != system or m['tag'] != version or m['package'] != TYPES[kind]:
         raise ValueError('manifest identity mismatch')
+    verify_manifest(m, trusted_keys)
     artifact = next((a for a in m['artifacts'] if a['target'] == target), None)
     if not artifact:
         raise ValueError(f'no verified {kind}/{system}/{version} artifact for {target}')
@@ -89,11 +92,12 @@ def main():
     parser.add_argument('--version')
     parser.add_argument('--target')
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument('--update-key', action='append', required=True, help='trusted release signer ID:HEX or HEX; repeatable')
     parser.add_argument('--install-dir', type=Path, default=Path.home() / '.local/bin')
     args = parser.parse_args()
     try:
         _, target = native_target() if not args.target else (None, args.target)
-        source, name, h = verify(args.root, args.type, target, args.version)
+        source, name, h = verify(args.root, args.type, target, args.version, args.update_key)
         dest_dir = args.install_dir.expanduser().resolve()
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / name
@@ -107,11 +111,11 @@ def main():
             os.fsync(f.fileno())
         try:
             tmp.chmod(0o755)
-            subprocess.run([str(tmp), '--version'], check=True, capture_output=True, timeout=10)
+            subprocess.run([str(tmp), '--version'], check=True, capture_output=True, timeout=10, env={'PATH': os.environ.get('PATH', '')})
             os.replace(tmp, dest)
         finally:
             tmp.unlink(missing_ok=True)
-        print(f'installed {dest} from {source} (SHA-256 {h}); release is not code-signed')
+        print(f'installed {dest} from {source} (SHA-256 {h}); signed release manifest verified, binary is not code-signed')
         return 0
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as e:
         print(f'install-unix: {e}', file=sys.stderr)

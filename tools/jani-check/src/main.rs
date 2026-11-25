@@ -51,11 +51,13 @@ fn check(root: &Path) -> Result<(), String> {
         "backend/core",
         "backend/store",
         "backend/server",
+        "backend/verifier",
         "backend/mirror",
         "backend/mcp",
         "backend/native",
         "tools/jani-check",
         "tools/jani-claims",
+        "tools/jani-issuer",
     ] {
         let path = root.join(member).join("Cargo.toml");
         let manifest = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;

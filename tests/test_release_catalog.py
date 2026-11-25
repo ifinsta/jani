@@ -3,12 +3,37 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
-SPEC = importlib.util.spec_from_file_location('jani_release_catalog', Path(__file__).resolve().parents[1] / 'tools/release_catalog.py')
+TOOLS = Path(__file__).resolve().parents[1] / 'tools'
+sys.path.insert(0, str(TOOLS))
+SPEC = importlib.util.spec_from_file_location('jani_release_catalog', TOOLS / 'release_catalog.py')
 catalog = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(catalog)
+import release_signing as signing
+INSTALLER_SPEC = importlib.util.spec_from_file_location('jani_install_unix', TOOLS / 'install_unix.py')
+installer = importlib.util.module_from_spec(INSTALLER_SPEC)
+INSTALLER_SPEC.loader.exec_module(installer)
+
+
+def signed_fixture(root):
+    folder, name = fixture(root)
+    private_key = root / 'release-private.pem'
+    subprocess.run(
+        ['openssl', 'genpkey', '-algorithm', 'ED25519', '-out', str(private_key)],
+        check=True,
+        capture_output=True,
+    )
+    path = folder / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest = signing.sign_manifest(manifest, private_key, 'release-test')
+    path.write_text(json.dumps(manifest))
+    public = signing.public_key_hex(private_key)
+    return folder, name, public
 
 
 def fixture(root):
@@ -48,6 +73,31 @@ class ReleaseCatalogTest(unittest.TestCase):
             self.assertFalse(catalog.safe_name('../bad'))
             (folder / (name+'.sha256')).unlink()
             self.assertTrue(catalog.check(Path(tmp))[0])
+
+    def test_unsigned_manifests_can_be_required_to_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture(Path(tmp))
+            self.assertTrue(catalog.check(Path(tmp), require_signatures=True)[0])
+
+    @unittest.skipUnless(shutil.which('openssl'), 'OpenSSL is required for Ed25519 release tests')
+    def test_signed_manifest_verifies_only_with_the_explicit_trusted_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder, _, public = signed_fixture(root)
+            self.assertEqual(catalog.check(root, [f'release-test:{public}'])[0], [])
+            source, name, digest = installer.verify(root, 'agent', 'x86_64-unknown-linux-gnu', 'v1.2.3', [f'release-test:{public}'])
+            self.assertTrue(source.is_file())
+            self.assertEqual(name, 'jani')
+            self.assertEqual(len(digest), 64)
+            with self.assertRaises(ValueError):
+                installer.verify(root, 'agent', 'x86_64-unknown-linux-gnu', 'v1.2.3', [])
+            self.assertTrue(catalog.check(root)[0])
+            self.assertTrue(catalog.check(root, ['release-test:' + '22' * 32])[0])
+            path = folder / 'manifest.json'
+            manifest = json.loads(path.read_text())
+            manifest['artifacts'][0]['sha256'] = '33' * 32
+            path.write_text(json.dumps(manifest))
+            self.assertTrue(catalog.check(root, [f'release-test:{public}'])[0])
 
 if __name__ == '__main__':
     unittest.main()

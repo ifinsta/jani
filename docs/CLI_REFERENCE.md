@@ -26,9 +26,12 @@ Use this page to find the command family or safety switch you need. It is an ent
 | Command | Purpose |
 | --- | --- |
 | `run` / `--print` | Execute a model-driven task subject to operator scope, policy and budgets |
+| `resume --task TASK_ID` | Resume a checkpointed task (`TaskStore` SQLite state) with fenced epoch increment and idempotent side-effect tracking |
+| `verify --contract FILE` | Run model-free `acceptanceChecks` and write-scope checks via `jani-verifier` and optionally sign a `VerificationReceipt` |
+| `dispatch --event FILE --contract FILE` | Deduplicate and scrub incoming webhook/schedule events via `TaskStore` before launching a bounded task |
 | `repl`, bare `jani` | Open an interactive session that keeps conversation across turns under one task; bare `jani` does this only when stdin is a terminal, otherwise it prints help |
-| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `evidence RUN_ID`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect configuration, unfinished runs, audited evidence and safety state |
-| `agent`, `alerts`, `wake` | Operate local attention state; neither alerts nor wake automatically invokes a model |
+| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `evidence RUN_ID`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect configuration, unfinished runs, audited evidence and safety state; `plugins invoke` runs signed `sidecar` connectors through the zero-secret proxy |
+| `agent`, `alerts`, `wake` | Operate local attention state and org kill switch (`agent kill-switch enable\|clear\|status`); neither alerts nor wake automatically invokes a model |
 | `ui` | Serve the local web workspace on loopback: run graph, approvals, journal, budgets and an interactive terminal; see [Web workspace](WEB_WORKSPACE.md) |
 | `mirror` | Produce deterministic critique and evidence-linked proposals from recorded runs |
 | `mcp` | Access governed MCP sources under signed contracts and task delegation |
@@ -40,6 +43,7 @@ Use this page to find the command family or safety switch you need. It is an ent
 
 - `--settings FILE` loads settings from an explicit path. `JANI_SETTINGS` supplies the same path through the environment. Relative paths resolve against the worktree. An explicitly named missing file fails closed.
 - Without `--settings` or `JANI_SETTINGS`, Jani reads `<worktree>/.jani/settings.json`, then the user-wide `~/.jani/settings.json` (`%USERPROFILE%\.jani\settings.json` on Windows). `JANI_USER_SETTINGS` overrides the user-wide path. Only the first file found is used; files are not merged. A missing default file is not an error.
+- Automatically discovered worktree settings with `apiBase` or `apiKeyEnv` at the top level or in any profile are refused. Store those fields in user settings, or review the file and explicitly opt in with `--settings .jani/settings.json` or `JANI_SETTINGS`. User settings are not subject to this worktree restriction.
 - `--model-profile NAME` selects a named profile from the settings file. Without it, a top-level `model` naming a profile applies, then `defaultModel`. Selecting a profile when no settings file exists is an error.
 - `--model ID` overrides the selected profile's model. `--protocol openai|anthropic` and `--max-output-tokens N` override profile transport settings; `JANI_PROTOCOL` and `JANI_MAX_OUTPUT_TOKENS` are the environment equivalents.
 - Precedence is **CLI flag > environment variable > settings file > built-in default**.
@@ -116,24 +120,28 @@ Approvals stay external. A denied or approval-gated tool call reports the reques
 - `--repo` selects the worktree; `--state-dir` selects persistent state.
 - `--allow-write` requires at least one explicit relative `--write-path`. There is no implicit full-repository editing.
 - `--allow-exec` permits only approved executable commands; `--exec-program` adds a constrained list of extra test runners.
-- `--mode enterprise`, `--policy`, `--policy-key`, `--identity` and `--contract` supply enterprise authorization. Missing or invalid authority is refused.
+- `--mode enterprise`, `--policy`, `--policy-key`, `--identity`, `--identity-key`, `--revoked-key`, `--audit-anchor`, and `--contract` supply enterprise authorization and tamper-evident anchoring. Missing, unverified, or revoked authority is refused.
+- `--verifier-key KEY`, `--signing-key FILE`, `--key-id ID`, `--out PATH`, and `--event FILE` configure model-free contract verification (`jani verify`), `evidence` receipt verification (`jani evidence`), and event intake (`jani dispatch`).
+- `--allow-insecure-local-update` permits plain HTTP only for explicit loopback update sources.
 - `--approve` in native planner verification is permitted only for a verified human identity.
 - `--sandbox-mode` and network restrictions must not be used to weaken required confinement. `jani sandbox doctor` reports support, not certification.
+- `--update-key ID:HEX` (or bare `HEX`) supplies an explicit trusted Ed25519 release signer and may repeat. `JANI_UPDATE_KEYS` is the comma-separated environment equivalent. Neither worktree settings nor the release origin can add a trust root.
 
 ## Self-update delivery
 
 `jani update check|install|watch` reads the typed channel (`releases/<type>/<platform>/latest.json`) from `--source` or `JANI_UPDATE_SOURCE` and delivers the referenced `jani.release/v2` artifact to local binaries.
 
-- `check` inspects the channel and each target without downloading the artifact. It refuses an origin that is not HTTPS or loopback HTTP, an unsupported platform/target, a dirty build, an unknown schema and an unsafe file name.
-- `install` verifies size and SHA-256 against the manifest, writes a candidate beside the target, confirms the candidate's `--version`, replaces the target and records a receipt in `<state-dir>/updates/`. `--to PATH` adds targets and may repeat; the default is the running executable. `--force` installs even when the channel is not newer.
-- `watch` polls at `--interval` seconds (default 300) and applies each newer release; `--cycles N` bounds the loop and zero means forever. The process does not exit on a failed poll; it reports the error as JSON and retries on the next cycle.
-- Redirects are refused, downloads are bounded, and a size or digest mismatch leaves every target untouched. Manifests are not signed; the HTTPS origin and manifest digest are the trust boundary.
+- `check` verifies the channel and an Ed25519-signed `jani.release/v2` manifest before inspecting each target; it never downloads or executes the artifact or an existing target. It refuses an origin that is not HTTPS or loopback HTTP, an unsupported platform/target, a dirty build, an unknown schema, an unsafe file name, a missing trust root, an unsigned manifest or an invalid signature.
+- Existing targets are identified without execution: the running executable uses its built-in version, byte-identical copies use that same version, and an exact signed-artifact match uses the manifest version. Any other existing file reports `unknown-version` and is left alone unless `--force` is supplied.
+- `install` verifies the signature, exact size and SHA-256, writes a candidate beside the target, confirms the candidate's `--version` with built-in and configured provider credentials removed, replaces the target and records a receipt in `<state-dir>/updates/`. `--to PATH` adds targets and may repeat; the default is the running executable. `--force` replaces targets regardless of the detected version, including unknown targets.
+- `watch` polls at `--interval` seconds (default 300) and applies each newer release; `--cycles N` bounds the loop and zero means forever. Unknown external targets require `--force`. The process does not exit on a failed poll; it reports the error as JSON and retries on the next cycle.
+- Redirects are refused, downloads are bounded, and a signature, size or digest mismatch leaves every target untouched. Release signatures cover `b"jani-release-manifest/v2\0"` followed by compact, sorted-key UTF-8 JSON of the manifest with `signature` removed.
 
 `jani update` runs before skill discovery and does not require model credentials. It is available on the agent binary; the probe binary deliberately exposes no self-update interface.
 
 ## Reproducible run evidence
 
-`jani evidence RUN_ID` verifies the journal hash chain before returning `jani.run-evidence/v1` with task/run IDs, recorded model outcome, count of audited invocations and decisions, and the final run-event digest. It deliberately includes `outcomeVerified: false`, `effectsReconciled: false` and `safeToAutoReplay: false`. It is an audit-only receipt, **not** an independent code/test verifier or a signed attestation. Corrupted journals are refused.
+`jani evidence RUN_ID [--verifier-key ID:HEX]` verifies the journal hash chain before returning `jani.run-evidence/v1` with task/run IDs, recorded model outcome, count of audited invocations and decisions, and the final run-event digest. When a `VerificationReceipt` exists at `<state-dir>/verifications/<task_id>.json` and `--verifier-key` verifies its signature with `passed: true` and zero out-of-scope files, `outcomeVerified` becomes `true`; without a matching verified receipt, `outcomeVerified` stays `false`, and `effectsReconciled`/`safeToAutoReplay` stay `false`. Corrupted journals are refused.
 
 ## Operational rules
 

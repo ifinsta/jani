@@ -7,6 +7,8 @@ import re
 import sys
 from pathlib import Path
 
+from release_signing import verify_manifest
+
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / 'contract' / 'releases.json'
 CONTRACT = json.loads(CONTRACT_PATH.read_text('utf-8'))
 if CONTRACT.get('schemaVersion') != 'jani.release-contract/v1':
@@ -17,6 +19,8 @@ SCHEMAS = CONTRACT['schemas']
 VERSION = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.+-]+)?$')
 HEX = re.compile(r'^[0-9a-f]{64}$')
 COMMIT = re.compile(r'^[0-9a-f]{40}$')
+MANIFEST_FIELDS = {'schemaVersion', 'type', 'platform', 'package', 'version', 'tag', 'commit', 'dirty', 'builtAt', 'artifacts'}
+ARTIFACT_FIELDS = {'target', 'binary', 'sha256', 'sizeBytes', 'commit', 'dirty', 'builtAt'}
 
 
 def safe_name(name):
@@ -35,7 +39,8 @@ def digest(path):
     return h.hexdigest()
 
 
-def check(root: Path):
+def check(root: Path, trusted_keys=None, require_signatures=False):
+    trusted_keys = trusted_keys or []
     root = root.resolve()
     errors, releases = [], []
     base = root / 'releases'
@@ -62,6 +67,8 @@ def check(root: Path):
                 manifest_path = d / 'manifest.json'
                 try:
                     m = json.loads(manifest_path.read_text('utf-8'))
+                    if not isinstance(m, dict) or set(m) not in (MANIFEST_FIELDS, MANIFEST_FIELDS | {'signature'}):
+                        raise ValueError('unknown or missing manifest fields')
                     if m['schemaVersion'] != SCHEMAS['manifest'] or m['type'] != typ or m['platform'] != platform:
                         raise ValueError('type/platform/schema mismatch')
                     if m['version'] != d.name[1:] or m['tag'] != d.name:
@@ -72,6 +79,8 @@ def check(root: Path):
                         raise ValueError('invalid build metadata or empty artifacts')
                     targets = set()
                     for a in m['artifacts']:
+                        if not isinstance(a, dict) or set(a) != ARTIFACT_FIELDS:
+                            raise ValueError('unknown or missing artifact fields')
                         target, name = a['target'], a['binary']
                         if not isinstance(target, str) or target_platform(target) != platform:
                             raise ValueError('target does not match platform')
@@ -87,6 +96,12 @@ def check(root: Path):
                             raise ValueError('artifact bytes/hash mismatch')
                         if checksum.read_text('utf-8') != f'{a["sha256"]}  {name}\n':
                             raise ValueError('checksum sidecar mismatch')
+                    if 'signature' in m:
+                        if not trusted_keys:
+                            raise ValueError('signed manifest requires an explicit --update-key')
+                        verify_manifest(m, trusted_keys)
+                    elif require_signatures:
+                        raise ValueError('unsigned release manifest')
                     found.add(d.name)
                     releases.append(f'{typ}/{platform}/{d.name} ({len(targets)} targets)')
                 except (OSError, ValueError, TypeError, KeyError) as e:
@@ -117,8 +132,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('command', nargs='?', choices=('check',), default='check')
     p.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
+    p.add_argument('--update-key', action='append', default=[], help='trusted release signer ID:HEX or HEX; repeatable')
+    p.add_argument('--require-signatures', action='store_true', help='refuse unsigned v2 manifests')
     args = p.parse_args()
-    errors, rels = check(args.root)
+    errors, rels = check(args.root, args.update_key, args.require_signatures)
     for e in errors:
         print('release-catalog:', e, file=sys.stderr)
     for r in rels:

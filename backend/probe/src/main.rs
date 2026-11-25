@@ -273,7 +273,7 @@ fn scrub_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(&format!(
-            r"(?i)(authorization\s*[:=]\s*bearer\s+|(?:{})\s*[:=]\s*)([^\s,;]+)",
+            r#"(?i)(authorization\s*[:=]\s*bearer\s+|["']?(?:{})["']?\s*[:=]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|$)|'(?:\\[\s\S]|[^'\\])*(?:'|$)|[^\s,;\]\}}]*)"#,
             jani_jsmt::SECRET_KEYS.join("|")
         ))
         .expect("secret-key regex")
@@ -281,13 +281,28 @@ fn scrub_regex() -> &'static Regex {
 }
 fn scrub(line: &str) -> String {
     // Minimal recognized-secret redaction, not sufficient to certify comprehensive DLP.
-    scrub_regex()
-        .replace_all(line, |caps: &regex::Captures<'_>| {
-            format!("{}[REDACTED]", &caps[1])
-        })
-        .chars()
-        .take(4096)
-        .collect()
+    let redacted = scrub_regex().replace_all(line, |caps: &regex::Captures<'_>| {
+        format!("{}[REDACTED]", &caps[1])
+    });
+    let mut end = 0;
+    for (chars, (idx, ch)) in redacted.char_indices().enumerate() {
+        if chars >= 4096 {
+            break;
+        }
+        end = idx + ch.len_utf8();
+    }
+    if end < redacted.len() {
+        let marker = "[REDACTED]";
+        let mut safe_end = end;
+        for offset in (end.saturating_sub(marker.len() - 1)..end).rev() {
+            if redacted.is_char_boundary(offset) && redacted[offset..].starts_with(marker) {
+                safe_end = offset;
+                break;
+            }
+        }
+        return redacted[..safe_end].to_string();
+    }
+    redacted.into_owned()
 }
 fn coverage(service: &str, source: &str, status: &str, reason: &str) -> Coverage {
     Coverage {
@@ -438,23 +453,24 @@ fn collect(
             previous.max(0) as u64
         };
         file.seek(SeekFrom::Start(begin))?;
-        // Bounded read. Cursor advances only to the last complete newline.
+        // Bounded read. Cursor advances only through complete lines actually delivered.
         let mut chunk = Vec::new();
-        file.take(128 * 1024).read_to_end(&mut chunk)?;
+        file.take(MAX_CAPTURE_BYTES as u64)
+            .read_to_end(&mut chunk)?;
         let bytes_read = chunk.len();
         let finished = chunk
             .iter()
             .rposition(|b| *b == b'\n')
             .map(|p| p + 1)
             .unwrap_or(0);
-        let complete = &chunk[..finished];
-        let contents = String::from_utf8_lossy(complete);
+        let mut consumed = 0;
         let mut truncated = false;
-        for line in contents.split_terminator('\n') {
-            if out.logs.len() >= MAX_LINES {
-                return Err("log batch exceeds 200; cursors unchanged".into());
-            }
-            truncated |= line.chars().count() > MAX_LOG_CHARS;
+        let mut invalid_utf8 = false;
+        let remaining = MAX_LINES.saturating_sub(out.logs.len());
+        if finished == 0 && bytes_read == MAX_CAPTURE_BYTES && remaining > 0 {
+            invalid_utf8 |= std::str::from_utf8(&chunk).is_err();
+            let line = String::from_utf8_lossy(&chunk);
+            truncated = true;
             let mut attrs = BTreeMap::new();
             attrs.insert("jani.log.source".into(), source.chars().take(100).collect());
             out.logs.push(Log {
@@ -464,13 +480,32 @@ fn collect(
                 resource: BTreeMap::from([("service.name".into(), src.service.clone())]),
                 attributes: attrs,
             });
+            consumed = bytes_read;
+        } else {
+            for raw_line in chunk[..finished]
+                .split_inclusive(|b| *b == b'\n')
+                .take(remaining)
+            {
+                invalid_utf8 |= std::str::from_utf8(raw_line).is_err();
+                let line = String::from_utf8_lossy(&raw_line[..raw_line.len() - 1]);
+                truncated |= line.chars().count() > MAX_LOG_CHARS;
+                let mut attrs = BTreeMap::new();
+                attrs.insert("jani.log.source".into(), source.chars().take(100).collect());
+                out.logs.push(Log {
+                    time_unix_nano: now_nanos(),
+                    severity_text: "INFO".into(),
+                    body: scrub(line.trim_end_matches('\r')),
+                    resource: BTreeMap::from([("service.name".into(), src.service.clone())]),
+                    attributes: attrs,
+                });
+                consumed += raw_line.len();
+            }
         }
-        let invalid_utf8 = std::str::from_utf8(complete).is_err();
         let partial = rotated_or_truncated
             || (bytes_read == MAX_CAPTURE_BYTES && (begin + bytes_read as u64) < metadata.len())
             || truncated
             || invalid_utf8
-            || (finished == 0 && bytes_read > 0);
+            || consumed < bytes_read;
         out.coverage.push(coverage(
             &src.service,
             &source,
@@ -493,7 +528,7 @@ fn collect(
             BTreeMap::from([("service.name".into(), src.service.clone())]),
         ));
         out.offsets
-            .push((source, (begin + finished as u64) as i64, identity));
+            .push((source, (begin + consumed as u64) as i64, identity));
     }
     linux_metrics(&mut out);
     Ok(out)
@@ -869,6 +904,401 @@ mod tests {
         assert!(result.contains("password=[REDACTED]"));
         assert!(result.contains("token:[REDACTED]"));
     }
+    #[test]
+    fn log_backlog_drains_with_persisted_offsets() {
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-backlog-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        let spool = path.with_extension("sqlite");
+        let expected: Vec<String> = (0..MAX_LINES * 2 + 17)
+            .map(|i| format!("line-{i}"))
+            .collect();
+        fs::write(&path, format!("{}\n", expected.join("\n"))).unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let source = format!("file:{}", sources[0].path);
+        let mut delivered = 0;
+        for (poll, count) in [MAX_LINES, MAX_LINES, 17, 0].into_iter().enumerate() {
+            let seq = enqueue(spool.to_str().unwrap(), "tenant", "device", &sources).unwrap();
+            assert_eq!(seq, poll as i64 + 1);
+            // Reopen the spool so every poll must use committed, durable offsets.
+            let conn = Connection::open(&spool).unwrap();
+            let payload: Vec<u8> = conn
+                .query_row(
+                    "SELECT payload FROM pending WHERE seq=?1",
+                    params![seq],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let (env, _, _) = jani_jsmt::validate(&payload).unwrap();
+            assert_eq!(env.logs.len(), count);
+            for (log, line) in env.logs.iter().zip(&expected[delivered..delivered + count]) {
+                assert_eq!(&log.body, line);
+            }
+            delivered += count;
+            let offset: i64 = conn
+                .query_row(
+                    "SELECT value FROM offsets WHERE source=?1",
+                    params![&source],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                offset,
+                expected[..delivered]
+                    .iter()
+                    .map(|line| line.len() + 1)
+                    .sum::<usize>() as i64
+            );
+            assert_eq!(
+                env.coverage
+                    .iter()
+                    .find(|c| c.source == source)
+                    .unwrap()
+                    .status,
+                if delivered < expected.len() {
+                    "partial"
+                } else {
+                    "covered"
+                }
+            );
+        }
+        assert_eq!(delivered, expected.len());
+        fs::remove_file(path).unwrap();
+        fs::remove_file(spool).unwrap();
+    }
+
+    #[test]
+    fn multiple_sources_share_log_batch_cap() {
+        let base = std::env::temp_dir().join(format!(
+            "jani-probe-shared-{}-{}",
+            std::process::id(),
+            now_nanos()
+        ));
+        let mut sources = Vec::new();
+        for (i, count) in [MAX_LINES - 50, 100, 1].into_iter().enumerate() {
+            let path = base.with_extension(format!("{i}.log"));
+            fs::write(&path, format!("source-{i}\n").repeat(count)).unwrap();
+            sources.push(Source {
+                service: format!("service-{i}"),
+                path: path.to_str().unwrap().into(),
+            });
+        }
+        let first = collect(&sources, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(first.logs.len(), MAX_LINES);
+        for (i, (count, status)) in [(MAX_LINES - 50, "covered"), (50, "partial"), (0, "partial")]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(first.offsets[i].1, (count * "source-0\n".len()) as i64);
+            assert_eq!(first.coverage[i].status, status);
+            assert_eq!(
+                first
+                    .logs
+                    .iter()
+                    .filter(|log| log.body == format!("source-{i}"))
+                    .count(),
+                count
+            );
+        }
+        let cursors = first
+            .offsets
+            .into_iter()
+            .map(|(s, n, id)| (s, (n, id)))
+            .collect();
+        let second = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert_eq!(second.logs.len(), 51);
+        assert!(second.logs[..50].iter().all(|log| log.body == "source-1"));
+        assert_eq!(second.logs[50].body, "source-2");
+        assert!(second.coverage.iter().all(|c| c.status == "covered"));
+        for src in sources {
+            fs::remove_file(src.path).unwrap();
+        }
+    }
+
+    #[test]
+    fn crlf_and_multibyte_lines_advance_by_raw_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-utf8-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        let prefix = format!("\r\n\n{}", "é雪𐐀\r\n".repeat(MAX_LINES - 2));
+        let contents = format!("{prefix}最後\r\n");
+        fs::write(&path, &contents).unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let first = collect(&sources, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(first.logs.len(), MAX_LINES);
+        assert_eq!(first.logs[0].body, "");
+        assert_eq!(first.logs[1].body, "");
+        assert!(first.logs[2..].iter().all(|log| log.body == "é雪𐐀"));
+        assert_eq!(first.offsets[0].1, prefix.len() as i64);
+        assert_eq!(first.coverage[0].status, "partial");
+        let cursors = first
+            .offsets
+            .into_iter()
+            .map(|(s, n, id)| (s, (n, id)))
+            .collect();
+        let second = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert_eq!(second.logs.len(), 1);
+        assert_eq!(second.logs[0].body, "最後");
+        assert_eq!(second.offsets[0].1, contents.len() as i64);
+        assert_eq!(second.coverage[0].status, "covered");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn incomplete_trailing_line_is_retained_until_newline() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-tail-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        fs::write(&path, "ready\n雪").unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let first = collect(&sources, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(first.logs.len(), 1);
+        assert_eq!(first.logs[0].body, "ready");
+        assert_eq!(first.offsets[0].1, "ready\n".len() as i64);
+        assert_eq!(first.coverage[0].status, "partial");
+        let cursors = first
+            .offsets
+            .into_iter()
+            .map(|(s, n, id)| (s, (n, id)))
+            .collect();
+        let second = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert!(second.logs.is_empty());
+        assert_eq!(second.offsets[0].1, "ready\n".len() as i64);
+        assert_eq!(second.coverage[0].status, "partial");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"\r\n")
+            .unwrap();
+        let third = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert_eq!(third.logs.len(), 1);
+        assert_eq!(third.logs[0].body, "雪");
+        assert_eq!(third.offsets[0].1, "ready\n雪\r\n".len() as i64);
+        assert_eq!(third.coverage[0].status, "covered");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_utf8_advances_by_raw_bytes_and_reports_partial() {
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-lossy-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        let prefix = b"\xff\r\n".repeat(MAX_LINES);
+        let mut contents = prefix.clone();
+        contents.extend_from_slice(b"done\n");
+        fs::write(&path, &contents).unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let first = collect(&sources, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(first.logs.len(), MAX_LINES);
+        assert!(first.logs.iter().all(|log| log.body == "\u{fffd}"));
+        assert_eq!(first.offsets[0].1, prefix.len() as i64);
+        assert_eq!(first.coverage[0].status, "partial");
+        assert_eq!(
+            first.coverage[0].reason,
+            "non-UTF8 input decoded with replacement"
+        );
+        let cursors = first
+            .offsets
+            .into_iter()
+            .map(|(s, n, id)| (s, (n, id)))
+            .collect();
+        let second = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert_eq!(second.logs.len(), 1);
+        assert_eq!(second.logs[0].body, "done");
+        assert_eq!(second.offsets[0].1, contents.len() as i64);
+        assert_eq!(second.coverage[0].status, "covered");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn byte_limit_does_not_skip_a_split_line() {
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-bytes-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        let line = format!("{}\n", "x".repeat(1000));
+        let contents = line.repeat(300);
+        fs::write(&path, &contents).unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let mut cursors = HashMap::new();
+        let mut delivered = 0;
+        let full_batch = MAX_CAPTURE_BYTES / line.len();
+        for count in [full_batch, full_batch, 300 - full_batch * 2] {
+            let got = collect(&sources, &cursors, &HashMap::new()).unwrap();
+            assert_eq!(got.logs.len(), count);
+            assert!(got
+                .logs
+                .iter()
+                .all(|log| log.body == line.trim_end_matches('\n')));
+            delivered += count;
+            assert_eq!(got.offsets[0].1, (delivered * line.len()) as i64);
+            assert_eq!(
+                got.coverage[0].status,
+                if delivered < 300 {
+                    "partial"
+                } else {
+                    "covered"
+                }
+            );
+            cursors = got
+                .offsets
+                .into_iter()
+                .map(|(s, n, id)| (s, (n, id)))
+                .collect();
+        }
+        assert_eq!(delivered, 300);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn line_and_file_truncation_keep_partial_coverage_and_raw_offsets() {
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-truncated-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        let contents = format!("{}\n", "x".repeat(MAX_LOG_CHARS + 1));
+        fs::write(&path, &contents).unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let first = collect(&sources, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(first.logs.len(), 1);
+        assert_eq!(first.logs[0].body.chars().count(), MAX_LOG_CHARS);
+        assert_eq!(first.offsets[0].1, contents.len() as i64);
+        assert_eq!(first.coverage[0].status, "partial");
+        assert_eq!(
+            first.coverage[0].reason,
+            "log line exceeded 4096 chars; truncated"
+        );
+        let cursors = first
+            .offsets
+            .into_iter()
+            .map(|(s, n, id)| (s, (n, id)))
+            .collect();
+        fs::write(&path, "new\n").unwrap();
+        let second = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert_eq!(second.logs.len(), 1);
+        assert_eq!(second.logs[0].body, "new");
+        assert_eq!(second.offsets[0].1, "new\n".len() as i64);
+        assert_eq!(second.coverage[0].status, "partial");
+        assert_eq!(
+            second.coverage[0].reason,
+            "source truncated; earlier log loss possible"
+        );
+        let cursors = second
+            .offsets
+            .into_iter()
+            .map(|(s, n, id)| (s, (n, id)))
+            .collect();
+        let third = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert!(third.logs.is_empty());
+        assert_eq!(third.offsets[0].1, "new\n".len() as i64);
+        assert_eq!(third.coverage[0].status, "covered");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_rotation_restarts_at_first_undelivered_byte() {
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-rotated-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        let rotated = path.with_extension("old");
+        fs::write(&path, "old\n").unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let first = collect(&sources, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(first.offsets[0].1, "old\n".len() as i64);
+        let identity = first.offsets[0].2.clone();
+        let cursors = first
+            .offsets
+            .into_iter()
+            .map(|(s, n, id)| (s, (n, id)))
+            .collect();
+        fs::rename(&path, &rotated).unwrap();
+        fs::write(&path, "replacement\n").unwrap();
+        let second = collect(&sources, &cursors, &HashMap::new()).unwrap();
+        assert_eq!(second.logs.len(), 1);
+        assert_eq!(second.logs[0].body, "replacement");
+        assert_eq!(second.offsets[0].1, "replacement\n".len() as i64);
+        assert_ne!(second.offsets[0].2, identity);
+        assert_eq!(second.coverage[0].status, "partial");
+        fs::remove_file(path).unwrap();
+        fs::remove_file(rotated).unwrap();
+    }
+
+    #[test]
+    fn empty_secret_assignment_at_eol_is_jsmt_accepted() {
+        for key in jani_jsmt::SECRET_KEYS {
+            for separator in ["=", ":"] {
+                let input = format!("login {key}{separator}");
+                assert!(!jani_jsmt::redacted(&input));
+                let result = scrub(&input);
+                assert_eq!(result, format!("{input}[REDACTED]"));
+                assert!(jani_jsmt::redacted(&result));
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "jani-probe-empty-{}-{}.log",
+            std::process::id(),
+            now_nanos()
+        ));
+        fs::write(&path, "password=\n").unwrap();
+        let sources = [Source {
+            service: "api".into(),
+            path: path.to_str().unwrap().into(),
+        }];
+        let got = collect(&sources, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(got.logs.len(), 1);
+        assert_eq!(got.logs[0].body, "password=[REDACTED]");
+        assert!(jani_jsmt::redacted(&got.logs[0].body));
+        assert_eq!(got.offsets[0].1, "password=\n".len() as i64);
+        let (payload, _) = create_envelope(
+            "tenant",
+            "device",
+            1,
+            observed_at(),
+            got.metrics,
+            got.logs,
+            got.coverage,
+        )
+        .unwrap();
+        assert!(jani_jsmt::validate(&payload).is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn missing_log_produces_coverage_gap() {
         let bad = Source {

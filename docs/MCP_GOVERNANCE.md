@@ -4,8 +4,8 @@ Status: **implemented first trust-boundary slice in PR #4; compilation/CI pendin
 
 ## Non-negotiable authorization rules
 
-1. Every protected request must identify a **verified initiating human**. The human has a signed Jani IdentityAssertion verified using `--policy-key`.
-2. A separately signed, short-lived task delegation binds **initiator, tenant, agent, task, purpose, roles, entitlements, exact resources, permitted operations and maximum data classification**. A model/tool/server cannot self-issue rights. The issuing service must actually evaluate the initiating user's rights.
+1. Every protected request must identify a **verified initiating human**. The human has a signed Jani IdentityAssertion verified using `--identity-key`.
+2. A separately signed, short-lived task delegation binds **server ID, audience, initiator, tenant, agent, task, purpose, roles, entitlements, exact resources, permitted operations and maximum data classification**. Its server ID and audience must exactly match the independently verified contract. A model/tool/server cannot self-issue rights. The issuing service must actually evaluate the initiating user's rights.
 3. An independently signed MCP governance contract declares each operation, its concrete MCP tool name, required role(s), all required entitlements, execution mode, a closed JSON input schema and request/response sensitivity limits. Missing contract or incomplete declaration is refused.
 4. The effective right is the intersection of the initiator's verified authorization, task delegation, Jani's independent organizational policy, the operation contract, the precise resource, classification and the source-system's independently enforced authorization.
 5. **`user_commit` is uncallable through Jani.** `read` and `prepare` may be requested only with valid authority. The source application must conduct a separate, freshly authenticated user submission bound to exact record versions and proposed payloads. Merely invoking `prepare` does not constitute a user commit.
@@ -33,7 +33,7 @@ jani mcp verify \
   --mcp-delegation task-grant.json \
   --mcp-contract-key contract:HEX_PUBLIC_KEY \
   --mcp-delegation-key authorization:HEX_PUBLIC_KEY \
-  --identity initiator-identity.json --policy-key identity:HEX_PUBLIC_KEY \
+  --identity initiator-identity.json --identity-key identity:HEX_PUBLIC_KEY \
   --tenant tenant-1 --principal user-1 --task task-1 \
   --purpose SOFTWARE_DEV --mcp-agent jani
 
@@ -42,7 +42,7 @@ jani mcp authorize organization.news.read organization:news \
   --mcp-arguments news-query.json \
   --mcp-contract-key contract:HEX_PUBLIC_KEY \
   --mcp-delegation-key authorization:HEX_PUBLIC_KEY \
-  --identity initiator-identity.json --policy-key identity:HEX_PUBLIC_KEY \
+  --identity initiator-identity.json --identity-key identity:HEX_PUBLIC_KEY \
   --tenant tenant-1 --principal user-1 --task task-1 --purpose SOFTWARE_DEV
 
 # Valid signed, audience-bound OAuth token in a secure local file.
@@ -53,7 +53,7 @@ jani mcp call organization.news.read organization:news \
   --mcp-contract-key contract:HEX_PUBLIC_KEY \
   --mcp-delegation-key authorization:HEX_PUBLIC_KEY \
   --mcp-receipt-key mcp-server:HEX_PUBLIC_KEY \
-  --identity initiator-identity.json --policy-key identity:HEX_PUBLIC_KEY \
+  --identity initiator-identity.json --identity-key identity:HEX_PUBLIC_KEY \
   --tenant tenant-1 --principal user-1 --task task-1 --purpose SOFTWARE_DEV
 
 # Offline verification and governed disclosure test with a saved JSON-RPC result:
@@ -64,11 +64,11 @@ jani mcp validate-response organization.news.read organization:news \
   --mcp-contract-key contract:HEX_PUBLIC_KEY \
   --mcp-delegation-key authorization:HEX_PUBLIC_KEY \
   --mcp-receipt-key mcp-server:HEX_PUBLIC_KEY \
-  --identity initiator-identity.json --policy-key identity:HEX_PUBLIC_KEY \
+  --identity initiator-identity.json --identity-key identity:HEX_PUBLIC_KEY \
   --tenant tenant-1 --principal user-1 --task task-1 --purpose SOFTWARE_DEV
 ```
 
-The arguments JSON **must** contain a `resource` property whose value exactly equals the requested resource. Arbitrary wildcard resource grants are disallowed.
+The arguments JSON **must** contain a `resource` property whose value exactly equals the requested resource. Arbitrary wildcard resource grants are disallowed. The authorization kernel enforces both the operation's and delegation's request-classification ceilings, always rejects `SECRET`, and includes the effective request classification in the authorized request digest. The CLI derives that classification from its configured data policy and independently rejects detected secrets before authorization.
 
 ## MCP transport profile and compatibility boundary
 
@@ -120,7 +120,7 @@ Even if a trusted issuer signs a grant containing `records.update`, Jani refuses
 ## Error semantics
 
 - `CONTRACT_MISSING`, `CONTRACT_SIGNATURE_MISSING`, `CONTRACT_SIGNATURE_INVALID`, `CONTRACT_UNSUPPORTED_OPERATION`: no trustworthy declared authority
-- `AUTH_CONTEXT_MISSING`, `DELEGATION_BINDING_MISMATCH`, `DELEGATION_EXPIRED_OR_INVALID`: missing or outdated initiator/task authority
+- `AUTH_CONTEXT_MISSING`, `DELEGATION_BINDING_MISMATCH`, `DELEGATION_SERVER_BINDING_MISMATCH`, `DELEGATION_EXPIRED_OR_INVALID`: missing, outdated or misdirected initiator/task authority
 - `ENTITLEMENT_PROOF_MISSING`, `PERMISSION_DENIED`, `DELEGATION_SCOPE_DENIED`: insufficient signed role/permission/resource authority
 - `USER_COMMIT_REQUIRED`: agent attempted the initiating-user-only final action
 - `DATA_CLASSIFICATION_DENIED`, `DATA_CLASSIFICATION_MISMATCH_OR_SECRET`: payload or disclosure exceeds the task's data ceiling

@@ -160,6 +160,7 @@ pub struct Config {
     pub settings_path: Option<PathBuf>,
     pub settings_profile: Option<String>,
     pub settings_warnings: Vec<String>,
+    pub credential_env_names: Vec<String>,
     pub permissions: Option<PermissionPolicy>,
     pub max_steps: usize,
     pub root: PathBuf,
@@ -175,13 +176,10 @@ pub struct Config {
     pub push_remote: Option<String>,
     pub open_pr: bool,
     /// `jani eval`: repetitions per case, output directory, case-name filter.
-    /// Continue a task's saved conversation (`--resume --task ID`).
-    pub resume: bool,
     /// `jani work run`: keep polling for tasks, or stop after one.
     pub watch: bool,
     pub once: bool,
     pub repeat: usize,
-    pub out_dir: Option<PathBuf>,
     pub only: Option<String>,
     pub write_paths: Vec<PathBuf>,
     pub exec_programs: Vec<String>,
@@ -192,6 +190,9 @@ pub struct Config {
     pub contract_path: Option<PathBuf>,
     pub policy_path: Option<PathBuf>,
     pub policy_keys: Vec<String>,
+    pub identity_keys: Vec<String>,
+    pub revoked_keys: Vec<String>,
+    pub verifier_keys: Vec<String>,
     pub lab_keys: Vec<String>,
     pub identity_path: Option<PathBuf>,
     pub state_dir: PathBuf,
@@ -210,6 +211,11 @@ pub struct Config {
     pub mcp_delegation_keys: Vec<String>,
     pub mcp_receipt_keys: Vec<String>,
     pub approval_ids: Vec<String>,
+    pub audit_anchor: Option<PathBuf>,
+    pub signing_key_path: Option<PathBuf>,
+    pub signing_key_id: Option<String>,
+    pub out_path: Option<PathBuf>,
+    pub event_path: Option<PathBuf>,
     pub provider_region: String,
     pub provider_class: String,
     pub action: Option<String>,
@@ -220,8 +226,10 @@ pub struct Config {
     pub reject: bool,
     pub role: Option<String>,
     pub update_source: Option<String>,
+    pub update_keys: Vec<String>,
     pub update_targets: Vec<PathBuf>,
     pub update_force: bool,
+    pub allow_insecure_local_update: bool,
     pub update_interval_seconds: u64,
     pub update_cycles: u64,
     pub ui_port: u16,
@@ -267,6 +275,9 @@ USAGE:
   jani doctor [OPTIONS]
   jani skills [OPTIONS]
   jani run "TASK" [OPTIONS]
+  jani resume --task TASK_ID [OPTIONS]
+  jani verify --contract FILE [OPTIONS]
+  jani dispatch --event FILE --contract FILE [OPTIONS]
   jani --print "TASK" [OPTIONS]
   jani deliver "TASK" [--accept CMD]... [OPTIONS]
   jani work add "TASK" [--accept CMD]... | list | show ID | run [--once|--watch] | answer ID TEXT | cancel ID | retry ID
@@ -313,6 +324,13 @@ OPTIONS:
   --contract FILE         JSON work contract (can only restrict, never grant)
   --policy FILE           Signed organization policy bundle (required in enterprise)
   --policy-key KEY        Trusted policy/manifest key, ID:HEX or HEX; repeatable
+  --identity-key KEY      Trusted identity assertion key, ID:HEX or HEX; repeatable
+  --revoked-key KEY_ID    Revoked signer key ID (refused even if in trust roots); repeatable
+  --verifier-key KEY      Trusted verification receipt key, ID:HEX or HEX; repeatable
+  --signing-key FILE      Ed25519 secret key hex file for signing verification receipts
+  --key-id ID             Key identifier embedded in signed verification receipts
+  --out PATH              Optional output path for verification receipt JSON
+  --event FILE            Event payload JSON for `jani dispatch`
   --lab-key ID:HEX        Independent verifier public key; repeatable
   --identity FILE         Signed identity assertion (required for enterprise runs)
   --state-dir PATH        Journal, approvals and receipts (default {state_dir})
@@ -330,6 +348,7 @@ OPTIONS:
   --mcp-response FILE     MCP response JSON for offline receipt validation
   --mcp-token-file FILE   OAuth access token file for HTTP call (not shown in logs)
   --approval ID           Pre-approved request ID to consume; repeatable
+  --audit-anchor PATH     Append-only digest anchor sink for journal events
   --provider-region R     Provider processing region label
   --provider-class C      Provider trust class label
   --model MODEL           Model ID (JANI_MODEL)
@@ -351,10 +370,8 @@ OPTIONS:
   --push REMOTE           deliver: push the branch to REMOTE when done
   --pr                    deliver: open a pull request with `gh` after pushing
   --repeat N              eval: runs per case (default 1)
-  --out DIR               eval: where results and per-run reports go
   --only TEXT             eval: run only cases whose name contains TEXT
   --watch / --once        work run: keep polling for tasks / stop after one
-  --resume                Continue the saved conversation of --task ID (kept per task in the state dir)
   --exec MODE             Command execution: off (default), allowlist (= --allow-exec) or smart:
                           read-only inspection runs, builds/tests run when a sandbox contains
                           them, anything else asks the operator. See docs/EXECUTION.md
@@ -368,8 +385,10 @@ COMMAND OPTIONS:
   --approve / --reject    Decision for `approvals decide`
   --role ROLE           Approver role recorded by `approvals decide` (e.g. approver)
   --source URL            Update origin serving the releases/ tree ({e_update_source})
+  --update-key KEY        Trusted release signer's Ed25519 public key, ID:HEX or HEX; repeatable
   --to PATH               Binary to replace in addition to this executable; repeatable
   --force                 Install even when the channel is not newer
+  --allow-insecure-local-update  Allow plain-HTTP update origin strictly on loopback hosts
   --interval SECONDS      Watch poll interval (default {interval})
   --cycles N              Watch cycles before exit; 0 means forever (default)
 
@@ -389,6 +408,7 @@ ENVIRONMENT:
   {e_settings}            Alternate settings file
   {e_user_settings}       Override the user-wide settings path
   {e_update_source}       HTTPS (or loopback HTTP) origin for `jani update`
+  {e_update_keys}         Comma-separated trusted release signer keys for `jani update`
 
 SETTINGS:
   Jani loads settings from --settings / {e_settings} when given, otherwise
@@ -405,6 +425,9 @@ SETTINGS:
   rules such as Bash(cargo test *) and Read(./.env). Settings rules can only
   narrow the CLI grants, contract and signed policy: they never enable writes,
   commands or policy approvals. Prefer apiKeyEnv over an inline apiKey.
+  Auto-discovered worktree settings cannot set apiBase or apiKeyEnv, including
+  in unused profiles. Put these in user settings, or explicitly choose the
+  reviewed file with --settings / {e_settings} to allow credential routing.
 
 Skills are advisory instructions, not an executable security policy.
 Tool flags are enforced in Rust. Execution is NOT an OS sandbox unless a
@@ -451,6 +474,7 @@ verified backend is selected and attested.
         e_settings = env::SETTINGS,
         e_user_settings = env::USER_SETTINGS,
         e_update_source = env::UPDATE_SOURCE,
+        e_update_keys = env::UPDATE_KEYS,
     )
 }
 
@@ -499,11 +523,14 @@ pub fn validate_api_base(api_base: &str) -> JResult<()> {
     if api_base.contains('?') || api_base.contains('#') {
         return Err("API base must not contain query or fragment".into());
     }
+    let authority = crate::net::url_authority(api_base);
+    if authority.is_empty() {
+        return Err("API base must have a host without userinfo, backslashes or whitespace".into());
+    }
     if api_base.starts_with("https://") {
         return Ok(());
     }
     // Plain HTTP is only ever allowed for an explicit loopback endpoint.
-    let authority = crate::net::url_authority(api_base);
     if api_base.starts_with("http://")
         && crate::net::is_loopback_authority(authority)
         && crate::net::authority_has_port(authority)
@@ -550,6 +577,7 @@ impl Config {
             settings_path: None,
             settings_profile: None,
             settings_warnings: Vec::new(),
+            credential_env_names: Vec::new(),
             permissions: None,
             max_steps: defaults::MAX_STEPS,
             root: root.clone(),
@@ -563,11 +591,9 @@ impl Config {
             no_commit: false,
             push_remote: None,
             open_pr: false,
-            resume: false,
             watch: false,
             once: false,
             repeat: 1,
-            out_dir: None,
             only: None,
             write_paths: Vec::new(),
             exec_programs: Vec::new(),
@@ -578,6 +604,9 @@ impl Config {
             contract_path: None,
             policy_path: None,
             policy_keys: Vec::new(),
+            identity_keys: Vec::new(),
+            revoked_keys: Vec::new(),
+            verifier_keys: Vec::new(),
             lab_keys: Vec::new(),
             identity_path: None,
             state_dir: root.join(defaults::STATE_DIR_NAME),
@@ -596,6 +625,11 @@ impl Config {
             mcp_delegation_keys: Vec::new(),
             mcp_receipt_keys: Vec::new(),
             approval_ids: Vec::new(),
+            audit_anchor: env_nonempty(crate::env::AUDIT_ANCHOR).map(PathBuf::from),
+            signing_key_path: None,
+            signing_key_id: None,
+            out_path: None,
+            event_path: None,
             provider_region: defaults::PROVIDER_REGION.into(),
             provider_class: defaults::PROVIDER_CLASS.into(),
             action: None,
@@ -606,8 +640,12 @@ impl Config {
             reject: false,
             role: None,
             update_source: env_nonempty(crate::env::UPDATE_SOURCE),
+            update_keys: env_nonempty(crate::env::UPDATE_KEYS)
+                .map(|value| split_list(&value))
+                .unwrap_or_default(),
             update_targets: Vec::new(),
             update_force: false,
+            allow_insecure_local_update: false,
             update_interval_seconds: defaults::UPDATE_INTERVAL_SECONDS,
             update_cycles: 0,
             ui_port: 0,
@@ -636,6 +674,19 @@ impl Config {
         if let Some((path, settings)) = &loaded {
             cfg.settings_path = Some(path.clone());
             cfg.settings_warnings = settings.warnings();
+            cfg.credential_env_names = settings
+                .api_key_env
+                .iter()
+                .chain(
+                    settings
+                        .models
+                        .values()
+                        .filter_map(|profile| profile.api_key_env.as_ref()),
+                )
+                .cloned()
+                .collect();
+            cfg.credential_env_names.sort();
+            cfg.credential_env_names.dedup();
             cfg.permissions = settings.permissions()?;
             if let Some(steps) = settings.max_steps {
                 cfg.max_steps = steps;
@@ -784,23 +835,43 @@ impl Config {
             let settings = Settings::load(&path)?;
             return Ok(Some((path, settings)));
         }
+        let root = if root.is_relative() {
+            env::current_dir()
+                .map_err(|error| error.to_string())?
+                .join(root)
+        } else {
+            root.to_path_buf()
+        };
         let user = user.map(|path| {
             if path.is_relative() {
-                root.join(path)
+                env::current_dir()
+                    .unwrap_or_else(|_| root.clone())
+                    .join(path)
             } else {
                 path
             }
         });
-        for path in std::iter::once(
-            root.join(defaults::STATE_DIR_NAME)
-                .join(defaults::SETTINGS_FILE_NAME),
-        )
-        .chain(user)
-        {
-            if path.exists() {
-                let settings = Settings::load(&path)?;
-                return Ok(Some((path, settings)));
+        let project = root
+            .join(defaults::STATE_DIR_NAME)
+            .join(defaults::SETTINGS_FILE_NAME);
+        if project.exists() {
+            let settings = Settings::load(&project)?;
+            let is_user_file = user.as_ref() == Some(&project);
+            let routing = settings.credential_routing_fields();
+            if !is_user_file && !routing.is_empty() {
+                return Err(format!(
+                    "{} sets {}; a worktree settings file may not choose the API endpoint or key variable. Move these fields to your user settings, or pass --settings {} (or set {}) to use this file deliberately",
+                    project.display(),
+                    routing.join(", "),
+                    project.display(),
+                    crate::env::SETTINGS,
+                ));
             }
+            return Ok(Some((project, settings)));
+        }
+        if let Some(path) = user.filter(|path| path.exists()) {
+            let settings = Settings::load(&path)?;
+            return Ok(Some((path, settings)));
         }
         Ok(None)
     }
@@ -865,6 +936,12 @@ impl Config {
         cfg.purpose = env_nonempty(crate::env::PURPOSE).unwrap_or_else(|| defaults::PURPOSE.into());
         cfg.policy_path = env_nonempty(crate::env::POLICY).map(PathBuf::from);
         cfg.policy_keys = env_nonempty(crate::env::POLICY_KEYS)
+            .map(|v| split_list(&v))
+            .unwrap_or_default();
+        cfg.identity_keys = env_nonempty(crate::env::IDENTITY_KEYS)
+            .map(|v| split_list(&v))
+            .unwrap_or_default();
+        cfg.revoked_keys = env_nonempty(crate::env::REVOKED_KEYS)
             .map(|v| split_list(&v))
             .unwrap_or_default();
         cfg.identity_path = env_nonempty(crate::env::IDENTITY).map(PathBuf::from);
@@ -955,7 +1032,7 @@ impl Config {
                 "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
                 | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
                 | "mcp" | "native" | "lab" | "update" | "ui" | "exec" | "eval" | "memory"
-                | "work" => {
+                | "work" | "resume" | "verify" | "dispatch" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -986,6 +1063,15 @@ impl Config {
                 }
                 "--policy" => cfg.policy_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
                 "--policy-key" => cfg.policy_keys.push(take_value(args, &mut i, a)?),
+                "--identity-key" => cfg.identity_keys.push(take_value(args, &mut i, a)?),
+                "--revoked-key" => cfg.revoked_keys.push(take_value(args, &mut i, a)?),
+                "--verifier-key" => cfg.verifier_keys.push(take_value(args, &mut i, a)?),
+                "--signing-key" => {
+                    cfg.signing_key_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
+                "--key-id" => cfg.signing_key_id = Some(take_value(args, &mut i, a)?),
+                "--out" => cfg.out_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--event" => cfg.event_path = Some(PathBuf::from(take_value(args, &mut i, a)?)),
                 "--lab-key" => cfg.lab_keys.push(take_value(args, &mut i, a)?),
                 "--identity" => {
                     cfg.identity_path = Some(PathBuf::from(take_value(args, &mut i, a)?))
@@ -1028,6 +1114,9 @@ impl Config {
                 }
                 "--mcp-receipt-key" => cfg.mcp_receipt_keys.push(take_value(args, &mut i, a)?),
                 "--approval" => cfg.approval_ids.push(take_value(args, &mut i, a)?),
+                "--audit-anchor" => {
+                    cfg.audit_anchor = Some(PathBuf::from(take_value(args, &mut i, a)?))
+                }
                 "--provider-region" => cfg.provider_region = take_value(args, &mut i, a)?,
                 "--provider-class" => cfg.provider_class = take_value(args, &mut i, a)?,
                 "--model" => cfg.model = take_value(args, &mut i, a)?,
@@ -1094,10 +1183,8 @@ impl Config {
                         return Err("--repeat must be 1..20".into());
                     }
                 }
-                "--resume" => cfg.resume = true,
                 "--watch" => cfg.watch = true,
                 "--once" => cfg.once = true,
-                "--out" => cfg.out_dir = Some(PathBuf::from(take_value(args, &mut i, a)?)),
                 "--only" => cfg.only = Some(take_value(args, &mut i, a)?),
                 "--exec" => {
                     let value = take_value(args, &mut i, a)?;
@@ -1122,10 +1209,12 @@ impl Config {
                 "--reject" => cfg.reject = true,
                 "--role" => cfg.role = Some(take_value(args, &mut i, a)?),
                 "--source" => cfg.update_source = Some(take_value(args, &mut i, a)?),
+                "--update-key" => cfg.update_keys.push(take_value(args, &mut i, a)?),
                 "--to" => cfg
                     .update_targets
                     .push(PathBuf::from(take_value(args, &mut i, a)?)),
                 "--force" => cfg.update_force = true,
+                "--allow-insecure-local-update" => cfg.allow_insecure_local_update = true,
                 "--interval" => {
                     cfg.update_interval_seconds = take_value(args, &mut i, a)?
                         .parse()
@@ -1217,10 +1306,16 @@ impl Config {
             if cfg.sandbox_net != NetworkPolicy::Deny {
                 return Err("enterprise mode cannot weaken network policy from the CLI".into());
             }
-            if (cfg.command == "run" || cfg.command == "repl") && cfg.identity_path.is_none() {
+            if matches!(cfg.command.as_str(), "run" | "repl" | "ui") && cfg.identity_path.is_none()
+            {
                 return Err("enterprise runs require a signed --identity assertion".into());
             }
-            if cfg.contract_path.is_none() && (cfg.command == "run" || cfg.command == "repl") {
+            if cfg.contract_path.is_none()
+                && matches!(
+                    cfg.command.as_str(),
+                    "run" | "resume" | "repl" | "ui" | "dispatch"
+                )
+            {
                 return Err(
                     "enterprise runs require --contract for a bounded work contract".into(),
                 );
@@ -1244,6 +1339,13 @@ impl Config {
 }
 
 pub fn protected_component(component: &str) -> bool {
+    #[cfg(windows)]
+    let component = {
+        if component.contains(':') {
+            return true;
+        }
+        component.trim_end_matches(['.', ' '])
+    };
     let s = component.to_ascii_lowercase();
     matches!(
         s.as_str(),
@@ -1282,7 +1384,12 @@ pub fn validate_relative(p: &Path) -> JResult<()> {
         ));
     }
     for part in p.components() {
-        let s = part.as_os_str().to_string_lossy().to_ascii_lowercase();
+        let raw = part.as_os_str().to_string_lossy();
+        #[cfg(windows)]
+        if raw.ends_with(['.', ' ']) {
+            return Err(format!("trailing dot or space not allowed in path: {raw}"));
+        }
+        let s = raw.to_ascii_lowercase();
         if protected_component(&s) {
             return Err(format!("protected path component: {s}"));
         }
@@ -1314,6 +1421,22 @@ mod tests {
         assert!(validate_relative(Path::new("../secrets")).is_err());
         assert!(validate_relative(Path::new(".git/config")).is_err());
         assert!(validate_relative(Path::new("src/main.rs")).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_stream_and_protected_filename_aliases_are_refused() {
+        for name in [
+            ".env::$DATA",
+            "src/config.txt:private",
+            ".ENV",
+            ".git. ",
+            "id_rsa.",
+        ] {
+            assert!(protected_component(name), "{name}");
+            assert!(validate_relative(Path::new(name)).is_err(), "{name}");
+        }
+        assert!(validate_relative(Path::new("src/config.txt")).is_ok());
     }
 
     #[test]
@@ -1438,6 +1561,34 @@ mod tests {
     }
 
     #[test]
+    fn enterprise_ui_requires_identity_and_contract() {
+        isolate();
+        let mut args: Vec<String> = [
+            "ui",
+            "--mode",
+            "enterprise",
+            "--policy",
+            "policy.json",
+            "--policy-key",
+            "test-key",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+        assert!(Config::from_args(&args)
+            .err()
+            .unwrap()
+            .contains("--identity"));
+        args.extend(["--identity".into(), "identity.json".into()]);
+        assert!(Config::from_args(&args)
+            .err()
+            .unwrap()
+            .contains("--contract"));
+        args.extend(["--contract".into(), "contract.json".into()]);
+        assert!(Config::from_args(&args).is_ok());
+    }
+
+    #[test]
     fn protected_components() {
         assert!(protected_component(".env"));
         assert!(protected_component(".env.production"));
@@ -1486,9 +1637,35 @@ mod tests {
     }
 
     #[test]
+    fn settings_record_every_credential_env_name_for_child_scrubbing() {
+        let root = temp_workspace(Some(
+            r#"{
+                "version": 1,
+                "apiKeyEnv": "TOP_LEVEL_TEST_KEY",
+                "defaultModel": "fast",
+                "models": {
+                    "fast": {"model": "fast-model", "apiKeyEnv": "PROFILE_TEST_KEY"},
+                    "deep": {"model": "deep-model", "apiKeyEnv": "PROFILE_TEST_KEY"}
+                }
+            }"#,
+        ));
+        let cfg =
+            Config::from_args(&args_for(&root, &["--settings", ".jani/settings.json"])).unwrap();
+        assert_eq!(
+            cfg.credential_env_names,
+            vec![
+                "PROFILE_TEST_KEY".to_string(),
+                "TOP_LEVEL_TEST_KEY".to_string()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn settings_profile_supplies_model_defaults() {
         let root = temp_workspace(Some(SETTINGS));
-        let cfg = Config::from_args(&args_for(&root, &[])).unwrap();
+        let cfg =
+            Config::from_args(&args_for(&root, &["--settings", ".jani/settings.json"])).unwrap();
         assert_eq!(cfg.model, "profile-model");
         assert_eq!(cfg.api_base, "https://settings.test/v1");
         assert_eq!(cfg.max_steps, 30);
@@ -1520,7 +1697,8 @@ mod tests {
                 }
             }"#,
         ));
-        let cfg = Config::from_args(&args_for(&root, &[])).unwrap();
+        let cfg =
+            Config::from_args(&args_for(&root, &["--settings", ".jani/settings.json"])).unwrap();
         assert_eq!(cfg.model_choices.len(), 2);
         let fast = cfg
             .model_choices
@@ -1553,6 +1731,8 @@ mod tests {
         let cfg = Config::from_args(&args_for(
             &root,
             &[
+                "--settings",
+                ".jani/settings.json",
                 "--model",
                 "cli-model",
                 "--api-base",
@@ -1572,7 +1752,16 @@ mod tests {
     #[test]
     fn model_profile_flag_selects_a_named_profile() {
         let root = temp_workspace(Some(SETTINGS));
-        let cfg = Config::from_args(&args_for(&root, &["--model-profile", "deep"])).unwrap();
+        let cfg = Config::from_args(&args_for(
+            &root,
+            &[
+                "--settings",
+                ".jani/settings.json",
+                "--model-profile",
+                "deep",
+            ],
+        ))
+        .unwrap();
         assert_eq!(cfg.model, "deep-model");
         assert_eq!(cfg.settings_profile.as_deref(), Some("deep"));
         std::fs::remove_dir_all(root).unwrap();
@@ -1654,7 +1843,9 @@ mod tests {
 
     #[test]
     fn project_settings_take_precedence_over_user_settings() {
-        let root = temp_workspace(Some(SETTINGS));
+        let root = temp_workspace(Some(
+            r#"{"version":1,"model":"fast","models":{"fast":{"model":"profile-model"}}}"#,
+        ));
         let user = temp_settings_file("shadowed-user", USER_SETTINGS);
         let (path, settings) = Config::resolve_settings(&root, None, Some(user.clone()))
             .unwrap()
@@ -1666,6 +1857,69 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_file(user).unwrap();
+    }
+
+    #[test]
+    fn api_base_refuses_userinfo_and_malformed_loopback_urls() {
+        for base in [
+            "http://localhost:80@attacker.example/v1",
+            "https://user:password@provider.example/v1",
+            "http://localhost:80\\@attacker.example/v1",
+            "http://localhost:invalid/v1",
+            "http://[::1]:65536/v1",
+            "https:///v1",
+        ] {
+            assert!(validate_api_base(base).is_err(), "{base}");
+        }
+        for base in [
+            "https://provider.example/v1",
+            "http://localhost:8080/v1",
+            "http://127.0.0.1:8080/v1",
+            "http://[::1]:8080/v1",
+        ] {
+            assert!(validate_api_base(base).is_ok(), "{base}");
+        }
+    }
+
+    #[test]
+    fn auto_discovered_settings_refuse_all_credential_routing_fields() {
+        for body in [
+            r#"{"version":1,"apiBase":"https://settings.test/v1"}"#,
+            r#"{"version":1,"apiKeyEnv":"PROFILE_TEST_KEY"}"#,
+            r#"{"version":1,"model":"raw","models":{"unused":{"model":"m","apiBase":"https://settings.test/v1"}}}"#,
+            r#"{"version":1,"model":"raw","models":{"unused":{"model":"m","apiKeyEnv":"PROFILE_TEST_KEY"}}}"#,
+        ] {
+            let root = temp_workspace(Some(body));
+            let user = temp_settings_file("trusted-fallback", USER_SETTINGS);
+            let error = Config::resolve_settings(&root, None, Some(user.clone())).unwrap_err();
+            assert!(
+                error.contains("worktree settings file may not choose"),
+                "{error}"
+            );
+            assert!(error.contains("--settings"), "{error}");
+            assert!(error.contains(crate::env::SETTINGS), "{error}");
+            let project = root.join(".jani/settings.json");
+            assert!(Config::resolve_settings(&root, Some(project), Some(user.clone())).is_ok());
+            std::fs::remove_dir_all(root).unwrap();
+            std::fs::remove_file(user).unwrap();
+        }
+    }
+
+    #[test]
+    fn user_settings_remain_trusted_when_running_in_their_parent() {
+        let root = temp_workspace(Some(USER_SETTINGS));
+        let user = root.join(".jani/settings.json");
+        for root_alias in [&root, &root.join(".")] {
+            let (path, settings) = Config::resolve_settings(root_alias, None, Some(user.clone()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(path, user);
+            assert_eq!(
+                settings.selected_profile(None).unwrap().as_deref(),
+                Some("user-profile")
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

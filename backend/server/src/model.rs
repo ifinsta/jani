@@ -3,21 +3,88 @@ use crate::tools::Tool;
 use crate::types::ModelProtocol;
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
-use std::io::{BufRead, BufReader};
-use std::time::Duration;
+use std::io::{BufRead, BufReader, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 const MAX_ATTEMPTS: u64 = 6;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_STREAM_BLOCKS: usize = 64;
+const MAX_MODEL_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+const MAX_SSE_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const RETRY_BASE: Duration = Duration::from_millis(250);
 
-fn pause_before_retry(attempt: u64) {
+fn is_cancelled(cancelled: Option<&AtomicBool>) -> bool {
+    cancelled.is_some_and(|token| token.load(Ordering::SeqCst))
+}
+
+fn ensure_active(cancelled: Option<&AtomicBool>) -> JResult<()> {
+    if is_cancelled(cancelled) {
+        return Err("MODEL_CANCELLED".into());
+    }
+    Ok(())
+}
+
+fn pause_before_retry(attempt: u64, cancelled: Option<&AtomicBool>) -> JResult<()> {
     let base = crate::net::retry_base(crate::env::MODEL_RETRY_BASE_MS, RETRY_BASE);
-    std::thread::sleep(crate::net::retry_delay(
-        base,
-        attempt,
-        crate::net::RETRY_CAP,
-    ));
+    let delay = crate::net::retry_delay(base, attempt, crate::net::RETRY_CAP);
+    let deadline = Instant::now() + delay;
+    while Instant::now() < deadline {
+        ensure_active(cancelled)?;
+        std::thread::sleep(Duration::from_millis(50).min(delay));
+    }
+    ensure_active(cancelled)
+}
+
+struct CancelledReader<'a, R> {
+    inner: R,
+    cancelled: Option<&'a AtomicBool>,
+}
+
+impl<'a, R> CancelledReader<'a, R> {
+    fn new(inner: R, cancelled: Option<&'a AtomicBool>) -> Self {
+        Self { inner, cancelled }
+    }
+}
+
+impl<R: Read> Read for CancelledReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        ensure_active(self.cancelled).map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.inner.read(buffer)
+    }
+}
+
+impl<R: BufRead> BufRead for CancelledReader<'_, R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        ensure_active(self.cancelled).map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.inner.consume(amount);
+    }
+}
+
+fn read_bounded_text<R: Read>(reader: R, cancelled: Option<&AtomicBool>) -> JResult<String> {
+    read_bounded_text_with_limit(reader, cancelled, MAX_MODEL_BODY_BYTES)
+}
+
+fn read_bounded_text_with_limit<R: Read>(
+    reader: R,
+    cancelled: Option<&AtomicBool>,
+    max_bytes: usize,
+) -> JResult<String> {
+    let limited = reader.take(max_bytes as u64 + 1);
+    let mut bytes = Vec::new();
+    CancelledReader::new(limited, cancelled)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    ensure_active(cancelled)?;
+    if bytes.len() > max_bytes {
+        return Err("model response exceeds byte limit".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "model response is not UTF-8".into())
 }
 
 #[derive(Debug)]
@@ -120,7 +187,9 @@ impl ChatModel {
         messages: &[Value],
         tools: &[Value],
         tool_choice: &str,
+        cancelled: Option<&AtomicBool>,
     ) -> JResult<ModelReply> {
+        ensure_active(cancelled)?;
         let request = match self.protocol {
             ModelProtocol::OpenAi => {
                 json!({"model": self.model, "messages": messages, "tools": tools, "tool_choice": tool_choice})
@@ -138,22 +207,25 @@ impl ChatModel {
         };
         let mut attempt = 0u64;
         loop {
+            ensure_active(cancelled)?;
             attempt += 1;
             let resp = match self.send(&request) {
                 Ok(resp) => resp,
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt);
+                    pause_before_retry(attempt, cancelled)?;
                     continue;
                 }
                 Err(error) => {
+                    ensure_active(cancelled)?;
                     return Err(format!("{error} after {attempt} attempts"));
                 }
             };
             let status = resp.status();
-            let body = match resp.text() {
+            let body = match read_bounded_text(resp, cancelled) {
                 Ok(body) => body,
+                Err(_error) if is_cancelled(cancelled) => return Err("MODEL_CANCELLED".into()),
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt);
+                    pause_before_retry(attempt, cancelled)?;
                     continue;
                 }
                 Err(error) => {
@@ -162,6 +234,7 @@ impl ChatModel {
                     ));
                 }
             };
+            ensure_active(cancelled)?;
             if status.is_success() {
                 let parsed = match self.protocol {
                     ModelProtocol::OpenAi => serde_json::from_str::<Value>(&body)
@@ -172,19 +245,23 @@ impl ChatModel {
                         .and_then(|value| anthropic_reply(&value)),
                 };
                 match parsed {
-                    Ok(reply) => return Ok(reply),
+                    Ok(reply) => {
+                        ensure_active(cancelled)?;
+                        return Ok(reply);
+                    }
                     Err(_) if attempt < MAX_ATTEMPTS => {
-                        pause_before_retry(attempt);
+                        pause_before_retry(attempt, cancelled)?;
                         continue;
                     }
                     Err(error) => {
+                        ensure_active(cancelled)?;
                         return Err(format!("{error} after {attempt} attempts"));
                     }
                 }
             }
             let retryable = matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504);
             if retryable && attempt < MAX_ATTEMPTS {
-                pause_before_retry(attempt);
+                pause_before_retry(attempt, cancelled)?;
                 continue;
             }
             let excerpt = crate::process::truncate(&body, 900);
@@ -202,7 +279,9 @@ impl ChatModel {
         messages: &[Value],
         tools: &[Value],
         on_delta: &mut dyn FnMut(ModelDelta) -> JResult<()>,
+        cancelled: Option<&AtomicBool>,
     ) -> JResult<ModelReply> {
+        ensure_active(cancelled)?;
         let request = match self.protocol {
             ModelProtocol::OpenAi => json!({
                 "model": self.model,
@@ -223,23 +302,26 @@ impl ChatModel {
         };
         let mut attempt = 0u64;
         loop {
+            ensure_active(cancelled)?;
             attempt += 1;
             let resp = match self.send(&request) {
                 Ok(resp) => resp,
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt);
+                    pause_before_retry(attempt, cancelled)?;
                     continue;
                 }
                 Err(error) => {
+                    ensure_active(cancelled)?;
                     return Err(format!("{error} after {attempt} attempts"));
                 }
             };
             let status = resp.status();
             if status.is_success() {
-                let reader = BufReader::new(resp);
+                let reader = BufReader::new(CancelledReader::new(resp, cancelled));
                 let mut emitted = false;
                 let outcome = {
                     let mut delta = |delta: ModelDelta| {
+                        ensure_active(cancelled)?;
                         emitted = true;
                         on_delta(delta)
                     };
@@ -249,9 +331,15 @@ impl ChatModel {
                     }
                 };
                 match outcome {
-                    Ok(reply) => return Ok(reply),
+                    Ok(reply) => {
+                        ensure_active(cancelled)?;
+                        return Ok(reply);
+                    }
+                    Err(_error) if is_cancelled(cancelled) => {
+                        return Err("MODEL_CANCELLED".into());
+                    }
                     Err(_) if !emitted && attempt < MAX_ATTEMPTS => {
-                        pause_before_retry(attempt);
+                        pause_before_retry(attempt, cancelled)?;
                         continue;
                     }
                     Err(error) if emitted => {
@@ -264,10 +352,11 @@ impl ChatModel {
                     }
                 }
             }
-            let body = match resp.text() {
+            let body = match read_bounded_text(resp, cancelled) {
                 Ok(body) => body,
+                Err(_error) if is_cancelled(cancelled) => return Err("MODEL_CANCELLED".into()),
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt);
+                    pause_before_retry(attempt, cancelled)?;
                     continue;
                 }
                 Err(error) => {
@@ -276,9 +365,10 @@ impl ChatModel {
                     ));
                 }
             };
+            ensure_active(cancelled)?;
             let retryable = matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504);
             if retryable && attempt < MAX_ATTEMPTS {
-                pause_before_retry(attempt);
+                pause_before_retry(attempt, cancelled)?;
                 continue;
             }
             let excerpt = crate::process::truncate(&body, 900);
@@ -293,10 +383,46 @@ impl ChatModel {
 }
 
 fn openai_reply(value: &Value) -> JResult<ModelReply> {
-    let message = value
+    let raw = value
         .pointer("/choices/0/message")
-        .cloned()
         .ok_or("response missing choices[0].message")?;
+    let text = raw
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let calls = raw
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|call| {
+                    let id = call.get("id").and_then(Value::as_str).unwrap_or("");
+                    let kind = call
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("function");
+                    let name = call
+                        .pointer("/function/name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let arguments = call
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or("{}")
+                        .to_string();
+                    openai_tool_call(id, name, kind, arguments)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut message = assistant_message(text, calls);
+    if let Some(reasoning) = raw.get("reasoning_content").and_then(Value::as_str) {
+        if let Some(obj) = message.as_object_mut() {
+            obj.insert("reasoning_content".into(), Value::String(reasoning.into()));
+        }
+    }
     let prompt_tokens = value
         .pointer("/usage/prompt_tokens")
         .and_then(Value::as_u64)
@@ -327,6 +453,9 @@ fn anthropic_reply(value: &Value) -> JResult<ModelReply> {
                     .get("id")
                     .and_then(Value::as_str)
                     .ok_or("tool_use block missing id")?;
+                if !crate::types::valid_id(id, 128) {
+                    return Err("tool_use block has invalid id".into());
+                }
                 let name = block
                     .get("name")
                     .and_then(Value::as_str)
@@ -358,16 +487,31 @@ fn anthropic_reply(value: &Value) -> JResult<ModelReply> {
     })
 }
 
-fn read_sse<R: BufRead>(
+fn read_sse<R: BufRead>(reader: R, on_data: impl FnMut(&str) -> JResult<()>) -> JResult<()> {
+    read_sse_with_limits(
+        reader,
+        on_data,
+        MAX_SSE_LINE_BYTES,
+        MAX_SSE_EVENT_BYTES,
+        MAX_MODEL_BODY_BYTES,
+    )
+}
+
+fn read_sse_with_limits<R: BufRead>(
     mut reader: R,
     mut on_data: impl FnMut(&str) -> JResult<()>,
+    max_line_bytes: usize,
+    max_event_bytes: usize,
+    max_stream_bytes: usize,
 ) -> JResult<()> {
-    let mut line = String::new();
+    let mut bytes = Vec::new();
     let mut data = String::new();
+    let mut total = 0usize;
     loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
+        bytes.clear();
+        let read = (&mut reader)
+            .take(max_line_bytes as u64 + 1)
+            .read_until(b'\n', &mut bytes)
             .map_err(|e| format!("model stream read failed: {e}"))?;
         if read == 0 {
             if !data.is_empty() {
@@ -375,6 +519,16 @@ fn read_sse<R: BufRead>(
             }
             return Ok(());
         }
+        if bytes.len() > max_line_bytes {
+            return Err("model stream line exceeds byte limit".into());
+        }
+        total = total.saturating_add(bytes.len());
+        if total > max_stream_bytes {
+            return Err("model stream exceeds byte limit".into());
+        }
+        let line = std::str::from_utf8(&bytes)
+            .map_err(|_| "model stream is not UTF-8".to_string())?
+            .to_string();
         let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
         if trimmed.is_empty() {
             if !data.is_empty() {
@@ -384,10 +538,15 @@ fn read_sse<R: BufRead>(
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("data:") {
+            let rest = rest.strip_prefix(' ').unwrap_or(rest);
+            let additional = rest.len() + usize::from(!data.is_empty());
+            if data.len().saturating_add(additional) > max_event_bytes {
+                return Err("model stream event exceeds byte limit".into());
+            }
             if !data.is_empty() {
                 data.push('\n');
             }
-            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+            data.push_str(rest);
         }
     }
 }
@@ -815,14 +974,15 @@ fn spec_for(tool: Tool) -> (&'static str, Value) {
         ),
         Tool::Write => (
             "Write one source file within the operator-approved edit scope",
-            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
         ),
         Tool::NativeTool => (
             "Call one of Jani's 12 native indexing, context, planning, pruning, checkpoint, verification, impact, scheduling, workspace, evidence, optimization or simulation primitives. Never executes arbitrary tests or commits external effects.",
             json!({"type":"object","properties":{
                 "tool":{"type":"string"},
                 "operation":{"type":"string"},
-                "args":{"type":"array","items":{"type":"string"}}
+                "args":{"type":"array","items":{"type":"string"}},
+                "idempotency_key":{"type":"string"}
             },"required":["tool","operation","args"],"additionalProperties":false}),
         ),
         Tool::Ask => (
@@ -841,7 +1001,16 @@ fn spec_for(tool: Tool) -> (&'static str, Value) {
         ),
         Tool::Command => (
             "Run one command as an argv list (no shell: no pipes, &&, redirection or globbing; one program per call, working directory is the worktree). What runs depends on how the operator started Jani: a fixed list of test and git commands, or in smart mode read-only inspection (ls, grep, rg, find, git status...) and, inside a sandbox, project build and test commands run directly, while anything else is put to the operator, who may decline. A refusal or decline is final: do not retry a variant of the same command; continue without it or say what you need.",
-            json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":crate::exec::MAX_TIMEOUT_SECS}},"required":["argv","timeout_secs"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":crate::exec::MAX_TIMEOUT_SECS},"idempotency_key":{"type":"string"}},"required":["argv","timeout_secs"],"additionalProperties":false}),
+        ),
+        Tool::Plugin => (
+            "Invoke an administrator-approved, cryptographically signed connector or sidecar plugin capability inside an isolated sandbox with zero-secret credential injection.",
+            json!({"type":"object","properties":{
+                "plugin_id":{"type":"string"},
+                "capability":{"type":"string"},
+                "arguments":{"type":"object"},
+                "idempotency_key":{"type":"string"}
+            },"required":["plugin_id","capability"],"additionalProperties":false}),
         ),
     }
 }
@@ -1071,5 +1240,132 @@ mod tests {
         );
         let error = anthropic_stream(std::io::Cursor::new(body), &mut |_| Ok(())).unwrap_err();
         assert!(error.contains("message_stop"), "{error}");
+    }
+
+    #[test]
+    fn model_bodies_are_byte_bounded() {
+        assert_eq!(
+            read_bounded_text_with_limit(std::io::Cursor::new("1234"), None, 4).unwrap(),
+            "1234"
+        );
+        let error =
+            read_bounded_text_with_limit(std::io::Cursor::new("12345"), None, 4).unwrap_err();
+        assert!(error.contains("byte limit"), "{error}");
+    }
+
+    struct CancelAfterRead<'a> {
+        inner: std::io::Cursor<Vec<u8>>,
+        cancelled: &'a AtomicBool,
+    }
+
+    impl Read for CancelAfterRead<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let read = self.inner.read(buffer)?;
+            self.cancelled.store(true, Ordering::SeqCst);
+            Ok(read)
+        }
+    }
+
+    #[test]
+    fn cancellation_interrupts_body_and_stream_reads() {
+        let before = AtomicBool::new(true);
+        let error = read_bounded_text(std::io::Cursor::new("unused"), Some(&before)).unwrap_err();
+        assert_eq!(error, "MODEL_CANCELLED");
+
+        let during = AtomicBool::new(false);
+        let reader = CancelAfterRead {
+            inner: std::io::Cursor::new(b"partial".to_vec()),
+            cancelled: &during,
+        };
+        let error = read_bounded_text(reader, Some(&during)).unwrap_err();
+        assert_eq!(error, "MODEL_CANCELLED");
+
+        let during = AtomicBool::new(false);
+        let reader = CancelAfterRead {
+            inner: std::io::Cursor::new(b"data: first\n".to_vec()),
+            cancelled: &during,
+        };
+        let error = read_sse(
+            BufReader::new(CancelledReader::new(reader, Some(&during))),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("MODEL_CANCELLED"), "{error}");
+    }
+
+    #[test]
+    fn sse_lines_events_and_aggregate_streams_are_bounded() {
+        let line = format!("data: {}\n", "x".repeat(40));
+        let error =
+            read_sse_with_limits(std::io::Cursor::new(line), |_| Ok(()), 20, 100, 100).unwrap_err();
+        assert!(error.contains("line exceeds"), "{error}");
+
+        let event = format!("data: {}\ndata: {}\n\n", "x".repeat(15), "y".repeat(15));
+        let error = read_sse_with_limits(std::io::Cursor::new(event), |_| Ok(()), 100, 30, 100)
+            .unwrap_err();
+        assert!(error.contains("event exceeds"), "{error}");
+
+        let stream = "data: ok\n\n".repeat(5);
+        let error = read_sse_with_limits(std::io::Cursor::new(stream), |_| Ok(()), 100, 100, 30)
+            .unwrap_err();
+        assert!(error.contains("stream exceeds"), "{error}");
+    }
+
+    #[test]
+    fn retry_backoff_stops_when_cancelled() {
+        let cancelled = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let token = &cancelled;
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(10));
+                token.store(true, Ordering::SeqCst);
+            });
+            let error = pause_before_retry(1, Some(&cancelled)).unwrap_err();
+            assert_eq!(error, "MODEL_CANCELLED");
+        });
+    }
+
+    #[test]
+    fn cancelled_error_response_is_not_retried() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_cancel = Arc::clone(&cancelled);
+        let server_requests = Arc::clone(&requests);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            server_requests.fetch_add(1, Ordering::SeqCst);
+            server_cancel.store(true, Ordering::SeqCst);
+            stream
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno",
+                )
+                .unwrap();
+        });
+        let model = ChatModel {
+            client: reqwest::blocking::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap(),
+            endpoint,
+            model: "dummy-model".into(),
+            key: "dummy-key".into(),
+            protocol: crate::types::ModelProtocol::OpenAi,
+            max_output_tokens: 128,
+        };
+        let error = model
+            .complete_with(&[], &[], "auto", Some(&cancelled))
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error, "MODEL_CANCELLED");
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 }

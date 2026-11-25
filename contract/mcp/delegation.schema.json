@@ -6,6 +6,8 @@
   "required": [
     "apiVersion",
     "kind",
+    "serverId",
+    "audience",
     "tenant",
     "initiator",
     "agent",
@@ -26,6 +28,14 @@
     },
     "kind": {
       "const": "McpDelegation"
+    },
+    "serverId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audience": {
+      "type": "string",
+      "minLength": 1
     },
     "tenant": {
       "type": "string",

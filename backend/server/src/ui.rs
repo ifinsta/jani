@@ -20,9 +20,7 @@ use crate::repl::{execute_command, Flow};
 use crate::skills::Catalog;
 use crate::{approvals, budget, evidence, identity, journal, recovery};
 use serde_json::{json, Map, Value};
-use std::collections::hash_map::RandomState;
 use std::collections::BTreeMap;
-use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
 #[cfg(unix)]
@@ -134,6 +132,7 @@ fn bind_unix(path: &std::path::Path) -> JResult<UnixListener> {
 
 enum Job {
     Line(String),
+    Resume { task_id: String, prompt: String },
 }
 
 #[derive(Default)]
@@ -163,16 +162,11 @@ struct Shared<'a> {
     gate: std::sync::Arc<crate::consent::ConsentGate>,
 }
 
-fn random_hex(bytes: usize) -> String {
-    let mut out = String::with_capacity(bytes * 2);
-    while out.len() < bytes * 2 {
-        // RandomState is seeded from the operating system's entropy source.
-        let mut hasher = RandomState::new().build_hasher();
-        hasher.write_usize(out.len());
-        out.push_str(&format!("{:016x}", hasher.finish()));
-    }
-    out.truncate(bytes * 2);
-    out
+fn random_hex(bytes: usize) -> JResult<String> {
+    let mut random = vec![0; bytes];
+    getrandom::getrandom(&mut random)
+        .map_err(|error| format!("cannot obtain OS entropy: {error}"))?;
+    Ok(hex::encode(random))
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -210,8 +204,8 @@ pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
     let shared = Shared {
         cfg,
         catalog,
-        token: random_hex(24),
-        nonce: random_hex(12),
+        token: random_hex(24)?,
+        nonce: random_hex(12)?,
         hosts,
         transcript: Mutex::new(Transcript::default()),
         jobs: Mutex::new(None),
@@ -311,80 +305,53 @@ fn worker(shared: &Shared<'_>, rx: mpsc::Receiver<Job>) {
         t.task_id = agent.task_id().to_string();
         t.turns = agent.turns();
     });
-    for Job::Line(line) in rx {
+    for job in rx {
         shared.meta(|t| {
             t.busy = true;
             t.step = "working".into();
         });
-        if line.starts_with('/') && !line.contains('\n') {
-            shared.push("command", line.clone(), json!({}));
-            match execute_command(&mut agent, shared.catalog, &line) {
-                Ok((Flow::Exit, _)) => {
-                    shared.meta(|t| t.ended = true);
-                    shared.push(
-                        "note",
-                        "Session closed. Journal entries are kept. Restart `jani ui` to begin another.",
-                        json!({}),
-                    );
-                }
-                Ok((_, text)) => shared.push("note", text, json!({})),
-                Err(error) => shared.push("error", format!("jani: {error}"), json!({})),
-            }
-        } else {
-            shared.push("you", line.clone(), json!({}));
-            shared.cancel.store(false, Ordering::SeqCst);
-            shared.gate.rearm();
-            let mut reasoning = String::new();
-            let result = agent.run_turn_events_with_cancel(
-                &line,
-                &mut |event| match event {
-                    TurnEvent::Step { step, max_steps } => {
-                        shared.meta(|t| t.step = format!("step {step} of {max_steps}"));
+        match job {
+            Job::Line(line) => {
+                if line.starts_with('/') && !line.contains('\n') {
+                    shared.push("command", line.clone(), json!({}));
+                    match execute_command(&mut agent, shared.catalog, &line) {
+                        Ok((Flow::Exit, _)) => {
+                            shared.meta(|t| t.ended = true);
+                            shared.push(
+                                "note",
+                                "Session closed. Journal entries are kept. Restart `jani ui` to begin another.",
+                                json!({}),
+                            );
+                        }
+                        Ok((_, text)) => shared.push("note", text, json!({})),
+                        Err(error) => shared.push("error", format!("jani: {error}"), json!({})),
                     }
-                    TurnEvent::ToolStarted { activity, .. } => {
-                        shared.meta(|t| t.step = activity);
-                    }
-                    TurnEvent::ToolFinished {
-                        name,
-                        activity,
-                        ok,
-                        duration_ms,
-                    } => shared.push(
-                        "tool",
-                        activity,
-                        json!({"name": name, "ok": ok, "ms": duration_ms}),
-                    ),
-                    TurnEvent::Reasoning(text) => reasoning.push_str(&text),
-                    TurnEvent::Text(_) => {}
-                },
-                &shared.cancel,
-            );
-            if !reasoning.trim().is_empty() {
-                shared.push("think", reasoning.trim().to_string(), json!({}));
-            }
-            match result {
-                Ok(answer) => shared.push("jani", answer, json!({})),
-                Err(error) => {
-                    shared.push("error", format!("jani: {error}"), json!({}));
-                    shared.push(
-                        "note",
-                        "Conversation context was restored to the last successful turn. Prior file or external tool effects may remain; inspect the audit journal and worktree.",
-                        json!({}),
-                    );
+                } else {
+                    run_prompt(shared, &mut agent, line);
                 }
             }
-            for request in agent.pending_approvals() {
-                shared.push(
-                    "note",
-                    format!(
-                        "approval required: {} ({} {}). A verified approver decides it outside this session; then attach it with /approval {}.",
-                        request["approvalId"].as_str().unwrap_or("unknown"),
-                        request["capability"].as_str().unwrap_or("unknown"),
-                        request["resource"].as_str().unwrap_or("unknown"),
-                        request["approvalId"].as_str().unwrap_or("ID"),
-                    ),
-                    json!({}),
-                );
+            Job::Resume { task_id, prompt } => {
+                match Agent::resume(shared.cfg, shared.catalog, &task_id) {
+                    Ok(mut resumed) => {
+                        resumed.set_consent(shared.gate.clone());
+                        agent = resumed;
+                        shared.push(
+                            "note",
+                            format!("Resumed task {task_id} from persisted checkpoint."),
+                            json!({}),
+                        );
+                        if !prompt.is_empty() {
+                            run_prompt(shared, &mut agent, prompt);
+                        }
+                    }
+                    Err(error) => {
+                        shared.push(
+                            "error",
+                            format!("jani: cannot resume task {task_id}: {error}"),
+                            json!({}),
+                        );
+                    }
+                }
             }
         }
         shared.meta(|t| {
@@ -394,6 +361,64 @@ fn worker(shared: &Shared<'_>, rx: mpsc::Receiver<Job>) {
             t.task_id = agent.task_id().to_string();
             t.turns = agent.turns();
         });
+    }
+}
+
+fn run_prompt(shared: &Shared<'_>, agent: &mut Agent<'_>, line: String) {
+    shared.push("you", line.clone(), json!({}));
+    shared.cancel.store(false, Ordering::SeqCst);
+    shared.gate.rearm();
+    let mut reasoning = String::new();
+    let result = agent.run_turn_events_with_cancel(
+        &line,
+        &mut |event| match event {
+            TurnEvent::Step { step, max_steps } => {
+                shared.meta(|t| t.step = format!("step {step} of {max_steps}"));
+            }
+            TurnEvent::ToolStarted { activity, .. } => {
+                shared.meta(|t| t.step = activity);
+            }
+            TurnEvent::ToolFinished {
+                name,
+                activity,
+                ok,
+                duration_ms,
+            } => shared.push(
+                "tool",
+                activity,
+                json!({"name": name, "ok": ok, "ms": duration_ms}),
+            ),
+            TurnEvent::Reasoning(text) => reasoning.push_str(&text),
+            TurnEvent::Text(_) => {}
+        },
+        &shared.cancel,
+    );
+    if !reasoning.trim().is_empty() {
+        shared.push("think", reasoning.trim().to_string(), json!({}));
+    }
+    match result {
+        Ok(answer) => shared.push("jani", answer, json!({})),
+        Err(error) => {
+            shared.push("error", format!("jani: {error}"), json!({}));
+            shared.push(
+                "note",
+                "Conversation context was restored to the last successful turn. Prior file or external tool effects may remain; inspect the audit journal and worktree.",
+                json!({}),
+            );
+        }
+    }
+    for request in agent.pending_approvals() {
+        shared.push(
+            "note",
+            format!(
+                "approval required: {} ({} {}). A verified approver decides it outside this session; then attach it with /approval {}.",
+                request["approvalId"].as_str().unwrap_or("unknown"),
+                request["capability"].as_str().unwrap_or("unknown"),
+                request["resource"].as_str().unwrap_or("unknown"),
+                request["approvalId"].as_str().unwrap_or("ID"),
+            ),
+            json!({}),
+        );
     }
 }
 
@@ -462,6 +487,7 @@ fn read_request(stream: &mut Conn) -> Result<Request, (u16, &'static str)> {
         query.insert(percent_decode(key), percent_decode(value));
     }
     let mut headers = BTreeMap::new();
+    let mut seen_host = false;
     loop {
         let mut header = String::new();
         let n = (&mut reader)
@@ -471,6 +497,9 @@ fn read_request(stream: &mut Conn) -> Result<Request, (u16, &'static str)> {
         if n == 0 {
             return Err((400, "truncated headers"));
         }
+        if !header.ends_with('\n') {
+            return Err((431, "header line too long"));
+        }
         let header = header.trim_end_matches(['\r', '\n']);
         if header.is_empty() {
             break;
@@ -478,9 +507,24 @@ fn read_request(stream: &mut Conn) -> Result<Request, (u16, &'static str)> {
         if headers.len() >= MAX_HEADERS {
             return Err((431, "too many headers"));
         }
-        if let Some((name, value)) = header.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        let Some((name, value)) = header.split_once(':') else {
+            return Err((400, "malformed header"));
+        };
+        let key = name.trim().to_ascii_lowercase();
+        let val = value.trim().to_string();
+        if key == "transfer-encoding" {
+            return Err((501, "transfer-encoding not supported"));
         }
+        if key == "content-length" && headers.contains_key("content-length") {
+            return Err((400, "duplicate content-length"));
+        }
+        if key == "host" {
+            if seen_host {
+                return Err((400, "duplicate host header"));
+            }
+            seen_host = true;
+        }
+        headers.insert(key, val);
     }
     let length: usize = headers
         .get("content-length")
@@ -524,6 +568,7 @@ fn respond(
         415 => "Unsupported Media Type",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
+        501 => "Not Implemented",
         _ => "Service Unavailable",
     };
     let mut head = format!(
@@ -675,8 +720,12 @@ fn route(shared: &Shared<'_>, request: &Request) -> Reply {
             view(views::evidence_export(cfg, id))
         }
         ("GET", "/api/evidence/list") => {
-            let ids: Vec<String> = runs(cfg)
-                .map_err(server_error)?
+            let events = load_verified_events(cfg)?;
+            let values: Vec<Value> = events
+                .iter()
+                .map(|event| serde_json::to_value(event).unwrap_or(Value::Null))
+                .collect();
+            let ids: Vec<String> = run_list(&values)
                 .as_array()
                 .map(|a| {
                     a.iter()
@@ -684,7 +733,7 @@ fn route(shared: &Shared<'_>, request: &Request) -> Reply {
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok((200, views::evidence_list(cfg, &ids)))
+            Ok((200, views::evidence_list(&events, &ids)))
         }
         ("GET", "/api/mirror") => {
             let sub = request
@@ -733,7 +782,9 @@ fn route(shared: &Shared<'_>, request: &Request) -> Reply {
                 .map_err(server_error)
         }
         ("GET", "/api/session") => Ok((200, session(shared, request))),
+        ("GET", "/api/tasks") => list_tasks(cfg, &request.query),
         ("POST", "/api/session/send") => send(shared, request),
+        ("POST", "/api/session/resume") => resume_session(shared, request),
         ("POST", "/api/consent") => answer_consent(shared, request),
         ("POST", "/api/answer") => answer_question(shared, request),
         ("POST", "/api/session/cancel") => {
@@ -812,27 +863,104 @@ fn overview(shared: &Shared<'_>) -> JResult<Value> {
     }))
 }
 
-fn load_events(cfg: &Config) -> Result<Vec<Value>, (u16, String)> {
+#[derive(Default)]
+struct JournalCache {
+    path: std::path::PathBuf,
+    offset: u64,
+    last_digest: String,
+    events: Vec<crate::types::AuditEvent>,
+}
+
+fn load_verified_events(cfg: &Config) -> Result<Vec<crate::types::AuditEvent>, (u16, String)> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Mutex<JournalCache>> = OnceLock::new();
     let path = cfg.state_dir.join(journal::JOURNAL_FILE);
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let integrity = journal::verify(&cfg.state_dir).map_err(server_error)?;
-    if integrity["ok"] != true {
-        return Err((
-            409,
-            "audit journal integrity failed: refusing to show unverified events".into(),
-        ));
+    let meta = std::fs::metadata(&path).map_err(|e| (409, e.to_string()))?;
+    let len = meta.len();
+    let mut cache = CACHE
+        .get_or_init(|| Mutex::new(JournalCache::default()))
+        .lock()
+        .map_err(|_| (500, "journal cache lock poisoned".into()))?;
+    if cache.path == path && len == cache.offset {
+        return Ok(cache.events.clone());
     }
-    let events = journal::read_events(&path).map_err(server_error)?;
-    Ok(events
+    if cache.path == path && len > cache.offset && cache.offset > 0 {
+        let mut file = std::fs::File::open(&path).map_err(|e| (409, e.to_string()))?;
+        if file.seek(SeekFrom::Start(cache.offset)).is_ok() {
+            let mut reader = BufReader::new(&mut file);
+            let mut line = String::new();
+            let mut pos = cache.offset;
+            let mut prev = cache.last_digest.clone();
+            let mut appended = Vec::new();
+            let mut ok = true;
+            loop {
+                line.clear();
+                let n = reader
+                    .read_line(&mut line)
+                    .map_err(|e| (409, e.to_string()))?;
+                if n == 0 {
+                    break;
+                }
+                if !line.ends_with('\n') {
+                    ok = false;
+                    break;
+                }
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    match serde_json::from_str::<crate::types::AuditEvent>(trimmed)
+                        .map_err(|e| e.to_string())
+                        .and_then(|ev| journal::verify_next(&ev, &prev).map(|d| (ev, d)))
+                    {
+                        Ok((ev, next_digest)) => {
+                            prev = next_digest;
+                            appended.push(ev);
+                        }
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                pos += n as u64;
+            }
+            if ok {
+                cache.events.extend(appended);
+                cache.offset = pos;
+                cache.last_digest = prev;
+                return Ok(cache.events.clone());
+            }
+        }
+    }
+    let events = journal::read_verified_events(&path).map_err(|error| {
+        (
+            409,
+            format!(
+                "audit journal could not be verified: refusing to show unverified events: {error}"
+            ),
+        )
+    })?;
+    cache.path = path;
+    cache.offset = len;
+    cache.last_digest = events
+        .last()
+        .map(|e| e.event_digest.clone())
+        .unwrap_or_default();
+    cache.events = events.clone();
+    Ok(events)
+}
+
+fn load_events(cfg: &Config) -> Result<Vec<Value>, (u16, String)> {
+    Ok(load_verified_events(cfg)?
         .into_iter()
-        .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+        .map(|event| serde_json::to_value(event).unwrap_or(Value::Null))
         .collect())
 }
 
-fn runs(cfg: &Config) -> Result<Value, String> {
-    let events = load_events(cfg).map_err(|e| e.1)?;
+fn run_list(events: &[Value]) -> Value {
     struct Run {
         task: String,
         first: u64,
@@ -842,7 +970,7 @@ fn runs(cfg: &Config) -> Result<Value, String> {
         status: &'static str,
     }
     let mut map: BTreeMap<String, Run> = BTreeMap::new();
-    for event in &events {
+    for event in events {
         let id = event["run_id"].as_str().unwrap_or("").to_string();
         let ts = event["timestamp"].as_u64().unwrap_or(0);
         let entry = map.entry(id).or_insert(Run {
@@ -885,18 +1013,27 @@ fn runs(cfg: &Config) -> Result<Value, String> {
         })
         .collect();
     list.sort_by(|a, b| b["firstAt"].as_u64().cmp(&a["firstAt"].as_u64()));
-    Ok(json!(list))
+    json!(list)
+}
+
+fn runs(cfg: &Config) -> Result<Value, String> {
+    let events = load_events(cfg).map_err(|e| e.1)?;
+    Ok(run_list(&events))
 }
 
 fn run_detail(cfg: &Config, id: &str) -> Reply {
-    let events: Vec<Value> = load_events(cfg)?
+    let events: Vec<_> = load_verified_events(cfg)?
         .into_iter()
-        .filter(|e| e["run_id"] == id)
+        .filter(|event| event.run_id == id)
         .collect();
     if events.is_empty() {
         return Err((404, format!("no journal events for run '{id}'")));
     }
-    let receipt = evidence::receipt(&cfg.state_dir, id).ok();
+    let receipt = evidence::receipt_from_verified_events(&events, id).ok();
+    let events: Vec<Value> = events
+        .into_iter()
+        .map(|event| serde_json::to_value(event).unwrap_or(Value::Null))
+        .collect();
     Ok((
         200,
         json!({"runId": id, "events": events, "evidence": receipt}),
@@ -1031,7 +1168,15 @@ fn decide(shared: &Shared<'_>, request: &Request) -> Reply {
     }
     let mut store = approvals::ApprovalStore::open(&cfg.state_dir).map_err(server_error)?;
     let decided = store
-        .decide(id, &who.principal, role, approve)
+        .decide_with_scopes(
+            id,
+            &who.tenant,
+            &who.principal,
+            &who.subject_type,
+            role,
+            &who.approval_scopes,
+            approve,
+        )
         .map_err(|e| (409, e))?;
     Ok((200, serde_json::to_value(decided).unwrap_or(Value::Null)))
 }
@@ -1120,13 +1265,41 @@ fn answer_consent(shared: &Shared<'_>, request: &Request) -> Reply {
     }
 }
 
+fn list_tasks(cfg: &Config, query: &BTreeMap<String, String>) -> Reply {
+    let store = jani_store::tasks::TaskStore::open(&cfg.state_dir).map_err(server_error)?;
+    let tenant = identity::load(cfg)
+        .map(|id| id.tenant)
+        .unwrap_or_else(|_| cfg.tenant.clone());
+    let status = query
+        .get("status")
+        .map(String::as_str)
+        .filter(|s| !s.is_empty());
+    let tasks = store.list(&tenant, status).map_err(server_error)?;
+    Ok((200, json!({"tenant": tenant, "tasks": tasks})))
+}
+
+fn resume_session(shared: &Shared<'_>, request: &Request) -> Reply {
+    let body: Value = json_body(request)?;
+    let task_id = body["taskId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or((400, "taskId is required".to_string()))?
+        .to_string();
+    let prompt = body["prompt"].as_str().unwrap_or("").trim_end().to_string();
+    dispatch_job(shared, Job::Resume { task_id, prompt })
+}
+
 fn send(shared: &Shared<'_>, request: &Request) -> Reply {
-    let body: Value = serde_json::from_slice(&request.body)
-        .map_err(|_| (400, "body must be JSON".to_string()))?;
+    let body: Value = json_body(request)?;
     let text = body["text"].as_str().unwrap_or("").trim_end().to_string();
     if text.is_empty() || text.len() > MAX_BODY {
         return Err((400, "text must be 1..65536 bytes".into()));
     }
+    dispatch_job(shared, Job::Line(text))
+}
+
+fn dispatch_job(shared: &Shared<'_>, job: Job) -> Reply {
     {
         let mut t = shared
             .transcript
@@ -1146,7 +1319,7 @@ fn send(shared: &Shared<'_>, request: &Request) -> Reply {
         .map_err(|_| server_error("session state unavailable".into()))?
         .clone();
     match sender {
-        Some(tx) if tx.send(Job::Line(text)).is_ok() => Ok((202, json!({"ok": true}))),
+        Some(tx) if tx.send(job).is_ok() => Ok((202, json!({"ok": true}))),
         _ => {
             shared.meta(|t| t.busy = false);
             Err((409, "the session is not running".into()))
@@ -1160,8 +1333,12 @@ mod tests {
 
     #[test]
     fn tokens_are_distinct_and_compare_safely() {
-        let a = random_hex(24);
-        let b = random_hex(24);
+        let a = random_hex(24).unwrap();
+        let b = random_hex(24).unwrap();
+        let nonce = random_hex(12).unwrap();
+        assert_eq!(nonce.len(), 24);
+        assert!(a.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(nonce.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(a.len(), 48);
         assert_ne!(a, b);
         assert!(constant_time_eq(&a, &a));

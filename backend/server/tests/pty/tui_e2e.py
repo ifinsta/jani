@@ -76,8 +76,10 @@ check("question shown", wait_for("needs your OK"))
 check("shows the command", b"touch made.txt" in buf)
 check("file not made while waiting", not os.path.exists(d + "/repo/made.txt"))
 send("x"); pump(0.5)  # a stray key must not answer
+send("y"); pump(0.5)  # a plain y no longer approves: approval is Alt+Y
+check("plain y does not approve", not os.path.exists(d + "/repo/made.txt"))
 check("stray key leaves it open", not os.path.exists(d + "/repo/made.txt"))
-clear(); send("y")
+clear(); send("\x1by")  # Alt+Y
 check("answer once -> agent continues", wait_for("made it"))
 check("file made after allow once", os.path.exists(d + "/repo/made.txt"))
 check("note recorded", b"allowed once" in buf)

@@ -7,7 +7,7 @@ version: 1.0.0
 last-reviewed: 2026-11-25
 source:
   - backend/server/src/eval.rs
-  - eval/starter
+  - eval/starter/suite.json
 tests:
   - backend/server/tests/eval.rs
 ---

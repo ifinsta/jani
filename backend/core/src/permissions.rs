@@ -5,7 +5,7 @@
 //! already enable on the CLI, and it cannot override a signed policy denial.
 //! `deny` and `ask` only add refusal or approval requirements.
 
-use crate::schema::glob_match;
+use crate::schema::{glob_match, glob_match_command};
 use crate::types::Effect;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -138,7 +138,11 @@ impl Policy {
 
     pub fn check(&self, request: Option<&Request<'_>>, effect: Effect) -> Verdict {
         if let Some(request) = request {
-            if let Some(rule) = self.deny.iter().find(|rule| rule.matches(request)) {
+            if let Some(rule) = self
+                .deny
+                .iter()
+                .find(|rule| rule.matches_with_ancestors(request, true))
+            {
                 return Verdict::Deny {
                     rule: rule.raw.clone(),
                     reason: format!("denied by settings permission rule '{}'", rule.raw),
@@ -261,7 +265,7 @@ fn normalize_rule_path(section: &str, raw: &str, pattern: &str) -> Result<String
             "permissions.{section} rule '{raw}' must not contain '..' or empty path segments"
         ));
     }
-    Ok(normalized)
+    Ok(normalize_path(&normalized))
 }
 
 fn normalize_command_rule(section: &str, raw: &str, pattern: &str) -> Result<String, String> {
@@ -276,9 +280,13 @@ fn normalize_command_rule(section: &str, raw: &str, pattern: &str) -> Result<Str
 
 impl Rule {
     fn matches(&self, request: &Request<'_>) -> bool {
+        self.matches_with_ancestors(request, false)
+    }
+
+    fn matches_with_ancestors(&self, request: &Request<'_>, ancestor_rules: bool) -> bool {
         match (self.category, request) {
             (Category::Read, Request::Read { path, directory }) => {
-                path_matches(&self.pattern, path, *directory, true)
+                path_matches(&self.pattern, path, *directory, ancestor_rules)
             }
             (Category::Write, Request::Write { path }) => {
                 path_matches(&self.pattern, path, false, false)
@@ -290,24 +298,41 @@ impl Rule {
 }
 
 fn normalize_path(path: &str) -> String {
-    let mut normalized = path.replace('\\', "/");
-    while let Some(rest) = normalized.strip_prefix("./") {
-        normalized = rest.to_string();
+    let path = path.replace('\\', "/");
+    // Keep '..' intact: the external path boundary rejects traversal.
+    let mut normalized = path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if path.starts_with('/') {
+        // Never turn an absolute path into a worktree-relative one.
+        normalized.insert(0, '/');
+    } else if normalized.is_empty() {
+        normalized.push('.');
     }
-    normalized.trim_end_matches('/').to_string()
+    case_fold_path(normalized)
+}
+
+fn case_fold_path(path: String) -> String {
+    #[cfg(windows)]
+    {
+        path.to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path
+    }
 }
 
 fn has_glob(pattern: &str) -> bool {
-    pattern.contains('*') || pattern.contains('?')
+    pattern.contains('*')
 }
 
 /// `ancestor_rules` is used for deny rules: denying `secrets` also denies a
 /// directory listing of `secrets` and reads below `secrets/...`.
 fn path_matches(pattern: &str, path: &str, directory: bool, ancestor_rules: bool) -> bool {
     let path = normalize_path(path);
-    if path.is_empty() {
-        return false;
-    }
     if glob_match(pattern, &path) {
         return true;
     }
@@ -337,11 +362,13 @@ fn command_matches(pattern: &str, line: &str) -> bool {
         .or_else(|| pattern.strip_suffix(" *"))
     {
         let prefix = prefix.trim_end();
-        return line == prefix
-            || line.starts_with(&format!("{prefix} "))
-            || line.starts_with(&format!("{prefix}:"));
+        if !prefix.contains('*') {
+            return line == prefix
+                || line.starts_with(&format!("{prefix} "))
+                || line.starts_with(&format!("{prefix}:"));
+        }
     }
-    glob_match(pattern, line)
+    glob_match_command(pattern, line)
 }
 
 #[cfg(test)]
@@ -475,7 +502,187 @@ mod tests {
     }
 
     #[test]
+    fn repeated_separators_and_dot_components_cannot_bypass_path_rules() {
+        let policy = policy(
+            Mode::Default,
+            &[],
+            &[],
+            &["Read(./secrets/./**)", "Write(./secrets/./**)"],
+        );
+        for path in [
+            "secrets/token.txt",
+            "./secrets//token.txt",
+            "secrets/./token.txt",
+            ".//./secrets///./token.txt",
+            r".\secrets\\.\token.txt",
+        ] {
+            assert!(
+                matches!(
+                    policy.check(Some(&read(path)), Effect::Read),
+                    Verdict::Deny { .. }
+                ),
+                "read {path:?}"
+            );
+            assert!(
+                matches!(
+                    policy.check(Some(&write(path)), Effect::LocalWrite),
+                    Verdict::Deny { .. }
+                ),
+                "write {path:?}"
+            );
+        }
+        let listing = Request::Read {
+            path: ".//secrets//./",
+            directory: true,
+        };
+        assert!(matches!(
+            policy.check(Some(&listing), Effect::Read),
+            Verdict::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn normalization_preserves_traversal_and_absolute_paths() {
+        assert_eq!(
+            normalize_path("src//./../secrets/key.txt"),
+            "src/../secrets/key.txt"
+        );
+        assert_eq!(normalize_path("./../src/../key.txt"), "../src/../key.txt");
+        assert_eq!(normalize_path("/src//./main.rs"), "/src/main.rs");
+    }
+
+    #[test]
+    fn empty_and_dot_root_listings_match_a_worktree_wide_deny() {
+        let policy = policy(Mode::Default, &[], &[], &["Read(./**)"]);
+        for path in ["", ".", "./", ".//./", r".\"] {
+            assert_eq!(normalize_path(path), ".");
+            let listing = Request::Read {
+                path,
+                directory: true,
+            };
+            assert!(
+                matches!(
+                    policy.check(Some(&listing), Effect::Read),
+                    Verdict::Deny { .. }
+                ),
+                "root {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaf_and_subtree_denies_do_not_blanket_deny_root_listings() {
+        for deny in [
+            "Read(./secrets/key.txt)",
+            "Read(./secrets/**)",
+            "Read(./secrets)",
+        ] {
+            let policy = policy(Mode::Default, &["Read(./**)"], &[], &[deny]);
+            for path in ["", ".", "./"] {
+                let listing = Request::Read {
+                    path,
+                    directory: true,
+                };
+                assert_eq!(policy.check(Some(&listing), Effect::Read), Verdict::Allow);
+            }
+            assert!(matches!(
+                policy.check(Some(&read("secrets/key.txt")), Effect::Read),
+                Verdict::Deny { .. }
+            ));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_rule_and_request_paths_are_case_folded() {
+        assert_eq!(
+            normalize_rule_path("deny", "Read(./SÉCRETS/**)", "./SÉCRETS/**").unwrap(),
+            "sécrets/**"
+        );
+        assert_eq!(normalize_path(r".\SÉCRETS\\.\KÉY.TXT"), "sécrets/kéy.txt");
+        let policy = policy(
+            Mode::Default,
+            &["Read(./SRC/**)", "Write(./SRC/**)"],
+            &["Read(./SRC/PRIVATE/**)"],
+            &[
+                "Read(./SRC/PRIVATE/KÉY.TXT)",
+                "Write(./SRC/PRIVATE/KÉY.TXT)",
+            ],
+        );
+        for path in [
+            "src/private/kéy.txt",
+            r"Src\Private\Kéy.Txt",
+            "SRC/PRIVATE/KÉY.TXT",
+        ] {
+            assert!(matches!(
+                policy.check(Some(&read(path)), Effect::Read),
+                Verdict::Deny { rule, .. } if rule == "Read(./SRC/PRIVATE/KÉY.TXT)"
+            ));
+            assert!(matches!(
+                policy.check(Some(&write(path)), Effect::LocalWrite),
+                Verdict::Deny { rule, .. } if rule == "Write(./SRC/PRIVATE/KÉY.TXT)"
+            ));
+        }
+        assert!(matches!(
+            policy.check(Some(&read("sRc/pRiVaTe/notes.txt")), Effect::Read),
+            Verdict::Ask { .. }
+        ));
+        assert_eq!(
+            policy.check(Some(&read("sRc/main.rs")), Effect::Read),
+            Verdict::Allow
+        );
+        assert_eq!(
+            policy.check(Some(&write("sRc/main.rs")), Effect::LocalWrite),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn bash_generic_wildcards_cross_slashes_and_preserve_precedence() {
+        for pattern in ["git * --force", "git ** --force", "git *** --force"] {
+            assert!(command_matches(pattern, "git push origin/main --force"));
+            assert!(!command_matches(
+                pattern,
+                "git push origin/main --force-with-lease"
+            ));
+        }
+        assert!(command_matches("echo *?", "echo origin/main?"));
+        assert!(!command_matches("echo *?", "echo origin/mainx"));
+        let policy = policy(
+            Mode::Default,
+            &["Bash(git *)"],
+            &["Bash(git * --force-with-lease)"],
+            &["Bash(git * --force)"],
+        );
+        assert!(matches!(
+            policy.check(
+                Some(&command("git push origin/main --force")),
+                Effect::Control
+            ),
+            Verdict::Deny { .. }
+        ));
+        assert!(matches!(
+            policy.check(
+                Some(&command("git push origin/main --force-with-lease")),
+                Effect::Control
+            ),
+            Verdict::Ask { .. }
+        ));
+        assert_eq!(
+            policy.check(Some(&command("git push origin/main")), Effect::Control),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
     fn claude_style_command_prefixes_match() {
+        for pattern in ["cargo test:*", "cargo test *"] {
+            for line in ["cargo test", "cargo test target/debug", "cargo test:unit"] {
+                assert!(command_matches(pattern, line));
+            }
+            assert!(!command_matches(pattern, "cargo tests target/debug"));
+            assert!(!command_matches(pattern, "cargo test-other"));
+        }
         let policy = policy(
             Mode::Default,
             &["Bash(cargo test:*)", "Bash(git status *)"],
@@ -519,5 +726,23 @@ mod tests {
             policy.check(Some(&write("src/main.rs")), Effect::LocalWrite),
             Verdict::Unrestricted
         );
+    }
+
+    #[test]
+    fn directory_listing_does_not_inherit_allow_from_child_and_wildcard_prefix_respects_glob() {
+        let policy = policy(Mode::Default, &["Read(./src/main.rs)"], &[], &[]);
+        let listing = Request::Read {
+            path: "src",
+            directory: true,
+        };
+        assert!(matches!(
+            policy.check(Some(&listing), Effect::Read),
+            Verdict::Deny { .. }
+        ));
+        assert!(!command_matches("git * status *", "git"));
+        assert!(command_matches(
+            "git * status *",
+            "git -c foo status --short"
+        ));
     }
 }

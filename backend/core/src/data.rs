@@ -4,9 +4,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::OnceLock;
 
-/// PEM block delimiters shared by `secret_rules` and the streaming output
-/// inspector (`gateway::pem_hold_start`), which must never release a chunk
-/// that splits a private-key block.
+// Stream withholding and redaction must recognize the same PEM markers.
 pub const PEM_BEGIN: &str = "-----BEGIN ";
 pub const PEM_END: &str = "-----END ";
 pub const PEM_PRIVATE_KEY_TAIL: &str = "PRIVATE KEY-----";
@@ -19,18 +17,12 @@ struct SecretRule {
 fn secret_rules() -> &'static Vec<SecretRule> {
     static RULES: OnceLock<Vec<SecretRule>> = OnceLock::new();
     RULES.get_or_init(|| {
-        let pem = (
-            format!(
-                r"(?s){0}[A-Z0-9 ]*{1}.*?{2}[A-Z0-9 ]*{1}",
-                regex::escape(PEM_BEGIN),
-                PEM_PRIVATE_KEY_TAIL,
-                regex::escape(PEM_END)
-            ),
-            "[REDACTED:PRIVATE_KEY]",
-        );
         let specs: &[(&str, &str)] = &[
-            (r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED:AWS_KEY]"),
-            (r"\bgh[pousr]_[A-Za-z0-9]{20,}\b", "[REDACTED:GITHUB_TOKEN]"),
+            (r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "[REDACTED:AWS_KEY]"),
+            (
+                r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
+                "[REDACTED:GITHUB_TOKEN]",
+            ),
             (
                 r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_\-]{20,}\b",
                 "[REDACTED:API_KEY]",
@@ -44,20 +36,100 @@ fn secret_rules() -> &'static Vec<SecretRule> {
                 "[REDACTED:JWT]",
             ),
             (
-                r#"(?i)\b(password|passwd|pwd|secret|api[_-]?key|(?:access[_-]?)?token)\b\s*[:=]\s*["']?[^\s"'\[\]]{8,}["']?"#,
+                r"(?i)\bauthorization\b\s*[:=]\s*bearer\s+[^\s,;\]\}]{8,}",
+                "authorization=[REDACTED]",
+            ),
+            (
+                r#"(?i)["']?\b([A-Za-z0-9_-]*(?:password|passwd|pwd|secret|api[_-]?key|(?:access[_-]?|auth[_-]?|refresh[_-]?)?token))\b["']?\s*[:=]\s*(?:"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|''|[^'\\])*(?:'|\\?$)|[^\s"'\[\]]+)"#,
                 "$1=[REDACTED]",
             ),
         ];
-        let mut rules = vec![SecretRule {
-            pattern: Regex::new(&pem.0).expect("valid secret regex"),
-            replacement: pem.1,
-        }];
-        rules.extend(specs.iter().map(|(pattern, replacement)| SecretRule {
-            pattern: Regex::new(pattern).expect("valid secret regex"),
-            replacement,
-        }));
-        rules
+        specs
+            .iter()
+            .map(|(pattern, replacement)| SecretRule {
+                pattern: Regex::new(pattern).expect("valid secret regex"),
+                replacement,
+            })
+            .collect()
     })
+}
+
+fn is_code_type_annotation(matched: &str) -> bool {
+    let Some((lhs, rhs)) = matched.split_once(':') else {
+        return false;
+    };
+    if lhs.contains('=') || lhs.trim_end().ends_with(['"', '\'']) {
+        return false;
+    }
+    let rhs = rhs.trim().trim_end_matches([',', ';', ')', '}', ']', '>']);
+    matches!(
+        rhs,
+        "bool"
+            | "boolean"
+            | "str"
+            | "String"
+            | "usize"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "f32"
+            | "f64"
+            | "number"
+            | "string"
+            | "object"
+            | "void"
+            | "never"
+            | "unknown"
+            | "any"
+            | "null"
+            | "undefined"
+            | "Option"
+            | "Result"
+            | "Vec"
+    )
+}
+
+fn redact_private_keys(text: &str) -> (String, usize) {
+    static HEADER: OnceLock<Regex> = OnceLock::new();
+    let header = HEADER.get_or_init(|| {
+        Regex::new(&format!(
+            r"{}([A-Z0-9 ]*{})",
+            regex::escape(PEM_BEGIN),
+            PEM_PRIVATE_KEY_TAIL
+        ))
+        .expect("valid private key header regex")
+    });
+    let mut out = String::new();
+    let mut cursor = 0;
+    let mut count = 0;
+    for captures in header.captures_iter(text) {
+        let begin = captures.get(0).unwrap();
+        if begin.start() < cursor {
+            continue;
+        }
+        let end = format!("{}{}", PEM_END, &captures[1]);
+        let Some(close) = text[begin.end()..].find(&end) else {
+            out.push_str(&text[cursor..begin.start()]);
+            out.push_str("[REDACTED:PRIVATE_KEY]");
+            cursor = text.len();
+            count += 1;
+            break;
+        };
+        out.push_str(&text[cursor..begin.start()]);
+        out.push_str("[REDACTED:PRIVATE_KEY]");
+        cursor = begin.end() + close + end.len();
+        count += 1;
+    }
+    out.push_str(&text[cursor..]);
+    (out, count)
 }
 
 fn email_regex() -> &'static Regex {
@@ -95,10 +167,67 @@ fn luhn_valid(digits: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
+fn looks_like_unix_timestamp(candidate: &str) -> bool {
+    let (minimum, maximum) = match candidate.len() {
+        13 => (946_684_800_000, 4_102_444_800_000),
+        16 => (946_684_800_000_000, 4_102_444_800_000_000),
+        19 => (946_684_800_000_000_000, 4_102_444_800_000_000_000),
+        _ => return false,
+    };
+    candidate
+        .parse::<u64>()
+        .is_ok_and(|value| (minimum..=maximum).contains(&value))
+}
+
+fn looks_like_card_iin(digits: &str) -> bool {
+    let len = digits.len();
+    // Major network IIN prefixes + lengths (Visa, Mastercard, Amex, Discover, Diners, JCB, UnionPay).
+    let bytes = digits.as_bytes();
+    if bytes[0] == b'4' && matches!(len, 13 | 16 | 19) {
+        return true;
+    }
+    if len == 15 && (digits.starts_with("34") || digits.starts_with("37")) {
+        return true;
+    }
+    if len == 16 {
+        if let Ok(p2) = digits[..2].parse::<u32>() {
+            if (51..=55).contains(&p2) || p2 == 65 {
+                return true;
+            }
+        }
+        if let Ok(p4) = digits[..4].parse::<u32>() {
+            if (2221..=2720).contains(&p4) || p4 == 6011 || (3528..=3589).contains(&p4) {
+                return true;
+            }
+        }
+        if let Ok(p3) = digits[..3].parse::<u32>() {
+            if (644..=649).contains(&p3) {
+                return true;
+            }
+        }
+    }
+    if len == 14
+        && (digits.starts_with("36")
+            || digits.starts_with("38")
+            || (digits.starts_with("30") && matches!(bytes[2], b'0'..=b'5')))
+    {
+        return true;
+    }
+    digits.starts_with("62") && (16..=19).contains(&len)
+}
+
 fn contains_card(text: &str) -> bool {
     card_regex().find_iter(text).any(|m| {
-        let digits: String = m.as_str().chars().filter(|c| c.is_ascii_digit()).collect();
-        (13..=19).contains(&digits.len()) && luhn_valid(&digits)
+        let raw = m.as_str();
+        let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+        let has_separators = raw.contains(' ') || raw.contains('-');
+        (13..=19).contains(&digits.len())
+            && luhn_valid(&digits)
+            && (has_separators || looks_like_card_iin(&digits))
+            // Bare epoch milliseconds, microseconds and nanoseconds overlap card
+            // lengths; their 2000..2100 range is not evidence of payment data.
+            && !(raw.bytes().all(|b| b.is_ascii_digit())
+                && looks_like_unix_timestamp(&digits))
     })
 }
 
@@ -128,6 +257,7 @@ impl ModelSink {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Governance {
     pub policy: DataPolicySpec,
     pub tenant_id: String,
@@ -158,18 +288,33 @@ impl Governance {
     pub fn classify(&self, source: &Provenance, content: &str) -> Classified {
         let mut classification = self.policy.source_default;
         let mut tags = vec![format!("PURPOSE:{}", self.purpose)];
-        let mut text = content.to_string();
-        let mut secrets_found = 0usize;
+        let (mut text, mut secrets_found) = redact_private_keys(content);
         let redact_secrets = self.policy.redact_secrets;
+        if !redact_secrets {
+            text = content.to_string();
+        }
 
         for rule in secret_rules() {
-            let matches = rule.pattern.find_iter(&text).count();
+            let matches = rule
+                .pattern
+                .find_iter(&text)
+                .filter(|m| !is_code_type_annotation(m.as_str()))
+                .count();
             if matches > 0 {
                 secrets_found += matches;
                 if redact_secrets {
                     text = rule
                         .pattern
-                        .replace_all(&text, rule.replacement)
+                        .replace_all(&text, |caps: &regex::Captures<'_>| {
+                            let full = caps.get(0).map_or("", |m| m.as_str());
+                            if is_code_type_annotation(full) {
+                                full.to_string()
+                            } else if let Some(key) = caps.get(1) {
+                                format!("{}=[REDACTED]", key.as_str())
+                            } else {
+                                rule.replacement.to_string()
+                            }
+                        })
                         .into_owned();
                 }
             }
@@ -185,11 +330,15 @@ impl Governance {
             tags.push("PII".into());
             classification = classification.max(Classification::Confidential);
         }
-        if ssn_regex().is_match(content) || contains_card(content) {
-            tags.push("PII".into());
+        let is_ssn = ssn_regex().is_match(content);
+        let is_card = contains_card(content);
+        if is_ssn || is_card {
+            if !tags.iter().any(|t| t == "PII") {
+                tags.push("PII".into());
+            }
             tags.push("REGULATED".into());
             classification = classification.max(Classification::Restricted);
-            if !tags.iter().any(|t| t == "PCI") {
+            if is_card && !tags.iter().any(|t| t == "PCI") {
                 tags.push("PCI".into());
             }
         }
@@ -316,10 +465,7 @@ impl Governance {
                 }
                 // Verify independently that no secret pattern remains.
                 let text = json_strings(&clone);
-                if secret_rules()
-                    .iter()
-                    .any(|rule| rule.pattern.is_match(&text))
-                {
+                if redact_text(&text).1 > 0 {
                     return Err("secret redaction failed closed".into());
                 }
             }
@@ -363,56 +509,103 @@ impl Governance {
     }
 }
 
-/// Flatten every string value so secret and PII patterns see decoded text
-/// instead of JSON-escaped text, which can hide quoted values.
+/// Flatten every string value and object key—recursing into JSON-encoded
+/// string payloads—so secret and PII patterns see decoded text instead of
+/// escaped JSON, which can hide quoted values.
 pub fn json_strings(value: &Value) -> String {
-    fn walk(value: &Value, out: &mut String) {
+    fn walk(value: &Value, out: &mut String, depth: usize) {
         match value {
             Value::String(text) => {
                 out.push_str(text);
                 out.push('\n');
+                if depth < 4 && (text.starts_with('{') || text.starts_with('[')) {
+                    if let Ok(nested) = serde_json::from_str::<Value>(text) {
+                        walk(&nested, out, depth + 1);
+                    }
+                }
             }
             Value::Array(items) => {
                 for item in items {
-                    walk(item, out);
+                    walk(item, out, depth);
                 }
             }
             Value::Object(map) => {
-                for item in map.values() {
-                    walk(item, out);
+                for (key, item) in map {
+                    out.push_str(key);
+                    out.push('\n');
+                    walk(item, out, depth);
                 }
             }
             _ => {}
         }
     }
     let mut out = String::new();
-    walk(value, &mut out);
+    walk(value, &mut out, 0);
     out
 }
 
 pub fn redact_json(value: &mut Value) -> usize {
-    match value {
-        Value::String(text) => {
-            let (redacted, count) = redact_text(text);
-            *text = redacted;
-            count
+    fn walk_mut(value: &mut Value, depth: usize) -> usize {
+        match value {
+            Value::String(text) => {
+                let mut total = 0usize;
+                if depth < 4 && (text.starts_with('{') || text.starts_with('[')) {
+                    if let Ok(mut nested) = serde_json::from_str::<Value>(text) {
+                        let inner_count = walk_mut(&mut nested, depth + 1);
+                        if inner_count > 0 {
+                            total += inner_count;
+                            if let Ok(serialized) = serde_json::to_string(&nested) {
+                                *text = serialized;
+                            }
+                        }
+                    }
+                }
+                let (redacted, count) = redact_text(text);
+                *text = redacted;
+                total + count
+            }
+            Value::Array(items) => items.iter_mut().map(|item| walk_mut(item, depth)).sum(),
+            Value::Object(map) => {
+                let mut count = 0usize;
+                let mut rebuilt = serde_json::Map::with_capacity(map.len());
+                let old = std::mem::take(map);
+                for (key, mut val) in old {
+                    let (redacted_key, key_count) = redact_text(&key);
+                    count += key_count;
+                    count += walk_mut(&mut val, depth);
+                    rebuilt.insert(redacted_key, val);
+                }
+                *map = rebuilt;
+                count
+            }
+            _ => 0,
         }
-        Value::Array(items) => items.iter_mut().map(redact_json).sum(),
-        Value::Object(map) => map.values_mut().map(redact_json).sum(),
-        _ => 0,
     }
+    walk_mut(value, 0)
 }
 
 pub fn redact_text(text: &str) -> (String, usize) {
-    let mut out = text.to_string();
-    let mut count = 0usize;
+    let (mut out, mut count) = redact_private_keys(text);
     for rule in secret_rules() {
-        let matches = rule.pattern.find_iter(&out).count();
+        let matches = rule
+            .pattern
+            .find_iter(&out)
+            .filter(|m| !is_code_type_annotation(m.as_str()))
+            .count();
         if matches > 0 {
             count += matches;
             out = rule
                 .pattern
-                .replace_all(&out, rule.replacement)
+                .replace_all(&out, |caps: &regex::Captures<'_>| {
+                    let full = caps.get(0).map_or("", |m| m.as_str());
+                    if is_code_type_annotation(full) {
+                        full.to_string()
+                    } else if let Some(key) = caps.get(1) {
+                        format!("{}=[REDACTED]", key.as_str())
+                    } else {
+                        rule.replacement.to_string()
+                    }
+                })
                 .into_owned();
         }
     }
@@ -457,6 +650,125 @@ mod tests {
             .contains("sk-abcdefghijklmnopqrstuvwxyz123456"));
         assert_eq!(classified.original, Classification::Secret);
         assert_eq!(classified.effective, Classification::Confidential);
+    }
+
+    #[test]
+    fn secret_assignments_redact_complete_quoted_and_unquoted_values() {
+        let cases = [
+            (r#"{"password":"x"}"#, "{password=[REDACTED]}"),
+            (r#"{"token":"short"}"#, "{token=[REDACTED]}"),
+            (
+                r#"{"apiKey":"say \"hello\" then leave"}"#,
+                "{apiKey=[REDACTED]}",
+            ),
+            (
+                r#"{"password":"correct horse battery", "token":"a b", "apiKey":"abc"}"#,
+                "{password=[REDACTED], token=[REDACTED], apiKey=[REDACTED]}",
+            ),
+            (
+                r#""password": "correct horse battery""#,
+                "password=[REDACTED]",
+            ),
+            ("'api-key': 'can''t share this'", "api-key=[REDACTED]"),
+            (r"secret = 'say \'hello\' now'", "secret=[REDACTED]"),
+            ("passwd = correct-horse-battery", "passwd=[REDACTED]"),
+            ("pwd=x", "pwd=[REDACTED]"),
+            (r#"{"password":"supersecret"#, "{password=[REDACTED]"),
+            (r#"password="supersecret\"#, "password=[REDACTED]"),
+            ("password=\"first\nsecond\"", "password=[REDACTED]"),
+            ("password=\"first\n", "password=[REDACTED]"),
+            ("access_token: abc", "access_token=[REDACTED]"),
+            ("api_key=abcdefghi", "api_key=[REDACTED]"),
+            ("password=abc,def;ghi{jkl}mno", "password=[REDACTED]"),
+        ];
+        let g = governance(vec![Classification::Confidential]);
+        for (input, expected) in cases {
+            let (redacted, count) = redact_text(input);
+            assert_eq!(redacted, expected);
+            assert!(count > 0);
+            assert_eq!(redact_text(&redacted), (redacted.clone(), 0));
+            let classified = g.classify(&source(), input);
+            assert_eq!(classified.content, expected);
+            assert_eq!(classified.original, Classification::Secret);
+            assert_eq!(classified.effective, Classification::Confidential);
+            assert_eq!(g.inspect_model_output(input, "test").unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn json_secret_assignments_are_redacted_in_model_requests() {
+        let g = governance(vec![Classification::Confidential]);
+        let content = r#"{"password":"tiny", "token":"a b", "apiKey":"say \"hello\" now"}"#;
+        let messages = vec![serde_json::json!({"role": "user", "content": content})];
+        let (redacted, envelopes) = g.prepare_model_request(&messages).unwrap();
+        assert_eq!(
+            redacted[0]["content"],
+            "{password=[REDACTED], token=[REDACTED], apiKey=[REDACTED]}"
+        );
+        assert!(envelopes[0].redacted);
+        assert_eq!(envelopes[0].classification, Classification::Confidential);
+
+        let mut no_redaction = governance(vec![Classification::Confidential]);
+        no_redaction.policy.redact_secrets = false;
+        assert!(no_redaction.prepare_model_request(&messages).is_err());
+        assert!(no_redaction.inspect_model_output(content, "test").is_err());
+    }
+
+    #[test]
+    fn private_key_redaction_requires_the_corresponding_end_label() {
+        let incomplete = concat!(
+            "before\n-----BEGIN RSA PRIVATE KEY-----\nouter-private\n",
+            "-----BEGIN PUBLIC KEY-----\npublic\n-----END PUBLIC KEY-----\n",
+            "-----BEGIN EC PRIVATE KEY-----\ninner-private\n-----END EC PRIVATE KEY-----\n",
+            "outer-private-tail\n"
+        );
+        assert_eq!(
+            redact_text(incomplete),
+            ("before\n[REDACTED:PRIVATE_KEY]".into(), 1)
+        );
+        let g = governance(vec![Classification::Confidential]);
+        assert_eq!(
+            g.inspect_model_output(incomplete, "test").unwrap(),
+            "before\n[REDACTED:PRIVATE_KEY]"
+        );
+        let (request, _) = g
+            .prepare_model_request(&[serde_json::json!({"role":"user", "content":incomplete})])
+            .unwrap();
+        assert_eq!(request[0]["content"], "before\n[REDACTED:PRIVATE_KEY]");
+        let complete = format!("{incomplete}-----END RSA PRIVATE KEY-----\nafter");
+        let expected = "before\n[REDACTED:PRIVATE_KEY]\nafter";
+        assert_eq!(redact_text(&complete), (expected.into(), 1));
+        let g = governance(vec![Classification::Confidential]);
+        assert_eq!(g.inspect_model_output(&complete, "test").unwrap(), expected);
+        let classified = g.classify(&source(), &complete);
+        assert_eq!(classified.secrets_found, 1);
+        assert_eq!(classified.content, expected);
+        let messages = vec![serde_json::json!({"role": "user", "content": complete})];
+        let (redacted, _) = g.prepare_model_request(&messages).unwrap();
+        assert_eq!(redacted[0]["content"], expected);
+
+        let mut no_redaction = governance(vec![Classification::Confidential]);
+        no_redaction.policy.redact_secrets = false;
+        assert!(no_redaction
+            .inspect_model_output(&complete, "test")
+            .is_err());
+    }
+
+    #[test]
+    fn private_key_redaction_preserves_public_blocks_and_ordinary_output() {
+        let public = "-----BEGIN PUBLIC KEY-----\npublic\n-----END PUBLIC KEY-----\n";
+        let input = format!(
+            "before\n-----BEGIN PRIVATE KEY-----\nfirst-private\n-----END PRIVATE KEY-----\n{public}\
+             -----BEGIN ENCRYPTED PRIVATE KEY-----\nsecond-private\n-----END ENCRYPTED PRIVATE KEY-----\nafter"
+        );
+        let expected =
+            format!("before\n[REDACTED:PRIVATE_KEY]\n{public}[REDACTED:PRIVATE_KEY]\nafter");
+        assert_eq!(redact_text(&input), (expected.clone(), 2));
+        let g = governance(vec![Classification::Confidential]);
+        assert_eq!(g.inspect_model_output(&input, "test").unwrap(), expected);
+        let ordinary = format!("ordinary output with passwordless login\n{public}done");
+        assert_eq!(redact_text(&ordinary), (ordinary.clone(), 0));
+        assert_eq!(g.inspect_model_output(&ordinary, "test").unwrap(), ordinary);
     }
 
     #[test]
@@ -599,5 +911,59 @@ mod tests {
         assert!(luhn_valid("4111111111111111"));
         assert!(!luhn_valid("4111111111111112"));
         assert!(contains_card("card 4111 1111 1111 1111"));
+        assert!(contains_card("4111111111111111"));
+    }
+
+    #[test]
+    fn epoch_timestamps_do_not_trigger_card_classification() {
+        fn complete_luhn(prefix: &str) -> String {
+            let mut sum = 0u32;
+            let mut double = true;
+            for c in prefix.chars().rev() {
+                let mut value = c.to_digit(10).unwrap();
+                if double {
+                    value *= 2;
+                    if value > 9 {
+                        value -= 9;
+                    }
+                }
+                sum += value;
+                double = !double;
+            }
+            format!("{prefix}{}", (10 - sum % 10) % 10)
+        }
+
+        let g = governance(vec![Classification::Internal]);
+        for prefix in ["176722560000", "176722560000000", "176722560000000000"] {
+            let timestamp = complete_luhn(prefix);
+            assert!(luhn_valid(&timestamp));
+            assert!(!contains_card(&timestamp));
+            let classified = g.classify(&source(), &format!("timestamp={timestamp}"));
+            assert_eq!(classified.effective, Classification::Internal);
+            assert!(!classified.tags.iter().any(|tag| tag == "PCI"));
+        }
+        let classified = g.classify(&source(), "card=4111111111111111");
+        assert_eq!(classified.effective, Classification::Restricted);
+        assert!(classified.tags.iter().any(|tag| tag == "PCI"));
+    }
+
+    #[test]
+    fn skips_code_types_and_redacts_nested_json_and_keys() {
+        let g = governance(vec![Classification::Internal]);
+        let code = g.classify(&source(), "fn f(token: usize, secret: bool) {}");
+        assert!(!code.tags.iter().any(|tag| tag == "SECRET_DETECTED"));
+
+        let mut nested = serde_json::json!({
+            "payload": "{\"aws\":\"ASIA1234567890ABCDEF\",\"gh\":\"github_pat_1234567890abcdefghij\"}",
+            "db_password=supersecretval": "ok"
+        });
+        let found = g.classify(&source(), &json_strings(&nested));
+        assert!(found.tags.iter().any(|tag| tag == "SECRET_DETECTED"));
+        let count = redact_json(&mut nested);
+        assert!(count >= 3);
+        let serialized = nested.to_string();
+        assert!(!serialized.contains("ASIA1234567890ABCDEF"));
+        assert!(!serialized.contains("github_pat_1234567890abcdefghij"));
+        assert!(!serialized.contains("supersecretval"));
     }
 }

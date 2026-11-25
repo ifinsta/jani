@@ -37,16 +37,23 @@ jani work show ID | answer ID "TEXT" | cancel ID | retry ID
 
 A worker **claims** a task with a lease (`JANI_WORK_LEASE_SECS`, default 120) and renews it while it works. If the worker dies, nobody renews, the lease lapses, and the next worker to look puts the task back and takes it. Then:
 
-- It returns to the **same worktree and branch**, and **resumes the saved conversation**, with a note that the previous attempt was interrupted and a pointer to `git status` and `git diff`. A crash costs the current turn, not the task.
+- It returns to the **same worktree and branch**, and **resumes the checkpointed conversation**, with a note that the previous attempt was interrupted and a pointer to `git status` and `git diff`. A crash costs the current turn, not the task.
 - A task interrupted three times is `failed` ("giving up") instead of retried forever. `jani work retry` revives it.
-- **Fencing:** every state change checks the claim's owner token. A worker presumed dead that wakes up later cannot renew, finish or overwrite the result of the worker that took over (there is a test that kills a worker with SIGKILL mid-repair and checks this).
+- **Fencing:** every state change checks the claim's owner token, and the conversation checkpoint is fenced by epoch (see below). A worker presumed dead that wakes up later cannot renew, finish or overwrite the result of the worker that took over (there is a test that kills a worker with SIGKILL mid-repair and checks this).
 - `jani work cancel` on a running task takes the claim away; the worker notices at its next heartbeat and stops at a safe point.
 
 Several workers can share a state directory (a file lock serialises claims). The lock has not been validated on network filesystems; do not share one across hosts.
 
 ## Saved conversations
 
-Every successful turn saves the conversation to `<state-dir>/conversations/<task>.json`. `jani --task ID --resume` (and the worker, on a retry) loads it under the **fresh** system prompt, so a policy or write scope that changed since is the one in force. A failed turn is rolled back and not saved. The file is written from the **redacted** form of the messages and is 0600 on Unix. It is the content of your conversation, in plaintext, in the state directory: treat that directory accordingly.
+Conversations are checkpointed by the task store (`<state-dir>/tasks/state.sqlite3`): after each turn, while waiting for an approval or an answer, and when a turn fails or is cancelled. `jani resume --task ID "prompt"` brings one back. Each resume **claims a new epoch**, and a checkpoint from an older epoch is refused, so a stale process cannot overwrite the conversation of the one that took over. A killed task cannot be resumed. The work queue's worker uses the same mechanism when it retries an interrupted task.
+
+Two properties added on top of the task store:
+
+- **The checkpoint is redacted.** A conversation is stored in the form the model is sent, so a token pasted into a prompt is not in the database in the clear (tested by reading the database file). If redaction is impossible (DLP configured to refuse rather than redact), the raw messages are kept so that resume still works.
+- **A resumed conversation runs under the fresh system prompt**, so a policy, write scope or project note that changed since the checkpoint is the one the model is told.
+
+The checkpoint is the content of your conversation in a database in the state directory: treat that directory accordingly.
 
 ## Project memory
 

@@ -21,6 +21,7 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
             let path = args
                 .first()
                 .ok_or("context pin requires indexed source path")?;
+            s.read_allowed(path, false)?;
             let indexed = s
                 .list("index", repo::MAX_INDEX_ENTRIES)?
                 .into_iter()
@@ -29,6 +30,9 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
                 return Err("context path is not indexed for this tenant and task".into());
             }
             let id = format!("pin-{}", &digest(path.as_bytes())[..24]);
+            if s.get("pin", &id)?.is_none() && s.count("pin")? >= MAX_PINS {
+                return Err(format!("context pin limit reached ({MAX_PINS})"));
+            }
             s.set("pin", &id, &json!({"path":path,"pinned":true}))?;
             Ok(json!({"pinned":path,"id":id}))
         }
@@ -47,7 +51,10 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
             let mut used = 0usize;
             let mut candidates = Vec::new();
             for (_, r) in s.list("pin", MAX_PINS)? {
-                candidates.push((true, r["path"].as_str().unwrap_or("").to_owned()));
+                let path = r["path"].as_str().unwrap_or("");
+                if s.read_allowed(path, false).is_ok() {
+                    candidates.push((true, path.to_owned()));
+                }
             }
             let results = repo::search(s, query)?;
             if let Some(found) = results["results"].as_array() {
@@ -61,6 +68,7 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
                 .list("index", repo::MAX_INDEX_ENTRIES)?
                 .into_iter()
                 .filter_map(|(_, v)| v["path"].as_str().map(|p| (p.to_owned(), v.clone())))
+                .filter(|(path, _)| s.read_allowed(path, false).is_ok())
                 .collect::<std::collections::BTreeMap<_, _>>();
             for (pinned, path) in candidates {
                 let record = indexed.get(&path);
@@ -86,9 +94,19 @@ pub fn context(s: &mut State, op: &str, args: &[String]) -> Result<Value, String
             s.set("context", "last_pack", &artifact)?;
             Ok(artifact)
         }
-        "show" => Ok(s
-            .get("context", "last_pack")?
-            .unwrap_or(json!({"items":[]}))),
+        "show" => {
+            let mut pack = s
+                .get("context", "last_pack")?
+                .unwrap_or(json!({"items":[]}));
+            if let Some(items) = pack["items"].as_array_mut() {
+                items.retain(|item| {
+                    item["path"]
+                        .as_str()
+                        .is_some_and(|path| s.read_allowed(path, false).is_ok())
+                });
+            }
+            Ok(pack)
+        }
         _ => Err("context commands: pin PATH, assemble QUERY [TOKENS], show".into()),
     }
 }
@@ -125,40 +143,30 @@ pub fn evidence(s: &mut State, op: &str, args: &[String]) -> Result<Value, Strin
             let path = args
                 .get(1)
                 .ok_or("evidence record requires relative path")?;
-            let rel = Path::new(path);
-            jani_core::config::validate_relative(rel)?;
-            if rel
-                .components()
-                .any(|c| jani_core::config::protected_component(&c.as_os_str().to_string_lossy()))
-            {
-                return Err("protected evidence source".into());
-            }
-            let full = s.root.join(rel);
-            let meta = fs::symlink_metadata(&full).map_err(|e| e.to_string())?;
-            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_EVIDENCE_BYTES {
-                return Err("untrusted evidence path".into());
-            }
             if s.get("evidence", id)?.is_some() {
                 return Err("evidence reference already exists; no silent replacement".into());
             }
-            let sha = digest(&fs::read(full).map_err(|e| e.to_string())?);
+            if s.count("evidence")? >= MAX_EVIDENCE_ROWS {
+                return Err(format!("evidence row limit reached ({MAX_EVIDENCE_ROWS})"));
+            }
+            let bytes = s.read_worktree_file(Path::new(path), MAX_EVIDENCE_BYTES)?;
+            let sha = digest(&bytes);
             let entry = json!({"id":id,"source":path,"sha256":sha,
                 "status":"unverified","isApproval":false});
             s.set("evidence", id, &entry)?;
             Ok(entry)
         }
         "list" => Ok(json!({"evidence":s.list("evidence",MAX_EVIDENCE_ROWS)?
-            .into_iter().map(|(_,v)|v).collect::<Vec<_>>()})),
+            .into_iter().map(|(_,v)|v)
+            .filter(|v| v["source"].as_str()
+                .is_some_and(|path| s.read_allowed(path, false).is_ok()))
+            .collect::<Vec<_>>()})),
         "check" => {
             let id = args.first().ok_or("evidence check requires ID")?;
             let v = s.get("evidence", id)?.ok_or("evidence id not found")?;
             let path = v["source"].as_str().ok_or("corrupt evidence entry")?;
-            let full = s.root.join(path);
-            let meta = fs::symlink_metadata(&full).map_err(|e| e.to_string())?;
-            if !meta.is_file() || meta.file_type().is_symlink() {
-                return Err("evidence source not trusted".into());
-            }
-            let hash = digest(&fs::read(full).map_err(|e| e.to_string())?);
+            let bytes = s.read_worktree_file(Path::new(path), MAX_EVIDENCE_BYTES)?;
+            let hash = digest(&bytes);
             Ok(
                 json!({"id":id,"digestMatches":hash==v["sha256"].as_str().unwrap_or(""),
                 "status":"unverified","doesNotProveOutcome":true}),
@@ -173,15 +181,10 @@ pub fn optimizer(s: &State) -> Result<Value, String> {
         return Ok(json!({"recommendations":[],"historicalEvents":0,
         "noAuditEvidence":true,"autoApplied":false}));
     }
-    let state = journal.parent().ok_or("invalid journal path")?;
     if fs::metadata(&journal).map_err(|e| e.to_string())?.len() > MAX_JOURNAL_BYTES {
         return Err("optimizer journal exceeds 16MiB analysis window".into());
     }
-    let verified = jani_core::journal::verify(state)?;
-    if verified["ok"].as_bool() != Some(true) {
-        return Err("audit journal failed integrity check".into());
-    }
-    let events = jani_core::journal::read_events(&journal)?;
+    let events = jani_core::journal::read_verified_events(&journal)?;
     let report = jani_mirror::workflow_report(&events, &s.tenant);
     Ok(json!({"historicalRuns":report.considered_runs,
         "recurringFindings":report.recurring_findings,

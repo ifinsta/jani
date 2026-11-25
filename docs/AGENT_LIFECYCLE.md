@@ -28,7 +28,7 @@ Agent attention state, execution state and task acceptance are distinct. Receivi
 ## Session continuation
 - `jani repl`, or bare `jani` when stdin is a terminal, keeps conversation history in process across turns under one task ID, with one run ID per turn. Authority is loaded once at session start and cannot be widened by a slash command.
 - With both streams attached to a terminal, the session presents a full-screen interface; the model turn runs on a scoped thread while the interface keeps accepting edits and scroll commands. Turn progress is forwarded as events: step changes, tool start and finish with a human summary, and inspected answer and reasoning previews. The session only previews complete inspected lines, so preview and final message keep the same output governance. Presentation is the only difference: the same agent session, policy, approvals and journal calls run underneath, and redirected streams fall back to the line prompt.
-- History is bounded and trimmed at user-turn boundaries; a failed turn rolls back to its pre-prompt checkpoint. Each successful turn is saved (redacted) per task, and `--task ID --resume` continues it; see [WORK.md](WORK.md).
+- History is bounded and trimmed at user-turn boundaries; a failed turn rolls back to its pre-prompt checkpoint. Conversations are checkpointed per task (redacted) and `jani resume --task ID` continues one; see [WORK.md](WORK.md).
 
 ## Not implemented
 - No multi-host broker. Durable conversation continuation, leased task ownership with fencing and an unattended worker loop exist for the work queue ([WORK.md](WORK.md)); they are local-filesystem only.

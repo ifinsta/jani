@@ -10,6 +10,7 @@ pub struct State {
     pub state_dir: PathBuf,
     pub tenant: String,
     pub task: String,
+    pub(crate) read_policy: Option<jani_core::permissions::Policy>,
 }
 
 /// On-disk layout under the configured state directory.
@@ -41,7 +42,8 @@ impl State {
             }
         }
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        let file = directory.join(DB_NAME);
+        let state_dir = state_dir.canonicalize().map_err(|e| e.to_string())?;
+        let file = state_dir.join(DIR_NAME).join(DB_NAME);
         if let Ok(meta) = fs::symlink_metadata(&file) {
             if meta.file_type().is_symlink() {
                 return Err("symlinked native database refused".into());
@@ -66,11 +68,50 @@ impl State {
         Ok(Self {
             conn,
             root,
-            state_dir: state_dir.to_path_buf(),
+            state_dir,
             tenant: tenant.into(),
             task: task.into(),
+            read_policy: None,
         })
     }
+
+    pub(crate) fn read_allowed(&self, path: &str, directory: bool) -> Result<(), String> {
+        let Some(policy) = &self.read_policy else {
+            return Ok(());
+        };
+        let path = if path.is_empty() { "." } else { path };
+        match policy.check(
+            Some(&jani_core::permissions::Request::Read { path, directory }),
+            jani_core::types::Effect::Read,
+        ) {
+            jani_core::permissions::Verdict::Deny { reason, .. } => Err(reason),
+            jani_core::permissions::Verdict::Ask { rule } => Err(format!(
+                "native access to '{path}' requires approval by settings rule '{rule}'"
+            )),
+            jani_core::permissions::Verdict::Allow
+            | jani_core::permissions::Verdict::Unrestricted => Ok(()),
+        }
+    }
+
+    pub(crate) fn dir_traversable(&self, path: &str) -> bool {
+        let Some(policy) = &self.read_policy else {
+            return true;
+        };
+        let path = if path.is_empty() { "." } else { path };
+        match policy.check(
+            Some(&jani_core::permissions::Request::Read {
+                path,
+                directory: true,
+            }),
+            jani_core::types::Effect::Read,
+        ) {
+            jani_core::permissions::Verdict::Allow
+            | jani_core::permissions::Verdict::Unrestricted => true,
+            jani_core::permissions::Verdict::Deny { rule, .. } if rule == "read allowlist" => true,
+            _ => false,
+        }
+    }
+
     pub fn get(&self, kind: &str, id: &str) -> Result<Option<Value>, String> {
         let v = self
             .conn
@@ -136,5 +177,26 @@ impl State {
             )
             .map(|x| x as usize)
             .map_err(|e| e.to_string())
+    }
+
+    pub fn transact<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        match f(self) {
+            Ok(val) => {
+                self.conn
+                    .execute_batch("COMMIT")
+                    .map_err(|e| e.to_string())?;
+                Ok(val)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
     }
 }

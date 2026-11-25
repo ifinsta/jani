@@ -54,6 +54,7 @@ pub enum Tool {
     NativeTool,
     Remember,
     Ask,
+    Plugin,
 }
 
 impl Tool {
@@ -66,6 +67,7 @@ impl Tool {
         Self::NativeTool,
         Self::Remember,
         Self::Ask,
+        Self::Plugin,
     ];
 
     pub fn name(self) -> &'static str {
@@ -78,6 +80,7 @@ impl Tool {
             Self::NativeTool => "native_tool",
             Self::Remember => "remember",
             Self::Ask => "ask",
+            Self::Plugin => "plugin",
         }
     }
 

@@ -18,6 +18,7 @@ pub struct Person {
     pub email: Option<String>,
     pub email_verified: bool,
     pub name: Option<String>,
+    pub degraded: bool,
 }
 
 fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -65,15 +66,14 @@ where
             Ok(None) => return Err(Unauthenticated(StatusCode::UNAUTHORIZED)),
             Err(_) => return Err(Unauthenticated(StatusCode::SERVICE_UNAVAILABLE)),
         };
-        // A session that survives only on the provider-outage grace window is
-        // fine for using a workspace. Deciding approvals additionally refuses it
-        // (see `Approvers::is_approver`'s caller), so we do not hide it here.
+        let degraded = matches!(state, siwi::SessionState::Degraded(_));
         let record = state.record();
         Ok(Person {
             sub: record.sub.clone(),
             email: record.email.clone(),
             email_verified: record.email_verified == Some(true),
             name: record.name.clone(),
+            degraded,
         })
     }
 }

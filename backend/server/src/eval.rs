@@ -637,7 +637,7 @@ pub fn command(cfg: &Config, catalog: &Catalog) -> JResult<()> {
                     Err(format!("{unsound} case(s) are not sound"))
                 };
             }
-            let out = cfg.out_dir.clone().unwrap_or_else(|| {
+            let out = cfg.out_path.clone().unwrap_or_else(|| {
                 cfg.state_dir
                     .join("evals")
                     .join(crate::types::new_id("eval"))

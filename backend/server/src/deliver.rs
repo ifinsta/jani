@@ -402,6 +402,7 @@ pub(crate) fn run_check(cfg: &Config, round: usize, argv: &[String]) -> Check {
         execpolicy::default_profile(cfg),
         cfg.sandbox_net,
         &grant,
+        None,
     ) {
         Ok((value, _receipt)) => {
             let text = format!(
@@ -507,8 +508,14 @@ pub fn deliver(
     let mut run_cfg = cfg.clone();
     run_cfg.root = workspace.root.clone();
     run_cfg.task_id = Some(format!("task-{}", id.trim_start_matches("dlv-")));
-    run_cfg.resume = spec.resume;
-    let mut agent = Agent::new(&run_cfg, catalog)?;
+    // An interrupted delivery comes back to its saved conversation (the task store's
+    // checkpoint, fenced by epoch). If it never got as far as a checkpoint, start over.
+    let mut agent = if spec.resume {
+        let task = run_cfg.task_id.clone().unwrap_or_default();
+        Agent::resume(&run_cfg, catalog, &task).or_else(|_| Agent::new(&run_cfg, catalog))?
+    } else {
+        Agent::new(&run_cfg, catalog)?
+    };
     if let Some(consent) = consent {
         agent.set_consent(consent);
     }

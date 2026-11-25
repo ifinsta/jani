@@ -54,6 +54,11 @@ fn server_tls(ca: &str, cert: &str, key: &str) -> Result<Arc<ServerConfig>> {
 }
 fn init_db(path: &str) -> Result<()> {
     let conn = Connection::open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
         CREATE TABLE IF NOT EXISTS accepted(
@@ -473,16 +478,27 @@ fn run() -> Result<()> {
         let last_purge = last_purge.clone();
         std::thread::spawn(move || {
             let _guard = Guard(active);
+            let deadline = std::time::Instant::now() + IO_TIMEOUT;
+            let remaining = |deadline: std::time::Instant| -> Option<Duration> {
+                deadline.checked_duration_since(std::time::Instant::now())
+            };
             let _ = tcp.set_read_timeout(Some(IO_TIMEOUT));
             let _ = tcp.set_write_timeout(Some(IO_TIMEOUT));
             let Ok(mut conn) = ServerConnection::new(tls) else {
                 return;
             };
             while conn.is_handshaking() {
-                if conn.complete_io(&mut tcp).is_err() {
+                let Some(rem) = remaining(deadline) else {
+                    return;
+                };
+                if tcp.set_read_timeout(Some(rem)).is_err() || conn.complete_io(&mut tcp).is_err() {
                     return;
                 }
             }
+            let Some(rem) = remaining(deadline) else {
+                return;
+            };
+            let _ = tcp.set_read_timeout(Some(rem));
             let socket = StreamOwned::new(conn, tcp);
             let _ = handle(socket, &registry_file, &db, rate_per_min);
             // Retention cleanup is best-effort and never blocks ACK commit.

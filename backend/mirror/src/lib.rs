@@ -1,5 +1,6 @@
 //! Evidence-driven, deterministic reflection. No model, coordinator, network,
 //! tool execution or autonomous self-modification is part of this library.
+use jani_core::journal::{decision, reason};
 use jani_core::types::{sha256_hex, AuditEvent};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -112,22 +113,11 @@ fn is_denied(event: &AuditEvent) -> bool {
     matches!(event.decision.as_str(), "deny" | "denied" | "refused")
 }
 
-fn terminal(events: &[&AuditEvent]) -> Option<&'static str> {
-    use jani_core::journal::decision;
-    events
-        .iter()
-        .rev()
-        .find(|e| {
-            e.action == jani_core::tools::action::AGENT_RUN
-                && matches!(e.decision.as_str(), decision::COMPLETED | decision::FAILED)
-        })
-        .map(|e| {
-            if e.decision == decision::COMPLETED {
-                decision::COMPLETED
-            } else {
-                decision::FAILED
-            }
-        })
+fn terminal<'a>(events: &[&'a AuditEvent]) -> Option<&'a AuditEvent> {
+    events.iter().rev().copied().find(|e| {
+        e.action == jani_core::tools::action::AGENT_RUN
+            && matches!(e.decision.as_str(), decision::COMPLETED | decision::FAILED)
+    })
 }
 
 pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<RunReport, String> {
@@ -149,7 +139,11 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
         *actions.entry(safe(&e.action)).or_insert(0) += 1;
         *decisions.entry(safe(&e.decision)).or_insert(0) += 1;
     }
-    let outcome = terminal(&relevant).unwrap_or("incomplete").to_string();
+    let terminal_event = terminal(&relevant);
+    let outcome = terminal_event
+        .map(|e| e.decision.as_str())
+        .unwrap_or("incomplete")
+        .to_string();
     let mut findings = Vec::new();
     if outcome == "incomplete" {
         let evidence = relevant
@@ -161,46 +155,38 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
             "Inspect worker termination, journal durability and checkpoint ownership; do not claim completion.",
             evidence));
     }
-    if outcome == "failed" {
-        let evidence: Vec<String> = relevant
-            .iter()
-            .rev()
-            .filter(|e| {
-                e.action == jani_core::tools::action::AGENT_RUN
-                    && (e.decision == jani_core::journal::decision::FAILED
-                        || e.reason_code == jani_core::journal::reason::CHECKPOINT)
-            })
-            .take(1)
-            .map(|e| e.event_id.clone())
-            .collect();
-        let step_limit = relevant.iter().any(|e| {
-            e.action == jani_core::tools::action::AGENT_RUN
-                && (e.reason_code == jani_core::journal::reason::STEP_LIMIT
-                    || e.reason_code == jani_core::journal::reason::CHECKPOINT)
-        });
-        let code = if step_limit {
-            "step_budget_exhausted"
-        } else {
-            "failed_run"
+    if let Some(event) = terminal_event {
+        // Diagnose the same latest terminal event that determines the outcome;
+        // earlier handoffs or non-terminal reasons must not override it.
+        let diagnostic = match (event.decision.as_str(), event.reason_code.as_str()) {
+            (decision::COMPLETED | decision::FAILED, reason::CHECKPOINT)
+            | (decision::FAILED, reason::STEP_LIMIT) => Some((
+                "step_budget_exhausted",
+                "The run used its whole step allowance and had to be closed with a handoff instead of finishing.",
+                "Review task decomposition, repeated tool calls and step budget; compare with a smaller bounded plan.",
+            )),
+            (decision::COMPLETED, reason::STALLED) => Some((
+                "repeated_calls",
+                "The run was closed with a handoff after repeated tool calls; task completion is not verified.",
+                "Review repeated tool calls and their receipts; revise the plan before resuming and verify task completion independently.",
+            )),
+            (decision::FAILED, _) => Some((
+                "failed_run",
+                "Jani recorded a failed run; the audit trail alone does not establish root cause.",
+                "Inspect the failure reason and provider/tool receipts before changing the workflow.",
+            )),
+            _ => None,
         };
-        let reason = if step_limit {
-            "The run used its whole step allowance and had to be closed with a handoff instead of finishing."
-        } else {
-            "Jani recorded a failed run; the audit trail alone does not establish root cause."
-        };
-        let recommendation = if step_limit {
-            "Review task decomposition, repeated tool calls and step budget; compare with a smaller bounded plan."
-        } else {
-            "Inspect the failure reason and provider/tool receipts before changing the workflow."
-        };
-        findings.push(finding(
-            run_id,
-            code,
-            "high",
-            reason,
-            recommendation,
-            evidence,
-        ));
+        if let Some((code, observation, recommendation)) = diagnostic {
+            findings.push(finding(
+                run_id,
+                code,
+                "high",
+                observation,
+                recommendation,
+                vec![event.event_id.clone()],
+            ));
+        }
     }
     // Ignore operational outcomes on agent.run; only repeated tool denials
     // should trigger a redundant-denial warning.
@@ -231,7 +217,7 @@ pub fn run_report(events: &[AuditEvent], tenant: &str, run_id: &str) -> Result<R
         e.action == jani_core::tools::action::COMMAND_EXEC
             && matches!(
                 e.decision.as_str(),
-                "permit" | "permitted" | "completed" | "succeeded"
+                decision::EXECUTED | "completed" | "succeeded"
             )
     });
     if wrote && !tested {
@@ -324,6 +310,7 @@ pub fn compare(a: RunReport, b: RunReport) -> Comparison {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jani_core::tools::action;
     use jani_core::types::Classification;
 
     fn e(
@@ -394,6 +381,267 @@ mod tests {
         let w = workflow_report(&events, "t");
         assert_eq!((w.completed, w.failed, w.incomplete), (1, 1, 0));
         assert_eq!(compare(a, b).event_count_delta_b_minus_a, 0);
+    }
+
+    #[test]
+    fn completed_checkpoint_preserves_outcome_and_exact_evidence() {
+        let events = vec![
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::STARTED,
+                reason::RUN_STARTED,
+                1,
+            ),
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::COMPLETED,
+                reason::CHECKPOINT,
+                2,
+            ),
+            e(
+                "a",
+                "t",
+                action::COMMAND_EXEC,
+                decision::COMPLETED,
+                reason::OK,
+                3,
+            ),
+        ];
+        let report = run_report(&events, "t", "a").unwrap();
+        assert_eq!(report.outcome, decision::COMPLETED);
+        assert_eq!(report.findings.len(), 1);
+        let finding = &report.findings[0];
+        assert_eq!(finding.code, "step_budget_exhausted");
+        assert_eq!(finding.evidence, vec![events[1].event_id.clone()]);
+        assert!(finding.observation.contains("handoff"));
+        assert!(finding.recommendation.contains("step budget"));
+        let workflow = workflow_report(&events, "t");
+        assert_eq!(
+            (workflow.completed, workflow.failed, workflow.incomplete),
+            (1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn completed_stalled_reports_grounded_repeated_calls() {
+        let events = vec![
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::COMPLETED,
+                reason::CHECKPOINT,
+                1,
+            ),
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::COMPLETED,
+                reason::STALLED,
+                2,
+            ),
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::STARTED,
+                reason::CHECKPOINT,
+                3,
+            ),
+        ];
+        let report = run_report(&events, "t", "a").unwrap();
+        assert_eq!(report.outcome, decision::COMPLETED);
+        assert_eq!(report.findings.len(), 1);
+        let finding = &report.findings[0];
+        assert_eq!(finding.code, "repeated_calls");
+        assert_eq!(finding.evidence, vec![events[1].event_id.clone()]);
+        assert!(finding.observation.contains("repeated tool calls"));
+        assert!(finding.observation.contains("not verified"));
+        assert!(finding.recommendation.contains("revise the plan"));
+        assert!(finding.recommendation.contains("verify task completion"));
+    }
+
+    #[test]
+    fn last_terminal_final_answer_suppresses_earlier_handoffs() {
+        let events = vec![
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::COMPLETED,
+                reason::CHECKPOINT,
+                1,
+            ),
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::COMPLETED,
+                reason::STALLED,
+                2,
+            ),
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::COMPLETED,
+                reason::FINAL_ANSWER,
+                3,
+            ),
+            e(
+                "a",
+                "t",
+                action::AGENT_RUN,
+                decision::STARTED,
+                reason::STEP_LIMIT,
+                4,
+            ),
+            e(
+                "a",
+                "t",
+                action::COMMAND_EXEC,
+                decision::COMPLETED,
+                reason::CHECKPOINT,
+                5,
+            ),
+        ];
+        let report = run_report(&events, "t", "a").unwrap();
+        assert_eq!(report.outcome, decision::COMPLETED);
+        assert!(report.findings.is_empty());
+    }
+
+    #[test]
+    fn handoff_diagnostics_and_evidence_are_tenant_and_run_scoped() {
+        for (terminal_reason, code) in [
+            (reason::CHECKPOINT, "step_budget_exhausted"),
+            (reason::STALLED, "repeated_calls"),
+        ] {
+            let events = vec![
+                e(
+                    "a",
+                    "t",
+                    action::AGENT_RUN,
+                    decision::STARTED,
+                    reason::RUN_STARTED,
+                    1,
+                ),
+                e(
+                    "a",
+                    "t",
+                    action::AGENT_RUN,
+                    decision::COMPLETED,
+                    terminal_reason,
+                    2,
+                ),
+                e(
+                    "a",
+                    "other",
+                    action::AGENT_RUN,
+                    decision::FAILED,
+                    reason::STEP_LIMIT,
+                    3,
+                ),
+                e(
+                    "b",
+                    "t",
+                    action::AGENT_RUN,
+                    decision::COMPLETED,
+                    reason::FINAL_ANSWER,
+                    4,
+                ),
+                e(
+                    "a",
+                    "other",
+                    action::AGENT_RUN,
+                    decision::COMPLETED,
+                    reason::FINAL_ANSWER,
+                    5,
+                ),
+            ];
+            let report = run_report(&events, "t", "a").unwrap();
+            assert_eq!(report.outcome, decision::COMPLETED);
+            assert_eq!(report.event_count, 2);
+            assert_eq!(report.findings.len(), 1);
+            assert_eq!(report.findings[0].code, code);
+            assert_eq!(report.findings[0].run_id, "a");
+            assert_eq!(
+                report.findings[0].evidence,
+                vec![events[1].event_id.clone()]
+            );
+            assert_eq!(
+                report
+                    .timeline
+                    .iter()
+                    .map(|e| e.event_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![events[0].event_id.as_str(), events[1].event_id.as_str()],
+            );
+            let serialized = serde_json::to_string(&report).unwrap();
+            for excluded in &events[2..] {
+                assert!(!serialized.contains(&excluded.event_id));
+            }
+            let other = run_report(&events, "other", "a").unwrap();
+            assert_eq!(other.outcome, decision::COMPLETED);
+            assert!(other.findings.is_empty());
+            assert!(run_report(&events, "unauthorized", "a").is_err());
+        }
+    }
+
+    #[test]
+    fn latest_failure_reason_overrides_earlier_handoffs() {
+        for (terminal_reason, code) in [
+            (reason::STEP_LIMIT, "step_budget_exhausted"),
+            (reason::CHECKPOINT, "step_budget_exhausted"),
+            (reason::MODEL_OR_GOVERNANCE_FAILURE, "failed_run"),
+        ] {
+            let events = vec![
+                e(
+                    "a",
+                    "t",
+                    action::AGENT_RUN,
+                    decision::COMPLETED,
+                    reason::CHECKPOINT,
+                    1,
+                ),
+                e(
+                    "a",
+                    "t",
+                    action::AGENT_RUN,
+                    decision::COMPLETED,
+                    reason::STALLED,
+                    2,
+                ),
+                e(
+                    "a",
+                    "t",
+                    action::AGENT_RUN,
+                    decision::FAILED,
+                    terminal_reason,
+                    3,
+                ),
+                e(
+                    "a",
+                    "t",
+                    action::COMMAND_EXEC,
+                    decision::COMPLETED,
+                    reason::CHECKPOINT,
+                    4,
+                ),
+            ];
+            let report = run_report(&events, "t", "a").unwrap();
+            assert_eq!(report.outcome, decision::FAILED);
+            assert_eq!(report.findings.len(), 1);
+            assert_eq!(report.findings[0].code, code);
+            assert_eq!(
+                report.findings[0].evidence,
+                vec![events[2].event_id.clone()]
+            );
+        }
     }
 
     #[test]

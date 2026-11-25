@@ -195,6 +195,25 @@ impl Settings {
         PermissionPolicy::compile(mode, &raw.allow, &raw.ask, &raw.deny).map(Some)
     }
 
+    pub(crate) fn credential_routing_fields(&self) -> Vec<String> {
+        let mut fields = Vec::new();
+        if self.api_base.is_some() {
+            fields.push("apiBase".to_string());
+        }
+        if self.api_key_env.is_some() {
+            fields.push("apiKeyEnv".to_string());
+        }
+        for (name, profile) in &self.models {
+            if profile.api_base.is_some() {
+                fields.push(format!("models.{name}.apiBase"));
+            }
+            if profile.api_key_env.is_some() {
+                fields.push(format!("models.{name}.apiKeyEnv"));
+            }
+        }
+        fields
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         let mut locations = Vec::new();
         if self.api_key.is_some() {

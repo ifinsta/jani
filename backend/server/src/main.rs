@@ -7,6 +7,7 @@ mod attention;
 mod broker;
 mod consent;
 mod deliver;
+mod dispatch;
 mod eval;
 mod exec;
 mod execpolicy;
@@ -86,7 +87,33 @@ fn run() -> JResult<()> {
             .as_ref()
             .or_else(|| cfg.positional.first())
             .ok_or("evidence requires a run ID")?;
-        return print_json(&evidence::receipt(&cfg.state_dir, run_id)?);
+        return print_json(&evidence::receipt_with_verifier_keys(
+            &cfg.state_dir,
+            run_id,
+            &cfg.verifier_keys,
+            &cfg.revoked_keys,
+        )?);
+    }
+    if cfg.command == "verify" {
+        let contract_path = cfg
+            .contract_path
+            .as_ref()
+            .ok_or("verify requires --contract FILE")?;
+        let receipt = jani_verifier::verify_contract(&jani_verifier::VerifyOptions {
+            root: &cfg.root,
+            state_dir: &cfg.state_dir,
+            contract_path,
+            signing_key_path: cfg.signing_key_path.as_deref(),
+            key_id: cfg.signing_key_id.as_deref(),
+            verifier_id: &cfg.principal,
+            credential_env_names: &cfg.credential_env_names,
+            out_path: cfg.out_path.as_deref(),
+        })?;
+        print_json(&serde_json::to_value(&receipt).map_err(|e| e.to_string())?)?;
+        if !receipt.passed {
+            return Err("contract verification failed".into());
+        }
+        return Ok(());
     }
     // Delivery operates on local binaries and a release origin, not on a worktree
     // agent session, so it must not require model credentials or skill discovery.
@@ -111,6 +138,30 @@ fn run() -> JResult<()> {
             println!("{}", agent.run(prompt)?);
             Ok(())
         }
+        "resume" => {
+            let task_id = cfg
+                .task_id
+                .clone()
+                .or_else(|| cfg.positional.first().cloned())
+                .ok_or("resume requires a task id (--task or positional)")?;
+            let mut agent = agent::Agent::resume(&cfg, &catalog, &task_id)?;
+            if consent::TerminalConsent::available() {
+                agent.set_consent(std::sync::Arc::new(consent::TerminalConsent));
+            }
+            let prompt = cfg
+                .prompt
+                .as_deref()
+                .or_else(|| {
+                    if cfg.task_id.is_some() {
+                        cfg.positional.first().map(String::as_str)
+                    } else {
+                        cfg.positional.get(1).map(String::as_str)
+                    }
+                })
+                .unwrap_or("Continue the resumed task from the saved checkpoint and complete remaining work.");
+            println!("{}", agent.run(prompt)?);
+            Ok(())
+        }
         "repl" => repl::run(&cfg, &catalog),
         "ui" => ui::command(&cfg, &catalog),
         "sandbox" => match cfg.sub.as_deref() {
@@ -131,6 +182,7 @@ fn run() -> JResult<()> {
         "budget" => budget_command(&cfg),
         "identity" => identity_command(&cfg),
         "contract" => contract_command(&cfg),
+        "dispatch" => dispatch::run(&cfg, &catalog),
         "agent" | "alerts" | "wake" => print_json(&attention::command(&cfg)?),
         _ => Err("unrecognized command".into()),
     }
@@ -280,6 +332,97 @@ fn plugins_command(cfg: &Config) -> JResult<()> {
             print_json(&registry.inspect(id)?)
         }
         Some("verify") => print_json(&registry.verify(cfg.positional.first().map(String::as_str))?),
+        Some("invoke") => {
+            let plugin_id = cfg
+                .positional
+                .first()
+                .ok_or("plugins invoke requires PLUGIN_ID CAPABILITY [JSON_ARGS]")?;
+            let capability = cfg
+                .positional
+                .get(1)
+                .ok_or("plugins invoke requires CAPABILITY")?;
+            let arguments: serde_json::Value = if let Some(path) = cfg.mcp_input_path.as_ref() {
+                let raw = std::fs::read_to_string(path)
+                    .map_err(|e| format!("cannot read arguments {}: {e}", path.display()))?;
+                serde_json::from_str(&raw)
+                    .map_err(|e| format!("invalid JSON arguments in {}: {e}", path.display()))?
+            } else if let Some(inline) = cfg.positional.get(2) {
+                serde_json::from_str(inline)
+                    .map_err(|e| format!("invalid inline JSON arguments: {e}"))?
+            } else {
+                json!({})
+            };
+            let policy = PolicyEngine::load(cfg)?;
+            let identity = identity::load(cfg)?;
+            let contract = match cfg.contract_path.as_ref() {
+                Some(path) => Some(types::WorkContract::load(path)?),
+                None => None,
+            };
+            let limits = policy::effective_limits(&policy, contract.as_ref())?;
+            let sandbox_profile = limits
+                .sandbox_profile
+                .unwrap_or_else(|| policy.default_sandbox_profile());
+            let network = policy.default_network();
+            let governance = data::Governance::new(
+                policy.data_policy(),
+                identity.tenant.clone(),
+                identity.principal.clone(),
+                cfg.purpose.clone(),
+            );
+            let task_id = cfg.task_id.clone().unwrap_or_else(|| new_id("task"));
+            let mut journal =
+                journal::Journal::open_with_anchor(&cfg.state_dir, cfg.audit_anchor.as_deref())?;
+            let mut approvals = approvals::ApprovalStore::open(&cfg.state_dir)?;
+            let mut budget = budget::BudgetLedger::new_for_tenant(
+                &cfg.state_dir,
+                &identity.tenant,
+                &task_id,
+                &limits,
+            )?;
+            let mut tasks = jani_store::tasks::TaskStore::open(&cfg.state_dir)?;
+            let catalog = Catalog::load(cfg)?;
+            let mut session_exec = Vec::new();
+            let mut asked = None;
+            let mut broker = broker::Broker {
+                cfg,
+                policy: &policy,
+                identity: &identity,
+                governance: &governance,
+                contract: contract.as_ref(),
+                catalog: &catalog,
+                plugins: Some(&registry),
+                journal: &mut journal,
+                approvals: &mut approvals,
+                budget: &mut budget,
+                tasks: Some(&mut tasks),
+                task_epoch: 1,
+                run_id: new_id("run"),
+                task_id,
+                default_profile: sandbox_profile,
+                default_network: network,
+                approval_ids: &cfg.approval_ids,
+                consent: None,
+                session_exec: &mut session_exec,
+                asked: &mut asked,
+                cancelled: None,
+            };
+            let result = broker.invoke(
+                &new_id("inv"),
+                "plugin",
+                &json!({
+                    "plugin_id": plugin_id,
+                    "capability": capability,
+                    "arguments": arguments,
+                }),
+            );
+            print_json(&serde_json::to_value(&result).map_err(|e| e.to_string())?)?;
+            if result.status != types::tool_status::OK {
+                return Err(result.error.unwrap_or_else(|| {
+                    format!("plugin invocation finished with {}", result.status)
+                }));
+            }
+            Ok(())
+        }
         Some(other) => Err(format!("unknown plugins subcommand '{other}'")),
     }
 }
@@ -509,7 +652,15 @@ fn approvals_command(cfg: &Config) -> JResult<()> {
                 .role
                 .as_ref()
                 .ok_or("--role is required to record an approval decision")?;
-            let decided = store.decide(id, &identity.principal, role, cfg.approve)?;
+            let decided = store.decide_with_scopes(
+                id,
+                &identity.tenant,
+                &identity.principal,
+                &identity.subject_type,
+                role,
+                &identity.approval_scopes,
+                cfg.approve,
+            )?;
             print_json(&serde_json::to_value(decided).map_err(|e| e.to_string())?)
         }
         Some(other) => Err(format!("unknown approvals subcommand '{other}'")),
@@ -520,7 +671,10 @@ fn budget_command(cfg: &Config) -> JResult<()> {
     match cfg.sub.as_deref() {
         Some("show") | None => {
             let task = cfg.task_id.as_ref().ok_or("budget show requires --task")?;
-            print_json(&budget::show(&cfg.state_dir, task)?)
+            let tenant = identity::load(cfg)
+                .map(|id| id.tenant)
+                .unwrap_or_else(|_| cfg.tenant.clone());
+            print_json(&budget::show_for_tenant(&cfg.state_dir, &tenant, task)?)
         }
         Some(other) => Err(format!("unknown budget subcommand '{other}'")),
     }
@@ -535,6 +689,9 @@ fn identity_command(cfg: &Config) -> JResult<()> {
                 "tenant": identity.tenant,
                 "subjectType": identity.subject_type,
                 "issuer": identity.issuer,
+                "roles": identity.roles,
+                "groups": identity.groups,
+                "approvalScopes": identity.approval_scopes,
                 "verified": identity.verified,
                 "expiresAt": identity.expires_at,
             }))

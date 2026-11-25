@@ -79,6 +79,11 @@ pub fn canonical(value: &Value) -> Result<Vec<u8>, String> {
     // equivalent across languages; see SPEC.md for protocol v2 remediation.
     serde_json::to_vec(value).map_err(|e| e.to_string())
 }
+
+/// RFC 8785 JCS canonicalization for JSMT v2 interop remediation.
+pub fn canonical_v2(value: &Value) -> Result<Vec<u8>, String> {
+    jani_core::crypto::canonical_json(value)
+}
 pub fn digest(body: &[u8]) -> String {
     hex::encode(Sha256::digest(body))
 }
