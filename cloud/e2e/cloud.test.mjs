@@ -112,7 +112,7 @@ describe("jani-cloud with ifinsta accounts", () => {
   test("a task runs in the person's workspace and is journaled under their hashed identity", async () => {
     const context = await browser.newContext();
     const page = await signInByRedirect(context, USERS.alice);
-    await page.click("[data-v=term]");
+    await page.evaluate(() => { location.hash = "#work"; });
     await page.click("#tIn");
     await page.keyboard.type("Read the README and write notes");
     await page.keyboard.press("Enter");
@@ -124,7 +124,7 @@ describe("jani-cloud with ifinsta accounts", () => {
     const journal = readFileSync(join(usersDir(), alice, "state/journal.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(journal.length >= 5);
     assert.ok(journal.every((e) => e.actor_id === `ifinsta-${alice}`), "every event is attributed to her hashed identity");
-    await page.click("[data-v=graph]");
+    await page.evaluate(() => { location.hash = "#map"; });
     await page.waitForSelector(".node[data-id]");
     assert.ok((await page.locator(".node").count()) >= 5);
     await context.close();
@@ -621,10 +621,9 @@ describe("approvals by a designated approver", () => {
     await turn(alice, "write a.txt");
     assert.ok(!existsSync(join(aliceDir(), "repo/out/a.txt")), "nothing was written while the approval is pending");
     assert.equal(store().filter((r) => r.status === "pending").length, 1);
-    await alice.click("[data-v=graph]");
-    await alice.click("#dockTabs [data-t=approvals]");
-    await alice.waitForFunction(() => document.querySelector("#dockBody")?.textContent.includes("Waiting for an approver"));
-    assert.equal(await alice.locator("#dockBody .btn").count(), 0, "no Approve button for the person who asked");
+    await alice.evaluate(() => { location.hash = "#rules"; });
+    await alice.waitForFunction(() => document.querySelector("#approvals")?.textContent.includes("Waiting for an approver"));
+    assert.equal(await alice.locator("#approvals .btn").count(), 0, "no Approve button for the person who asked");
     const cookie = await cookieOf(alice);
     assert.equal((await fetch(own.APP + "/cloud/approvals", { headers: { cookie } })).status, 403, "alice is not an approver");
     assert.equal((await fetch(own.APP + "/cloud/approver", { headers: { cookie } })).status, 403);
@@ -663,9 +662,9 @@ describe("approvals by a designated approver", () => {
   });
 
   test("the requester attaches the decision and the action runs once", async () => {
-    await alice.click("#dockTabs [data-t=approvals]");
-    await alice.waitForFunction(() => /Attach to session/.test(document.querySelector("#dockBody")?.textContent), null, { timeout: 15000 });
-    await alice.click("#dockBody .btn:has-text('Attach to session')");
+    await alice.evaluate(() => { location.hash = "#rules"; });
+    await alice.waitForFunction(() => /Attach to session/.test(document.querySelector("#approvals")?.textContent), null, { timeout: 15000 });
+    await alice.click("#approvals .btn:has-text('Attach to session')");
     await alice.waitForSelector(".k-note:has-text('Attached approval')", { timeout: 15000 });
     await turn(alice, "write a.txt now");
     assert.equal(readFileSync(join(aliceDir(), "repo/out/a.txt"), "utf8"), "approved content");
