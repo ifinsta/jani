@@ -754,6 +754,14 @@ fn route(shared: &Shared<'_>, request: &Request) -> Reply {
         )),
         ("GET", "/api/attention") => view(crate::attention::overview(cfg)),
         ("GET", "/api/system") => Ok((200, views::system(cfg))),
+        ("GET", "/api/plugins") => Ok((200, views::plugins(cfg))),
+        ("GET", "/api/plugin") => {
+            let id = request
+                .query
+                .get("id")
+                .ok_or((400, "id is required".to_string()))?;
+            view(views::plugin_detail(cfg, id))
+        }
         ("GET", "/api/native") => Ok((200, views::native_catalog())),
         ("POST", "/api/native/run") => view(views::native_run(cfg, &json_body(request)?)),
         ("GET", "/api/updates") => Ok((200, views::updates_info(cfg))),

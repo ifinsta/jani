@@ -145,6 +145,52 @@ pub(super) fn lab(cfg: &Config, run: Option<&str>) -> JResult<Value> {
     Ok(out)
 }
 
+/// What the plugin registry holds and why it might not. The directory is named, not
+/// printed in full, so a hosted person never sees the server's paths.
+pub(super) fn plugins(cfg: &Config) -> Value {
+    let mut out = json!({
+        "configured": cfg.plugin_dir.is_some(),
+        "trustRoots": cfg.plugin_keys.len(),
+        "directory": cfg
+            .plugin_dir
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned()),
+    });
+    match plugins::PluginRegistry::load(cfg) {
+        Ok(registry) => {
+            out["plugins"] = registry.list()["plugins"].clone();
+            out["verify"] = registry
+                .verify(None)
+                .unwrap_or_else(|e| json!({"ok": false, "error": e}));
+        }
+        Err(error) => {
+            out["plugins"] = json!([]);
+            out["error"] = json!(error);
+        }
+    }
+    out
+}
+
+/// One plugin, as `jani plugins inspect` shows it, minus the server's file path.
+pub(super) fn plugin_detail(cfg: &Config, id: &str) -> JResult<Value> {
+    let registry = plugins::PluginRegistry::load(cfg)?;
+    let mut value = registry.inspect(id)?;
+    if let Some(name) = value["source"]
+        .as_str()
+        .and_then(|s| std::path::Path::new(s).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+    {
+        value["source"] = json!(name);
+    }
+    let sidecar = value["runtime"].as_str() == Some("sidecar");
+    value["invocable"] = json!(sidecar);
+    if let Some(map) = value.as_object_mut() {
+        map.remove("invocationNote");
+    }
+    Ok(value)
+}
+
 pub(super) fn system(cfg: &Config) -> Value {
     let plugin_view = match plugins::PluginRegistry::load(cfg) {
         Ok(registry) => json!({

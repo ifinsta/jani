@@ -362,11 +362,27 @@ fn evidence_listing_uses_verified_receipts_and_is_bounded() {
 }
 
 #[test]
+fn the_plugin_page_reports_an_unconfigured_registry_and_refuses_unknown_plugins() {
+    let ui = start(&[]);
+    let list = get(&ui, "/api/plugins");
+    assert_eq!(list.status, 200, "{}", list.body);
+    let body = list.json();
+    assert_eq!(body["configured"], false);
+    assert_eq!(body["trustRoots"], 0);
+    assert_eq!(body["plugins"].as_array().map(Vec::len), Some(0));
+    assert!(body.get("error").is_none(), "an unset registry is not an error");
+    assert_eq!(get(&ui, "/api/plugin").status, 400, "an id is required");
+    let unknown = get(&ui, "/api/plugin?id=com.example.nothing");
+    assert_eq!(unknown.status, 422, "{}", unknown.body);
+}
+
+#[test]
 fn read_only_screens_answer_on_a_fresh_state_directory() {
     let ui = start(&[]);
     for path in [
         "/api/policy",
         "/api/system",
+        "/api/plugins",
         "/api/native",
         "/api/updates",
         "/api/recovery",

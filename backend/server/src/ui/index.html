@@ -338,7 +338,7 @@ pre.rawpre{margin:8px 0 0;padding:10px 12px;font:12px/1.5 var(--mono);background
 @media (max-width:900px){.orgbox{display:none}}
 
 /* ================= shell v2: webops sidebar, VS Code status bar and palette, Claude conversation column ================= */
-:root{--sb-w:248px;--ctx-w:300px;--top-h:40px;--stat-h:24px;--ctl:28px;--pad:12px;--fs:13px;--col:800px}
+:root{--sb-w:248px;--ctx-w:300px;--top-h:40px;--stat-h:24px;--ctl:28px;--pad:12px;--fs:13px;--col:980px}
 :root[data-density="comfortable"]{--ctl:34px;--pad:16px;--fs:14px;--top-h:46px}
 html[data-sidebar="collapsed"]{--sb-w:48px}
 html,body{height:100%}
@@ -515,6 +515,39 @@ html[data-width="wide"]{--col:100%}
 .run-head .facts{display:flex}
 @media (max-width:900px){.composer .chips{display:none}.run-head .facts{display:none}}
 
+/* no header: the page starts at the top; controls live in the sidebar and status bar */
+.top.fab,.fab{position:absolute;top:6px;left:6px;z-index:25;height:auto;min-height:0;border:0;padding:0;background:none;display:none}
+.main{position:relative}
+.sb-search{display:flex;align-items:center;gap:8px;margin:0 8px 6px;height:var(--ctl);padding:0 8px;border:1px solid var(--line-strong);border-radius:var(--r-s);background:var(--surface);color:var(--text-3);cursor:pointer;font:inherit;width:calc(100% - 16px)}
+.sb-search:hover{background:var(--surface-3);color:var(--text-2)}
+.sb-search span{flex:1;text-align:left}
+.sb-search svg{width:14px;height:14px}
+html[data-sidebar="collapsed"] .sb-search span,html[data-sidebar="collapsed"] .sb-search kbd{display:none}
+html[data-sidebar="collapsed"] .sb-search{justify-content:center;padding:0;margin:0 6px 6px;width:calc(100% - 12px)}
+.status .si[aria-pressed="true"]{background:var(--accent-tint);color:var(--accent)}
+.runbar{display:flex;align-items:center;gap:8px;min-height:0;font-size:12px}
+.runbar:empty{display:none}
+.runbar .faulttx{color:var(--bad)}
+.view{padding:12px 16px 24px}
+.run-body{padding:10px 16px 12px}
+.work2{--ctx-w:300px}
+.start{padding:10vh 0 2vh}
+*{scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+*::-webkit-scrollbar-track{background:transparent}
+.split{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:12px;align-items:start}
+.plist .rows>*{padding:0}
+.plist>header{padding:6px 8px}
+.pitem{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;border:0;border-top:1px solid var(--line);background:none;padding:8px 12px;cursor:pointer;font:inherit;color:inherit}
+.pitem:first-child{border-top:0}
+.pitem:hover{background:var(--surface-2)}
+.pitem[aria-current="true"]{background:var(--accent-tint)}
+.steps2{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+code{font-family:var(--mono);font-size:12px;background:var(--surface-3);padding:1px 5px;border-radius:4px}
+@media (max-width:900px){.fab{display:block}.view{padding:44px 12px 24px}.view.fill{padding:0}.split{grid-template-columns:minmax(0,1fr)}.work2 .run-body{padding-top:44px}}
+.plist .rows>.pitem{padding:8px 12px}
+
 </style></head><body>
 <a class="skip" href="#view">Skip to the work</a>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -559,7 +592,7 @@ html[data-width="wide"]{--col:100%}
   <aside class="sb" id="rail" aria-label="Sections"></aside>
   <div class="sash" id="sash" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the sidebar"></div>
   <div class="main">
-    <header class="top" id="top"></header>
+    <div class="fab" id="top"></div>
     <main class="view" id="view" tabindex="-1"></main>
   </div>
   <footer class="status" id="status" aria-label="Status"></footer>
@@ -629,13 +662,14 @@ function stFor(s){var w=statusWord(s);return st(w[0],w[1])}
 var STARTERS=[['Map this project','Map the modules and how they depend on each other. Read only: do not edit files or run commands.'],['Plan the next piece of work','Propose phases and acceptance criteria for the next piece of work. Do not edit files or run commands.'],['Find the biggest risks','Look for security and quality risks and cite the files. Read only: do not make changes.'],['Find what is not tested','Find workflows that have no tests and the failures that are likely there. Do not edit files or run commands.']];
 var S={ov:null,runs:[],runId:null,run:null,approvals:[],journal:null,budgets:[],tasks:[],page:'home',tech:false,jf:'all',acct:null,approver:null,mapSel:null,insTab:'mirror',setTab:'system',ruleOpen:{},apDetail:{},verify:null,evidence:null,recovery:null};
 var T={entries:[],last:-1,busy:false,step:'',ended:false,turns:0,model:'',taskId:'',fault:null,consent:null,question:null,follow:true,open:{}};
-var PAGES={home:['Today','What needs you, and what Jani is doing','home'],work:['Work','Ask Jani, watch it work, decide when it asks','chat'],tasks:['Tasks','Work in progress and work to pick back up','tasks'],map:['How it fits','Follow one piece of work from what it read to the proof it left','map'],proof:['Proof','A plain record of who did what','shield'],rules:['Rules','What Jani may do, what needs a person, and the limits','lock'],insights:['Insights','What the record suggests, and what is running','chart'],setup:['Setup','Safety, tools and updates','layers'],approvals:['Approvals','Actions people are waiting to take, for you to decide','shield'],org:['Organisation','Who this is for, what is in force, and the emergency stop','layers'],about:['About','How this workspace behaves','info']};
+var PAGES={home:['Today','What needs you, and what Jani is doing','home'],work:['Work','Ask Jani, watch it work, decide when it asks','chat'],tasks:['Tasks','Work in progress and work to pick back up','tasks'],map:['How it fits','Follow one piece of work from what it read to the proof it left','map'],proof:['Proof','A plain record of who did what','shield'],rules:['Rules','What Jani may do, what needs a person, and the limits','lock'],insights:['Insights','What the record suggests, and what is running','chart'],setup:['Setup','Safety, tools and updates','layers'],plugins:['Plugins','Connectors Jani can use, who signed them, and what each may do','layers'],approvals:['Approvals','Actions people are waiting to take, for you to decide','shield'],org:['Organisation','Who this is for, what is in force, and the emergency stop','layers'],about:['About','How this workspace behaves','info']};
 function isApprover(){return !!(S.approver&&S.approver.approver)}
 function roleName(){return hosted()?(isApprover()?'Approver':'Member'):'Operator'}
 function navGroups(){
   var g=[['Your work',['home','work','tasks']],['Understand',['map','proof']],['Govern',['rules']]];
   if(hosted()?isApprover():true)g[2][1].push('approvals');
   if(hosted()?isApprover():true)g[2][1].push('org');
+  g.splice(3,0,['Extend',['plugins']]);
   if(!hosted()){g.push(['System',['insights','setup']])}
   else if(isApprover()){g.push(['System',['insights']])}
   return g;
@@ -652,7 +686,7 @@ function who(){var o=S.ov||{};return S.acct||(o.principal&&!/^(local-)?operator$
 /* ---------- shell ---------- */
 
 /* ---------- preferences: sidebar, density, width, details panel ---------- */
-var P={sb:store('jani.sb')==='collapsed'?'collapsed':'open',sbw:Math.max(200,Math.min(380,parseInt(store('jani.sbw'),10)||248)),panel:store('jani.panel')!=='closed',density:store('jani.density')==='comfortable'?'comfortable':'compact',width:store('jani.width')==='wide'?'wide':'focused',menu:false};
+var P={sb:store('jani.sb')==='collapsed'?'collapsed':'open',sbw:Math.max(200,Math.min(380,parseInt(store('jani.sbw'),10)||232)),panel:store('jani.panel')==='true',density:store('jani.density')==='comfortable'?'comfortable':'compact',width:store('jani.width')==='wide'?'wide':'focused',menu:false};
 function applyPrefs(){
   var h=document.documentElement;
   h.setAttribute('data-sidebar',P.sb);h.setAttribute('data-density',P.density);h.setAttribute('data-width',P.width);
@@ -671,8 +705,8 @@ function recentHtml(){
 function renderRail(){
   var n=needsCount(),o=S.ov||{},coll=P.sb==='collapsed',h='';
   h+='<div class="sb-head"><a class="brand" href="#home" aria-label="Jani, today"><span class="mark">'+ico('star')+'</span><span>Jani</span></a><button class="ibtn" id="sbToggle" aria-label="'+(coll?'Expand':'Collapse')+' the sidebar" title="'+(coll?'Expand':'Collapse')+' the sidebar (Ctrl+B)">'+ico('panel-l')+'</button></div>';
-  h+='<button class="btn primary sb-new" id="newTask" title="Start a new task">'+ico('plus')+'<span>New task</span></button>';
-  h+='<div class="sb-body"><div class="orgbox" title="The organisation this workspace belongs to"><span class="faint">Organisation</span><b>'+esc(o.tenant||'local')+'</b><span class="st '+(hosted()&&isApprover()?'info':'')+'">'+esc(roleName())+'</span></div>';
+  h+='<button class="btn primary sb-new" id="newTask" title="Start a new task">'+ico('plus')+'<span>New task</span></button><button class="sb-search" id="sbSearch" title="Search pages, tasks and actions (Ctrl+K)">'+ico('search')+'<span>Search</span><kbd>Ctrl K</kbd></button>';
+  h+='<div class="sb-body">'+((hosted()||(o.tenant&&o.tenant!=='local'))?'<div class="orgbox" title="The organisation this workspace belongs to"><span class="faint">Organisation</span><b>'+esc(o.tenant||'local')+'</b><span class="st '+(hosted()&&isApprover()?'info':'')+'">'+esc(roleName())+'</span></div>':'');
   navGroups().forEach(function(g){
     h+='<div class="rail-group">'+g[0]+'</div>';
     g[1].forEach(function(k){
@@ -687,7 +721,7 @@ function renderRail(){
   h+='<div class="sb-foot"><button class="acctbtn" id="acctMenuBtn" aria-haspopup="true" aria-expanded="'+P.menu+'" aria-controls="acctMenu" title="Account and appearance"><span class="avatar" aria-hidden="true">'+esc((S.acct||who()||'?').slice(0,1).toUpperCase())+'</span><span class="who2"><b id="acctWho">'+esc(S.acct||(hosted()?'Signed in':who()==='you'?'You':who()))+'</b><small>'+esc(roleName())+'</small></span></button><span class="tools"><button class="ibtn" id="bell" aria-label="'+n+' need you" title="'+(n?n+' need you':'Nothing needs you')+'">'+ico('bell')+'</button></span>'+
    '<div class="menu" id="acctMenu" role="menu" '+(P.menu?'':'hidden')+'><h4>Theme</h4><div class="seg" role="group" aria-label="Theme">'+['system','light','dark'].map(function(t){return '<button data-theme="'+t+'" aria-pressed="'+(themePref()===t)+'">'+t[0].toUpperCase()+t.slice(1)+'</button>'}).join('')+'</div><h4>Density</h4><div class="seg" role="group" aria-label="Density">'+['compact','comfortable'].map(function(t){return '<button data-density="'+t+'" aria-pressed="'+(P.density===t)+'">'+t[0].toUpperCase()+t.slice(1)+'</button>'}).join('')+'</div><h4>Conversation width</h4><div class="seg" role="group" aria-label="Conversation width">'+['focused','wide'].map(function(t){return '<button data-width="'+t+'" aria-pressed="'+(P.width===t)+'">'+t[0].toUpperCase()+t.slice(1)+'</button>'}).join('')+'</div><div class="rule"></div><button class="mi" id="techMi" role="menuitemcheckbox" aria-checked="'+S.tech+'">'+ico('eye')+'<span style="flex:1">Show technical details</span>'+(S.tech?ico('check'):'')+'</button><button class="mi" id="palMi" role="menuitem">'+ico('search')+'<span style="flex:1">Search</span><kbd>Ctrl K</kbd></button>'+(S.acct?'<div class="rule"></div><div id="acct"><button class="mi" id="signout" role="menuitem">Sign out</button><button class="mi danger" id="signoutAll" role="menuitem" title="Sign out of your ifinsta account everywhere">Sign out everywhere</button></div>':'')+'</div></div>';
   $('#rail').innerHTML=h;
-  $('#sbToggle').onclick=toggleSidebar;
+  $('#sbToggle').onclick=toggleSidebar;$('#sbSearch').onclick=openPalette;
   $('#newTask').onclick=function(){document.documentElement.removeAttribute('data-nav');$('#scrim').hidden=true;newTask()};
   $('#bell').onclick=function(){location.hash=n?(T.consent||T.question?'#work':(pending().length?'#approvals':'#home')):'#home'};
   $('#acctMenuBtn').onclick=function(e){e.stopPropagation();toggleMenu()};
@@ -707,13 +741,9 @@ function setThemePref(t){if(t==='system'){document.documentElement.removeAttribu
 function theme(){var t=document.documentElement.getAttribute('data-theme');if(t)return t;return window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}
 function toggleTheme(){var n=theme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);store('jani.theme',n)}
 function renderTop(){
-  var t=PAGES[S.page]||PAGES.home;
-  $('#top').innerHTML='<button class="ibtn navbtn" id="navBtn" aria-label="Open the sidebar">'+ico('menu')+'</button><div class="crumb"><b>'+esc(t[0])+'</b><span>'+esc(t[1])+'</span></div><button class="palbtn" id="palBtn" aria-label="Search pages, tasks and actions">'+ico('search')+'<span>Search pages, tasks and actions</span><kbd>Ctrl K</kbd></button>'+
-   (S.page==='work'?'<button class="ibtn" id="panelBtn" aria-label="'+(P.panel?'Hide':'Show')+' details" aria-pressed="'+P.panel+'" title="'+(P.panel?'Hide':'Show')+' details (Ctrl+J)">'+ico('panel-r')+'</button>':'')+
-   '<button class="ibtn" id="themeBtn" aria-label="Switch light and dark" title="Switch light and dark">'+ico('moon')+'</button>';
-  $('#themeBtn').onclick=toggleTheme;$('#palBtn').onclick=openPalette;
+  var t=PAGES[S.page]||PAGES.home;document.title=t[0]+' · Jani';
+  $('#top').innerHTML='<button class="ibtn navbtn" id="navBtn" aria-label="Open the sidebar">'+ico('menu')+'</button>';
   $('#navBtn').onclick=function(){var h=document.documentElement;if(h.getAttribute('data-nav')==='open'){h.removeAttribute('data-nav');$('#scrim').hidden=true}else{h.setAttribute('data-nav','open');$('#scrim').hidden=false}};
-  var pb=$('#panelBtn');if(pb)pb.onclick=function(){setPref('panel',!P.panel)};
   renderStatus();
 }
 function renderStatus(){
@@ -722,10 +752,12 @@ function renderStatus(){
   var h='<button class="si" title="'+esc(o.proxied?'A private worktree only you can see':o.worktree||'')+'">'+ico('branch')+'<span id="wt">'+esc(clip(wt,30))+'</span></button>'+
    '<button class="si" id="stAuth" title="Authority is fixed when Jani starts">'+ico('lock')+'<span>'+(can?(a.allowWrite?'Can edit files':'')+(a.allowWrite&&a.allowExec?' · ':'')+(a.allowExec?(a.execMode==='smart'?'Runs safe commands':'Runs listed commands'):''):'Read only')+'</span></button>'+
    '<button class="si '+(j.ok===false?'bad':'ok')+'" id="stRec" title="Every decision is chained so edits can be detected">'+ico(j.ok===false?'alert':'shield')+'<span>'+(j.ok===false?'Record damaged':'Record verified')+'</span></button><span class="gap"></span>'+
+   (S.page==='work'?'<button class="si" id="stPanel" aria-pressed="'+P.panel+'" title="'+(P.panel?'Hide':'Show')+' details (Ctrl+J)">'+ico('panel-r')+'<span>Details</span></button>':'')+
    (n?'<button class="si warn" id="stNeed">'+ico('bell')+'<span>'+n+' need'+(n===1?'s':'')+' you</span></button>':'')+
    '<button class="si opt" id="stModel" title="Model">'+esc(o.model?o.model.name:'')+'</button><button class="si opt" id="stOrg" title="Organisation and role">'+esc((o.tenant||'local')+' · '+roleName())+'</button><button class="si opt" disabled>v'+esc(o.version||'')+'</button>';
   $('#status').innerHTML=h;
   $('#stRec').onclick=function(){location.hash='#proof'};$('#stAuth').onclick=function(){location.hash='#rules'};
+  var sp=$('#stPanel');if(sp)sp.onclick=function(){setPref('panel',!P.panel)};
   var sn=$('#stNeed');if(sn)sn.onclick=function(){location.hash=T.consent||T.question?'#work':(pending().length?'#approvals':'#home')};
   $('#stOrg').onclick=function(){location.hash=allowedPages().indexOf('org')>-1?'#org':'#home'};$('#stModel').onclick=function(){location.hash=allowedPages().indexOf('setup')>-1?'#setup':'#rules'};
 }
@@ -734,8 +766,9 @@ var PAL={sel:0,items:[]};
 function palItems(q){
   var items=[];
   allowedPages().forEach(function(k){var p=PAGES[k];items.push({g:'Go to',l:p[0],d:p[1],run:function(){location.hash='#'+k}})});
+  (S.plugins||[]).forEach(function(pl){items.push({g:'Plugins',l:pl.name,d:'v'+pl.version+' · '+pl.publisher,run:function(){S.plugSel=pl.id;location.hash='#plugins'}})});
   S.tasks.slice(0,20).forEach(function(t){items.push({g:'Tasks',l:taskName(t.taskId),d:statusWord(t.status)[0],run:function(){resumeTask(t.taskId)}})});
-  [['Actions','New task','Start a new conversation',newTask],['Actions','Verify the record','Check that nothing was altered',function(){location.hash='#proof'}],['Actions','Toggle the sidebar','Ctrl+B',toggleSidebar],['Actions','Toggle the details panel','Ctrl+J',function(){location.hash='#work';setTimeout(function(){setPref('panel',!P.panel)},50)}],['Actions','Switch light and dark','',toggleTheme],['Actions','Show or hide technical details','',function(){S.tech=!S.tech;store('jani.tech',S.tech?'1':'0');renderRail();if(S.page!=='work')renderPage(true)}],['Actions','Wide conversation','Use the full width',function(){setPref('width','wide')}],['Actions','Focused conversation','A readable column',function(){setPref('width','focused')}],['Actions','Compact density','',function(){setPref('density','compact')}],['Actions','Comfortable density','',function(){setPref('density','comfortable')}]].forEach(function(a){items.push({g:a[0],l:a[1],d:a[2],run:a[3]})});
+  [['Actions','New task','Start a new conversation',newTask],['Actions','Show status','/status',function(){location.hash='#work';setTimeout(function(){sendText('/status')},80)}],['Actions','Help','/help',function(){location.hash='#work';setTimeout(function(){sendText('/help')},80)}],['Actions','Verify the record','Check that nothing was altered',function(){location.hash='#proof'}],['Actions','Toggle the sidebar','Ctrl+B',toggleSidebar],['Actions','Toggle the details panel','Ctrl+J',function(){location.hash='#work';setTimeout(function(){setPref('panel',!P.panel)},50)}],['Actions','Switch light and dark','',toggleTheme],['Actions','Show or hide technical details','',function(){S.tech=!S.tech;store('jani.tech',S.tech?'1':'0');renderRail();if(S.page!=='work')renderPage(true)}],['Actions','Wide conversation','Use the full width',function(){setPref('width','wide')}],['Actions','Focused conversation','A readable column',function(){setPref('width','focused')}],['Actions','Compact density','',function(){setPref('density','compact')}],['Actions','Comfortable density','',function(){setPref('density','comfortable')}]].forEach(function(a){items.push({g:a[0],l:a[1],d:a[2],run:a[3]})});
   q=String(q||'').trim().toLowerCase();
   if(!q)return items;
   var lab=items.filter(function(i){return i.l.toLowerCase().indexOf(q)>-1}).sort(function(x,y){return x.l.toLowerCase().indexOf(q)-y.l.toLowerCase().indexOf(q)}),rest=items.filter(function(i){return i.l.toLowerCase().indexOf(q)<0&&i.d.toLowerCase().indexOf(q)>-1});
@@ -776,7 +809,7 @@ function closePalette(){$('#pal').hidden=true}
   sash.addEventListener('pointermove',function(e){if(!drag)return;P.sbw=Math.max(200,Math.min(380,Math.round(e.clientX)));applyPrefs()});
   sash.addEventListener('pointerup',function(){if(!drag)return;drag=false;sash.classList.remove('drag');store('jani.sbw',String(P.sbw))});
   sash.addEventListener('keydown',function(e){if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();P.sbw=Math.max(200,Math.min(380,P.sbw+(e.key==='ArrowRight'?16:-16)));applyPrefs();store('jani.sbw',String(P.sbw))}});
-  sash.addEventListener('dblclick',function(){P.sbw=248;applyPrefs();store('jani.sbw','248')});
+  sash.addEventListener('dblclick',function(){P.sbw=232;applyPrefs();store('jani.sbw','232')});
 })();
 function signOut(everywhere){
   var h={'x-siwi':'1','Content-Type':'application/json'};
@@ -801,8 +834,8 @@ function initAccount(){
 
 /* ---------- data loading ---------- */
 function loadAll(){
-  return Promise.all([api('/api/runs'),api('/api/approvals'),api('/api/budgets'),api('/api/tasks').catch(function(){return {tasks:[]}})]).then(function(r){
-    S.runs=r[0];S.approvals=r[1];S.budgets=r[2];S.tasks=(r[3]&&r[3].tasks)||[];
+  return Promise.all([api('/api/runs'),api('/api/approvals'),api('/api/budgets'),api('/api/tasks').catch(function(){return {tasks:[]}}),api('/api/plugins').catch(function(){return null})]).then(function(r){
+    S.runs=r[0];S.approvals=r[1];S.budgets=r[2];S.tasks=(r[3]&&r[3].tasks)||[];S.plugInfo=r[4];S.plugins=(r[4]&&r[4].plugins)||[];
     if(!S.runId||!S.runs.some(function(x){return x.runId===S.runId}))S.runId=S.runs.length?S.runs[0].runId:null;
     renderRail();
     return S.runId?api('/api/run?id='+encodeURIComponent(S.runId)).then(function(x){S.run=x}).catch(function(){S.run=null}):(S.run=null);
@@ -943,7 +976,7 @@ function ctxHtml(){
 }
 function renderWork(){
   view.classList.add('fill');
-  view.innerHTML='<div class="work2" data-panel="'+(P.panel?'open':'closed')+'"><section class="run"><div class="run-head" id="rh"></div><div class="run-body" id="rb"><div class="col"><div id="rstart"></div><div class="stream" id="rs" role="log" aria-live="off" aria-label="Activity"></div></div></div><form class="composer" id="comp"><div class="col"><div class="chips" id="cchips"></div><div class="cbox"><textarea id="tIn" rows="1" maxlength="60000" autocomplete="off" aria-label="Tell Jani what to do"></textarea><button class="send" type="submit" aria-label="Send" title="Send (Enter)">'+ico('send')+'</button></div></div></form></section><aside class="ctx" id="rctx" aria-label="Details"></aside></div>';
+  view.innerHTML='<div class="work2" data-panel="'+(P.panel?'open':'closed')+'"><section class="run"><div class="run-body" id="rb"><div class="col"><div id="rstart"></div><div class="stream" id="rs" role="log" aria-live="off" aria-label="Activity"></div></div></div><form class="composer" id="comp"><div class="col"><div class="runbar" id="rh"></div><div class="cbox"><textarea id="tIn" rows="1" maxlength="60000" autocomplete="off" aria-label="Tell Jani what to do"></textarea><button class="send" id="sendBtn" type="submit" aria-label="Send" title="Send (Enter)">'+ico('send')+'</button></div></div></form></section><aside class="ctx" id="rctx" aria-label="Details"></aside></div>';
   var rb=$('#rb'),ti=$('#tIn');
   rb.addEventListener('scroll',function(){T.follow=rb.scrollHeight-rb.scrollTop-rb.clientHeight<80});
   rb.addEventListener('click',onWorkClick);
@@ -958,6 +991,7 @@ function renderWork(){
   S.nodes={};paintWork(true);
   if(S.pendingResume){var id=S.pendingResume;S.pendingResume=null;api('/api/session/resume',{taskId:id,prompt:''}).then(function(){T.busy=true;sessionPoll();toast('Picking up '+taskName(id))}).catch(function(e){toast(e.message,true)})}
   else if(S.pendingSend){var tx=S.pendingSend;S.pendingSend=null;sendText(tx)}
+  else if(S.pendingDraft){ti.value=S.pendingDraft;S.pendingDraft=null;grow();ti.focus();ti.setSelectionRange(ti.value.length,ti.value.length)}
   else setTimeout(function(){if(S.page==='work'&&ti&&!T.consent&&!T.question)ti.focus()},60);
 }
 function onWorkClick(e){
@@ -986,9 +1020,10 @@ function decide(id,approve){
 }
 function paintWorkMeta(){
   var rh=$('#rh');if(!rh)return;
-  var w=stateOfWork();
-  rh.innerHTML='<div class="row"><span class="st '+w[1]+'">'+esc(w[0])+'</span>'+(T.busy&&T.step?'<span class="faint">'+esc(T.step)+'</span>':'')+'<div class="sp row" style="gap:8px">'+(T.busy?'<button class="btn sm danger" data-stop="1">'+ico('stop')+' Stop</button>':'')+'</div></div><h2 class="goal">'+esc(clip(goalText(),160))+'</h2><div class="facts"><span>For <b>'+esc(who())+'</b></span><span>'+plural(T.turns,'turn')+'</span><span>'+(S.ov&&S.ov.authority&&!S.ov.authority.allowWrite&&!S.ov.authority.allowExec?'Only reads until you say so':'Asks before it changes anything')+'</span></div>'+(T.fault?'<div class="note bad">'+ico('alert')+' '+esc(T.fault)+'</div>':'');
-  var ti=$('#tIn');if(ti){ti.disabled=T.ended;ti.placeholder=T.ended?'This conversation has ended.':T.entries.length?'Add a note, a limit, or the next step':'Describe the job in your own words'}
+  var w=stateOfWork(),show=T.busy||T.consent||T.question||T.fault||pending().some(function(a){return !T.taskId||a.taskId===T.taskId});
+  rh.innerHTML=show?'<span class="st '+w[1]+'">'+esc(w[0])+'</span>'+(T.busy&&T.step?'<span class="faint">'+esc(T.step)+'</span>':'')+(T.fault?'<span class="faulttx">'+esc(T.fault)+'</span>':''):'';
+  var sb=$('#sendBtn');if(sb){if(T.busy){sb.type='button';sb.innerHTML=ico('stop');sb.setAttribute('aria-label','Stop');sb.title='Stop (Esc)';sb.onclick=function(){api('/api/session/cancel',{}).then(function(){toast('Stopping. Jani will finish the step it is on.')}).catch(function(x){toast(x.message,true)})}}else{sb.type='submit';sb.innerHTML=ico('send');sb.setAttribute('aria-label','Send');sb.title='Send (Enter)';sb.onclick=null}}
+  var ti=$('#tIn');if(ti){ti.disabled=T.ended;ti.placeholder=T.ended?'This conversation has ended.':T.entries.length?'Reply, add a limit, or give the next step':'Describe the job in your own words'}
 }
 function paintWork(full){
   if(S.page!=='work'||!$('#rs'))return;
@@ -1016,8 +1051,6 @@ function paintWork(full){
   });
   var st=$('#rstart');
   st.innerHTML=(!T.entries.length&&!T.busy)?'<div class="start"><span class="avatar jani lg">'+ico('star')+'</span><h2 style="font-size:20px;letter-spacing:-.01em">Ready when you are.</h2><p class="muted">Describe the job. Jani reads what it needs, shows you what it finds, and stops to ask before it changes or runs anything. You can stop it at any time.</p><div class="ask-row" style="justify-content:center">'+STARTERS.map(function(s,i){return '<button class="chip" data-starter="'+i+'">'+esc(s[0])+'</button>'}).join('')+'</div></div>':'';
-  $('#cchips').innerHTML=T.entries.length?['/status','/help','/new'].map(function(c){return '<button type="button" class="chip" data-cmd="'+c+'">'+c+'</button>'}).join(''):'';
-  $$('[data-cmd]',$('#cchips')).forEach(function(b){b.onclick=function(){sendText(b.getAttribute('data-cmd'))}});
   $('#rctx').innerHTML='<div class="ctxhead"><span>Details</span><button class="ibtn" id="ctxClose" aria-label="Hide details" title="Hide details (Ctrl+J)">'+ico('x')+'</button></div>'+ctxHtml();
   if(near||full)rb.scrollTop=rb.scrollHeight;
 }
@@ -1210,6 +1243,53 @@ function renderSetup(){
   });
 }
 
+/* ---------- plugins ---------- */
+S.plugQ='';S.plugSel=null;S.plugDetail={};
+var EFFECT={read:['Reads only',''],localwrite:['Changes files here','warn'],externalwrite:['Changes an outside system','warn'],irreversible:['Cannot be undone','bad'],modelinvoke:['Asks the model',''],control:['Controls Jani','bad']};
+var RISK={R0:['None',''],R1:['Low','ok'],R2:['Medium','warn'],R3:['High','bad'],R4:['Critical','bad']};
+function effectOf(e){var k=String(e||'').replace(/[_\s-]/g,'').toLowerCase();return EFFECT[k]||[String(e||'Unknown'),'']}
+function plugCap(p,c){return '<tr><td><b>'+esc(c.name)+'</b>'+(S.tech?'<div class="mono faint">'+esc(p.id+'.'+c.name)+' · v'+esc(c.version)+'</div>':'')+'</td><td>'+st(effectOf(c.effect)[0],effectOf(c.effect)[1])+'</td><td>'+st((RISK[c.riskTier]||[c.riskTier,''])[0],(RISK[c.riskTier]||['',''])[1])+'</td><td>'+(c.approvalClass?st('A second person decides','info'):'<span class="faint">No</span>')+'</td><td><button class="btn sm" data-use="'+esc(c.name)+'">Use in a task</button></td></tr>'}
+function plugDetailHtml(p){
+  var perm=p.requestedPermissions||{},ver=p.signatureKey;
+  var h='<div class="row" style="padding:12px 14px;border-bottom:1px solid var(--line)"><div style="flex:1;min-width:0"><b style="font-size:15px">'+esc(p.name)+'</b> <span class="faint">v'+esc(p.version)+'</span><div class="muted">by '+esc(p.publisher)+'</div></div>'+st(ver?'Signed and verified':'Not verified',ver?'ok':'bad')+'</div>';
+  h+='<div class="rows"><div><h3 style="margin-bottom:6px">What it can do</h3>'+((p.capabilities||[]).length?'<div class="tw"><table><thead><tr><th>Capability</th><th>Effect</th><th>Risk</th><th>Approval</th><th></th></tr></thead><tbody>'+p.capabilities.map(function(c){return plugCap(p,c)}).join('')+'</tbody></table></div>':'<div class="faint">It declares no capabilities.</div>')+'</div>';
+  h+='<div><h3 style="margin-bottom:6px">What it asks for</h3>'+kvRows([['Outside services',(perm.networkServices||[]).length?H(chipsRow(perm.networkServices)):'None',(perm.networkServices||[]).length?1:0],['Secrets it uses',(perm.secrets||[]).length?H(chipsRow(perm.secrets)):'None',(perm.secrets||[]).length?1:0],['Kinds of data',(perm.dataPurposes||[]).length?H(chipsRow(perm.dataPurposes)):'None',(perm.dataPurposes||[]).length?1:0],['Files',perm.fsAccess||'None']].map(function(r){return [r[0],r[1]&&r[1].html!=null?r[1].html:r[1],r[2]]}))+(perm.secrets&&perm.secrets.length?'<p class="muted" style="margin-top:6px">Secrets are kept by Jani and added to the call outside the sandbox. The plugin and the model never see their values.</p>':'')+'</div>';
+  h+='<div><h3 style="margin-bottom:6px">How Jani keeps it in check</h3><div class="muted">Its manifest is signed by a publisher your administrator trusts. It runs out of process in its own sandbox. Every call goes through the same rules as anything else Jani does, is written to the record, and stops for a second person when its approval column says so.</div></div>';
+  if(S.tech)h+='<div><h3 style="margin-bottom:6px">Technical</h3>'+kvRows([['Id',p.id],['Kind',p.kind],['Runtime',p.runtime],['Digest',p.digest],['Signing key',p.signatureKey],['Manifest file',p.source]])+'</div>';
+  return h+'</div>';
+}
+function renderPlugins(){
+  asyncPage('plugins',function(){
+    return api('/api/plugins').then(function(d){
+      S.plugInfo=d;S.plugins=d.plugins||[];
+      var list=S.plugins,q=S.plugQ.trim().toLowerCase(),shown=list.filter(function(p){return !q||(p.name+' '+p.publisher+' '+p.id).toLowerCase().indexOf(q)>-1});
+      if(!S.plugSel||!list.some(function(p){return p.id===S.plugSel}))S.plugSel=list.length?list[0].id:null;
+      var h=head('Plugins','Connectors Jani can call. Each is signed by a publisher your administrator trusts, runs in its own sandbox, and never sees the secrets it uses.');
+      h+=statsStrip([['Installed',String(list.length),list.length?'Ready for Jani to call':'None yet'],['Signed and verified',String(d.verify&&d.verify.ok?(d.verify.verified||[]).length:0),d.verify&&d.verify.ok===false?'Verification failed':'Checked just now',d.verify&&d.verify.ok===false?'bad':'ok'],['Trusted publishers',String(d.trustRoots||0),'Keys the administrator trusts'],['Sandboxed',String(list.filter(function(p){return p.invocable}).length),'Run out of process']]);
+      if(d.error)h+='<div style="margin-top:12px" class="note bad">'+ico('alert')+' '+esc(d.error)+'</div>';
+      if(!list.length){
+        h+='<section class="panel" style="margin-top:12px"><header><h2>'+(d.configured?'The plugin folder is empty':'No plugins are set up')+'</h2></header><div class="rows"><div class="muted" style="max-width:76ch">A plugin gives Jani one more thing it can connect to, such as a ticketing system or a payments lookup. Jani can only use plugins that someone you trust has signed.'+(hosted()?' Ask your administrator to add one.':'')+'</div>'+(hosted()?'':'<div><h3 style="margin-bottom:6px">To add one</h3><ol class="steps2"><li>Put the signed manifest (a <code>.json</code> file) in a folder.</li><li>Start Jani with <code>JANI_PLUGIN_DIR</code> pointing at that folder and <code>JANI_PLUGIN_KEYS</code> naming the publishers you trust.</li><li>Check it with <code>jani plugins verify</code>, then reload this page.</li></ol></div>')+'</div></section>';
+      }else{
+        h+='<div class="split" style="margin-top:12px"><section class="panel plist"><header><input class="fld" id="plugQ" type="search" placeholder="Search plugins" aria-label="Search plugins" value="'+esc(S.plugQ)+'" style="flex:1"></header><div class="rows">'+(shown.length?shown.map(function(p){return '<button class="pitem" data-plug="'+esc(p.id)+'" aria-current="'+(p.id===S.plugSel)+'"><b>'+esc(p.name)+'</b><span class="faint">'+esc(p.publisher)+' · v'+esc(p.version)+'</span><span>'+st(p.capabilities+' '+(p.capabilities===1?'capability':'capabilities'),'')+'</span></button>'}).join(''):'<div class="faint">Nothing matches.</div>')+'</div></section><section class="panel" id="plugDetail"><div class="rows"><div class="faint">Loading…</div></div></section></div>';
+      }
+      h+='<section class="panel" style="margin-top:12px"><header><h2>Not built yet</h2></header><div class="rows"><div class="row"><b style="flex:1">Install from a catalog, inside this page</b>'+st('Not built','warn')+'</div><div class="row"><b style="flex:1">Turn a plugin on or off for a person or team</b>'+st('Not built','warn')+'</div><div class="row"><b style="flex:1">Plugins that add their own commands and panels to this workspace</b>'+st('Not built','warn')+'</div><div class="faint">Today an administrator adds signed plugins on the server, and this page shows what is installed and what each one may do.</div></div></section>';
+      h+='<div style="margin-top:10px">'+techToggle()+'</div>';
+      return {html:h,after:function(){
+        bindTech(renderPlugins);
+        var q2=$('#plugQ');if(q2)q2.oninput=function(){S.plugQ=q2.value;var pos=q2.selectionStart;renderPlugins();setTimeout(function(){var n=$('#plugQ');if(n){n.focus();n.setSelectionRange(pos,pos)}},120)};
+        $$('[data-plug]',view).forEach(function(b){b.onclick=function(){S.plugSel=b.getAttribute('data-plug');$$('[data-plug]',view).forEach(function(x){x.setAttribute('aria-current',String(x===b))});loadPlugDetail()}});
+        if(S.plugSel)loadPlugDetail();
+      }};
+    });
+  });
+}
+function loadPlugDetail(){
+  var id=S.plugSel,box=$('#plugDetail');if(!id||!box)return;
+  var show=function(p){if(S.plugSel!==id||!$('#plugDetail'))return;box.innerHTML=plugDetailHtml(p);$$('[data-use]',box).forEach(function(b){b.onclick=function(){S.pendingDraft='Use the “'+b.getAttribute('data-use')+'” capability of the '+p.name+' plugin (plugin_id '+p.id+') to ';location.hash='#work'}})};
+  if(S.plugDetail[id]&&!S.techChanged)return show(S.plugDetail[id]);
+  api('/api/plugin?id='+encodeURIComponent(id)).then(function(p){S.plugDetail[id]=p;show(p)}).catch(function(e){if($('#plugDetail'))box.innerHTML='<div class="rows"><div>'+failHtml(e)+'</div></div>'});
+}
+
 /* ---------- approvals inbox ---------- */
 S.apQ='';S.apRisk='all';S.armed=null;S.apMsg='';
 function approvalsData(){
@@ -1283,13 +1363,13 @@ function renderPage(soft){
   if(p!=='work')view.classList.remove('fill');
   if(p==='home'){view.innerHTML=homeHtml();bindHome()}
   else if(p==='work'){if(soft&&$('#rs')){paintWork();return}renderWork()}
-  else if(p==='approvals')renderApprovals();else if(p==='org')renderOrg();else if(p==='tasks')renderTasks();else if(p==='map')renderMap();else if(p==='proof')renderProof();else if(p==='rules')renderRules();
+  else if(p==='plugins')renderPlugins();else if(p==='approvals')renderApprovals();else if(p==='org')renderOrg();else if(p==='tasks')renderTasks();else if(p==='map')renderMap();else if(p==='proof')renderProof();else if(p==='rules')renderRules();
   else if(p==='insights')renderInsights();else if(p==='setup')renderSetup();else renderAbout();
 }
 function route(){
   var h=(location.hash||'#home').slice(1);if(!PAGES[h]||allowedPages().indexOf(h)<0)h='home';
   S.page=h;renderRail();renderTop();
-  if(h==='home'||h==='tasks'||h==='map'||h==='rules'||h==='proof'||h==='approvals'||h==='org'){loadAll().then(function(){if(S.page===h){renderRail();renderPage()}})}
+  if(h==='home'||h==='tasks'||h==='map'||h==='rules'||h==='proof'||h==='approvals'||h==='org'||h==='plugins'){loadAll().then(function(){if(S.page===h){renderRail();renderPage()}})}
   else renderPage();
   if(h!=='work')view.scrollTop=0;
 }
