@@ -1,0 +1,16 @@
+{
+  "prompt": "Add a peek() method to Stack in stack.py that returns the top item without removing it and raises IndexError when the stack is empty. Also make len(stack) work.",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "stack.py"
+  ],
+  "tags": [
+    "feature",
+    "single-file"
+  ]
+}

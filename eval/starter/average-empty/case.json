@@ -1,0 +1,16 @@
+{
+  "prompt": "average() in stats.py crashes with ZeroDivisionError on an empty list. It should raise ValueError('average of empty list') instead, and otherwise behave as before.",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "stats.py"
+  ],
+  "tags": [
+    "bug",
+    "single-file"
+  ]
+}

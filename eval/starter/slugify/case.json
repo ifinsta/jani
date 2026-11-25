@@ -1,0 +1,16 @@
+{
+  "prompt": "Implement slugify(text) in slugify.py: lowercase; keep only ASCII letters and digits; every run of anything else becomes a single '-'; no leading or trailing '-'.",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "slugify.py"
+  ],
+  "tags": [
+    "feature",
+    "single-file"
+  ]
+}

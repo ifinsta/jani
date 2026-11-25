@@ -1,0 +1,16 @@
+{
+  "prompt": "parse_duration() in duration.py only understands a single unit. Make it accept any combination of hours, minutes and seconds in that order (for example '1h30m', '2h', '45s', '1h2m3s') and return the total number of seconds. Anything else, including an empty string, raises ValueError.",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "duration.py"
+  ],
+  "tags": [
+    "bug",
+    "parsing"
+  ]
+}

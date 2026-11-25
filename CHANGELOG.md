@@ -24,6 +24,7 @@ This page records what changed and what it means for compatibility. It is a deve
 
 - **`jani deliver "TASK" --accept CMD`** runs a task on its own git branch (a worktree; your checkout is untouched), then has the **host** run the acceptance checks, which the model cannot run, skip or edit. A failing check goes back to the agent for up to `--repair-rounds` turns of the same conversation. Changes inside the write scope are committed (hooks disabled) with the outcome in the message; `--push` and `--pr` publish if asked. The report (`deliveries/<id>/report.md`) lists every check, the diff, and any test files the agent changed. Outcomes are `verified`, `unverified` (no checks declared) or `failed`; a false "all tests pass" is `failed`. See [DELIVERY.md](DELIVERY.md).
 - Journal: `acceptance.run` and `delivery.run` events.
+- **`jani eval run|validate|compare`** measures completion on a suite (`eval/starter`: eight small tasks). Visible checks drive the repair loop; **hidden checks** the agent never sees decide `solved`, so special-casing the visible test scores zero. `validate` proves each case is fair without any model. Reports pass@1, pass@n, clean solves (tests untouched), tokens, rounds and failure causes. Verified with scripted models only; no real-model result is recorded yet. See [EVAL.md](EVAL.md).
 
 ## Unreleased: smart command execution
 

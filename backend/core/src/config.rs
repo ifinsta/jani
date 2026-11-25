@@ -174,6 +174,10 @@ pub struct Config {
     pub no_commit: bool,
     pub push_remote: Option<String>,
     pub open_pr: bool,
+    /// `jani eval`: repetitions per case, output directory, case-name filter.
+    pub repeat: usize,
+    pub out_dir: Option<PathBuf>,
+    pub only: Option<String>,
     pub write_paths: Vec<PathBuf>,
     pub exec_programs: Vec<String>,
     pub mode: RuntimeMode,
@@ -260,6 +264,8 @@ USAGE:
   jani run "TASK" [OPTIONS]
   jani --print "TASK" [OPTIONS]
   jani deliver "TASK" [--accept CMD]... [OPTIONS]
+  jani eval run|validate SUITE_DIR [--repeat N] [--out DIR] [OPTIONS]
+  jani eval compare A_RESULTS.json B_RESULTS.json
   jani repl [OPTIONS]
   jani sandbox doctor|check [OPTIONS]
   jani plugins list|inspect|verify [ID] [OPTIONS]
@@ -337,6 +343,9 @@ OPTIONS:
   --no-commit             deliver: leave the changes uncommitted
   --push REMOTE           deliver: push the branch to REMOTE when done
   --pr                    deliver: open a pull request with `gh` after pushing
+  --repeat N              eval: runs per case (default 1)
+  --out DIR               eval: where results and per-run reports go
+  --only TEXT             eval: run only cases whose name contains TEXT
   --exec MODE             Command execution: off (default), allowlist (= --allow-exec) or smart:
                           read-only inspection runs, builds/tests run when a sandbox contains
                           them, anything else asks the operator. See docs/EXECUTION.md
@@ -545,6 +554,9 @@ impl Config {
             no_commit: false,
             push_remote: None,
             open_pr: false,
+            repeat: 1,
+            out_dir: None,
+            only: None,
             write_paths: Vec::new(),
             exec_programs: Vec::new(),
             mode: RuntimeMode::LocalUnmanaged,
@@ -930,7 +942,7 @@ impl Config {
                 }
                 "sandbox" | "plugins" | "policy" | "audit" | "recovery" | "approvals"
                 | "budget" | "identity" | "contract" | "agent" | "alerts" | "wake" | "mirror"
-                | "mcp" | "native" | "lab" | "update" | "ui" | "exec" => {
+                | "mcp" | "native" | "lab" | "update" | "ui" | "exec" | "eval" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -1061,6 +1073,16 @@ impl Config {
                 "--no-commit" => cfg.no_commit = true,
                 "--push" => cfg.push_remote = Some(take_value(args, &mut i, a)?),
                 "--pr" => cfg.open_pr = true,
+                "--repeat" => {
+                    cfg.repeat = take_value(args, &mut i, a)?
+                        .parse()
+                        .map_err(|_| "--repeat must be 1..20".to_string())?;
+                    if !(1..=20).contains(&cfg.repeat) {
+                        return Err("--repeat must be 1..20".into());
+                    }
+                }
+                "--out" => cfg.out_dir = Some(PathBuf::from(take_value(args, &mut i, a)?)),
+                "--only" => cfg.only = Some(take_value(args, &mut i, a)?),
                 "--exec" => {
                     let value = take_value(args, &mut i, a)?;
                     cfg.exec_mode = ExecMode::parse(&value)

@@ -1,0 +1,16 @@
+{
+  "prompt": "dedupe() in dedupe.py loses the order of the input. It must keep the first occurrence of each item, in the original order. It should also work for unhashable items such as lists.",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "dedupe.py"
+  ],
+  "tags": [
+    "bug",
+    "single-file"
+  ]
+}

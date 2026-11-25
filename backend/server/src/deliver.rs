@@ -335,7 +335,7 @@ fn record(journal: &mut Journal, cfg: &Config, event: Event<'_>) -> JResult<()> 
 }
 
 /// Run one acceptance command on the host, in the sandbox the session uses.
-fn run_check(cfg: &Config, round: usize, argv: &[String]) -> Check {
+pub(crate) fn run_check(cfg: &Config, round: usize, argv: &[String]) -> Check {
     let command = argv.join(" ");
     let started = Instant::now();
     let finish =

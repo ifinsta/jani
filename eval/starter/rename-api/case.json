@@ -1,0 +1,18 @@
+{
+  "prompt": "Rename calc.add_numbers to calc.add and update every caller in the project. Do not keep the old name around.",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "calc.py",
+    "report.py",
+    "cli.py"
+  ],
+  "tags": [
+    "refactor",
+    "multi-file"
+  ]
+}

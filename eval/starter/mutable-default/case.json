@@ -1,0 +1,16 @@
+{
+  "prompt": "add_tag() in tags.py leaks state between calls: tags added in one call show up in the next. Fix it without changing its signature's meaning (tags is an optional list to add to; return the resulting list).",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "tags.py"
+  ],
+  "tags": [
+    "bug",
+    "single-file"
+  ]
+}

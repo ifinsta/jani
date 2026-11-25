@@ -1,0 +1,16 @@
+{
+  "prompt": "chunk() in chunks.py silently drops data. Fix it so every item ends up in a chunk (the last chunk may be shorter). n must be positive: raise ValueError otherwise.",
+  "accept": [
+    "python3 -m unittest -q"
+  ],
+  "hidden": [
+    "python3 -m unittest -q hidden_test"
+  ],
+  "writePaths": [
+    "chunks.py"
+  ],
+  "tags": [
+    "bug",
+    "single-file"
+  ]
+}

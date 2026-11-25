@@ -1,0 +1,4 @@
+{
+  "name": "starter",
+  "description": "Eight small Python engineering tasks: bugs, features and a refactor. Each has a visible test the agent can run, hidden tests it cannot see, and a reference solution that proves the case is sound."
+}
