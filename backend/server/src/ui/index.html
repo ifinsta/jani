@@ -46,7 +46,7 @@ h3{font-size:13px;font-weight:650}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .skip{position:absolute;left:12px;top:-60px;background:var(--accent);color:var(--on-accent);padding:8px 12px;border-radius:var(--r-s);z-index:30}
 .skip:focus{top:calc(8px + env(safe-area-inset-top,0px))}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:0;border-radius:4px}
 a{color:var(--accent);text-underline-offset:3px}
 .mono{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums}
 .num{font-variant-numeric:tabular-nums}
@@ -147,7 +147,7 @@ tbody tr:first-child td{border-top:0}
 .ask-row{display:flex;gap:8px;flex-wrap:wrap}
 .askbox{display:flex;gap:8px;border:1px solid var(--line-strong);border-radius:var(--r-m);padding:6px 6px 6px 14px;background:var(--surface);align-items:center}
 .askbox input{flex:1;border:0;background:none;min-width:0;padding:8px 0;outline:0}
-.askbox:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.askbox:focus-within{outline:2px solid var(--accent);outline-offset:0}
 
 /* work: run view */
 .work{height:100%;display:grid;grid-template-columns:240px minmax(0,1fr) 290px;min-height:0}
@@ -482,7 +482,7 @@ html[data-width="wide"]{--col:100%}
 .composer .col{display:flex;flex-direction:column;gap:6px}
 .composer .chips .chip{font-size:11.5px;padding:2px 9px}
 .cbox{display:flex;align-items:flex-end;gap:6px;border:1px solid var(--line-strong);border-radius:var(--r-l);padding:6px 6px 6px 12px;background:var(--surface)}
-.cbox:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.cbox:focus-within{outline:2px solid var(--accent);outline-offset:0}
 .cbox textarea{flex:1;border:0;background:none;resize:none;outline:0;font:inherit;line-height:1.45;max-height:160px;min-height:22px;padding:4px 0}
 .cbox .send{width:30px;height:30px;border-radius:50%;border:0;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;cursor:pointer;flex:none}
 .cbox .send[disabled]{opacity:.4;cursor:default}
@@ -632,6 +632,53 @@ body{background:var(--surface)}
 .td-add{background:var(--ok-tint);color:var(--ok)}.td-del{background:var(--bad-tint);color:var(--bad)}.td-hunk{color:var(--tk-f)}
 .bubble.me{white-space:pre-wrap}
 
+/* ================= composer: a single rounded pill, a plus, a slash menu and a mic ================= */
+:root{--pill-line:#D5D9E0;--pill-shadow:0 2px 14px rgba(16,24,40,.07)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--pill-line:#343E4B;--pill-shadow:0 2px 14px rgba(0,0,0,.35)}}
+:root[data-theme="dark"]{--pill-line:#343E4B;--pill-shadow:0 2px 14px rgba(0,0,0,.35)}
+.composer{padding:0 16px 14px;background:var(--surface)}
+.composer .col{position:relative;gap:6px}
+.pill{display:flex;align-items:center;gap:6px;min-height:56px;padding:8px 10px;border:1px solid var(--pill-line);border-radius:28px;background:var(--surface);box-shadow:var(--pill-shadow);transition:border-color .12s}
+.pill:focus-within{border-color:var(--text-3)}
+.pill textarea{flex:1;min-width:0;border:0;background:none;resize:none;outline:0;font:inherit;font-size:15px;line-height:1.45;max-height:160px;min-height:24px;padding:8px 0;color:var(--text)}
+.pill textarea::placeholder{color:var(--text-3)}
+.pbtn{flex:none;width:36px;height:36px;border:0;border-radius:50%;background:none;color:var(--text);display:grid;place-items:center;cursor:pointer}
+.pbtn:hover{background:var(--surface-3)}
+.pbtn svg{width:20px;height:20px;stroke-width:1.7}
+.pbtn.on{background:var(--bad-tint);color:var(--bad)}
+.pbtn[hidden],.pill .send[hidden]{display:none}
+.pill .send{flex:none;width:36px;height:36px;border-radius:50%;border:0;background:var(--text);color:var(--surface);display:grid;place-items:center;cursor:pointer}
+.pill .send:hover{opacity:.88}
+.pill .send svg{width:17px;height:17px}
+.pill .send.stop{background:var(--surface-3);color:var(--text)}
+.slash,.pmenu{position:absolute;left:0;right:0;bottom:calc(100% + 8px);background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 32px rgba(16,24,40,.16);padding:6px;z-index:20;max-height:min(46vh,380px);overflow:auto}
+.slash[hidden],.pmenu[hidden]{display:none}
+.pmenu{right:auto;min-width:260px;max-width:min(360px,100%)}
+.pmenu h4{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);padding:8px 10px 3px;margin:0;font-weight:600}
+.pmenu .mi{display:flex;align-items:center;gap:10px;width:100%;height:32px;padding:0 10px;border:0;background:none;border-radius:8px;cursor:pointer;color:var(--text);font:inherit;text-align:left}
+.pmenu .mi:hover{background:var(--surface-2)}
+.pmenu .mi svg{width:16px;height:16px;color:var(--text-3)}
+.pmenu.pask{left:auto;right:0;min-width:300px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.pmenu.pask[hidden]{display:none}
+.pmenu.pask p{margin:0;font-size:12.5px}
+.sitem{display:flex;align-items:baseline;gap:12px;width:100%;padding:7px 10px;border:0;background:none;border-radius:8px;cursor:pointer;color:var(--text);font:inherit;text-align:left}
+.sitem[aria-selected="true"]{background:var(--surface-3)}
+.sitem .sn{font-family:var(--mono);font-size:12.5px;font-weight:600;white-space:nowrap}
+.sitem .ss{color:var(--text-3);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.askbox{border-radius:28px;border-color:var(--pill-line);box-shadow:var(--pill-shadow);padding:6px 8px 6px 10px;min-height:52px}
+.askbox:focus-within{border-color:var(--text-3)}
+.askbox input{font-size:15px}
+.askbox .btn.primary{height:36px;border-radius:18px;padding:0 16px}
+
+/* focus rings sit flush with the element: no offsets anywhere */
+:focus-visible{outline:2px solid var(--accent);outline-offset:0;border-radius:4px}
+.pill textarea:focus-visible,.askbox input:focus-visible,.pal-in input:focus-visible{outline:0}
+.askbox:focus-within,.cbox:focus-within{outline:0;outline-offset:0}
+.ibtn:focus-visible,.pbtn:focus-visible,.send:focus-visible{border-radius:50%}
+.btn:focus-visible,.chip:focus-visible,.nav:focus-visible,.si:focus-visible,.sitem:focus-visible,.mi:focus-visible{outline-offset:0;border-radius:var(--r-s)}
+.node[aria-pressed="true"]{outline-offset:0}
+.skip:focus{outline-offset:0}
+
 </style></head><body>
 <a class="skip" href="#view">Skip to the work</a>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -674,6 +721,7 @@ body{background:var(--surface)}
     <symbol id="i-building" viewBox="0 0 24 24"><rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M9 8h2M13 8h2M9 12h2M13 12h2M10 20.5v-4h4v4"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.3M12 18.2v2.3M20.5 12h-2.3M5.8 12H3.5M18 6l-1.6 1.6M7.6 16.4L6 18M18 18l-1.6-1.6M7.6 7.6L6 6"/></symbol>
     <symbol id="i-stamp" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.4 12.2l2.5 2.5 4.7-5"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v3"/></symbol>
   </defs>
 </svg>
 <div class="app" id="app">
@@ -747,6 +795,7 @@ function st(w,cls){return '<span class="st '+(cls||'')+'">'+esc(w)+'</span>'}
 function stFor(s){var w=statusWord(s);return st(w[0],w[1])}
 
 /* ---------- state ---------- */
+var CMDS=[['help','','Show every command'],['status','','Show authority, task, model and history'],['model','NAME','Switch model or profile for later turns'],['skills','','List the skills Jani knows'],['inspect','RUN_ID','Show what happened in a run'],['budget','','Show the limits and what is used'],['approvals','','List approval requests'],['approval','ID','Attach an approval someone already decided'],['new','','Start a new conversation'],['exit','','End the session']];
 var STARTERS=[['Map this project','Map the modules and how they depend on each other. Read only: do not edit files or run commands.'],['Plan the next piece of work','Propose phases and acceptance criteria for the next piece of work. Do not edit files or run commands.'],['Find the biggest risks','Look for security and quality risks and cite the files. Read only: do not make changes.'],['Find what is not tested','Find workflows that have no tests and the failures that are likely there. Do not edit files or run commands.']];
 var S={ov:null,runs:[],runId:null,run:null,approvals:[],journal:null,budgets:[],tasks:[],page:'home',tech:false,jf:'all',acct:null,approver:null,mapSel:null,insTab:'mirror',setTab:'system',ruleOpen:{},apDetail:{},verify:null,evidence:null,recovery:null};
 var T={entries:[],last:-1,busy:false,step:'',ended:false,turns:0,model:'',taskId:'',fault:null,consent:null,question:null,follow:true,open:{}};
@@ -764,6 +813,25 @@ function navGroups(){
 }
 function allowedPages(){var a=['about'];navGroups().forEach(function(g){a=a.concat(g[1])});return a}
 var view=$('#view');
+function setHtml(el,h){if(!el||el._h===h)return false;el.innerHTML=h;el._h=h;return true}
+function captureUi(){
+  var o={vals:{},focus:null,sel:null};
+  $$('input[id],textarea[id]',view).forEach(function(e){if((e.type==='text'||e.type==='search'||e.tagName==='TEXTAREA')&&e.value!==e.defaultValue)o.vals[e.id]=e.value});
+  var f=document.activeElement;if(f&&view.contains(f)&&f.id){o.focus=f.id;try{o.sel=[f.selectionStart,f.selectionEnd]}catch(x){}}
+  return o;
+}
+function restoreUi(o){
+  Object.keys(o.vals).forEach(function(id){var e=document.getElementById(id);if(e&&view.contains(e)&&e.value!==o.vals[id])e.value=o.vals[id]});
+  if(o.focus){var f=document.getElementById(o.focus);if(f){f.focus({preventScroll:true});if(o.sel&&f.setSelectionRange)try{f.setSelectionRange(o.sel[0],o.sel[1])}catch(x){}}}
+}
+/* Replace the page only when its content really changed, and keep scroll, typing and focus. Returns true when it did. */
+function put(h){
+  if(view._h===h&&view._p===S.page)return false;
+  var same=view._p===S.page,keep=same?captureUi():null,top=same?view.scrollTop:0;
+  view.innerHTML=h;view._h=h;view._p=S.page;
+  if(keep)restoreUi(keep);
+  view.scrollTop=top;return true;
+}
 
 function canDecide(){return !!(S.ov&&S.ov.identity&&S.ov.identity.verified)}
 function hosted(){return !!(S.ov&&S.ov.proxied)}
@@ -808,7 +876,7 @@ function renderRail(){
   h+='<div class="recents"><div class="rail-group">Recent</div>'+recentHtml()+'</div></div>';
   h+='<div class="sb-foot"><button class="acctbtn" id="acctMenuBtn" aria-haspopup="true" aria-expanded="'+P.menu+'" aria-controls="acctMenu" title="Account and appearance"><span class="avatar" aria-hidden="true">'+esc((S.acct||who()||'?').slice(0,1).toUpperCase())+'</span><span class="who2"><b id="acctWho">'+esc(S.acct||(hosted()?'Signed in':who()==='you'?'You':who()))+'</b><small>'+esc(roleName())+'</small></span></button><span class="tools"><button class="ibtn" id="bell" aria-label="'+n+' need you" title="'+(n?n+' need you':'Nothing needs you')+'">'+ico('bell')+'</button></span>'+
    '<div class="menu" id="acctMenu" role="menu" '+(P.menu?'':'hidden')+'><h4>Theme</h4><div class="seg" role="group" aria-label="Theme">'+['system','light','dark'].map(function(t){return '<button data-theme="'+t+'" aria-pressed="'+(themePref()===t)+'">'+t[0].toUpperCase()+t.slice(1)+'</button>'}).join('')+'</div><h4>Density</h4><div class="seg" role="group" aria-label="Density">'+['compact','comfortable'].map(function(t){return '<button data-density="'+t+'" aria-pressed="'+(P.density===t)+'">'+t[0].toUpperCase()+t.slice(1)+'</button>'}).join('')+'</div><h4>Conversation width</h4><div class="seg" role="group" aria-label="Conversation width">'+['focused','wide'].map(function(t){return '<button data-width="'+t+'" aria-pressed="'+(P.width===t)+'">'+t[0].toUpperCase()+t.slice(1)+'</button>'}).join('')+'</div><div class="rule"></div><button class="mi" id="techMi" role="menuitemcheckbox" aria-checked="'+S.tech+'">'+ico('eye')+'<span style="flex:1">Show technical details</span>'+(S.tech?ico('check'):'')+'</button><button class="mi" id="palMi" role="menuitem">'+ico('search')+'<span style="flex:1">Search</span><kbd>Ctrl K</kbd></button>'+(S.acct?'<div class="rule"></div><div id="acct"><button class="mi" id="signout" role="menuitem">Sign out</button><button class="mi danger" id="signoutAll" role="menuitem" title="Sign out of your ifinsta account everywhere">Sign out everywhere</button></div>':'')+'</div></div>';
-  $('#rail').innerHTML=h;
+  var rl=$('#rail');if(rl._h===h)return;rl.innerHTML=h;rl._h=h;
   $('#sbToggle').onclick=toggleSidebar;$('#sbSearch').onclick=openPalette;
   $('#newTask').onclick=function(){document.documentElement.removeAttribute('data-nav');$('#scrim').hidden=true;newTask()};
   $('#bell').onclick=function(){location.hash=n?(T.consent||T.question?'#work':(pending().length?'#approvals':'#home')):'#home'};
@@ -830,8 +898,7 @@ function theme(){var t=document.documentElement.getAttribute('data-theme');if(t)
 function toggleTheme(){var n=theme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);store('jani.theme',n)}
 function renderTop(){
   var t=PAGES[S.page]||PAGES.home;document.title=t[0]+' · Jani';
-  $('#top').innerHTML='<button class="ibtn navbtn" id="navBtn" aria-label="Open the sidebar">'+ico('menu')+'</button>';
-  $('#navBtn').onclick=function(){var h=document.documentElement;if(h.getAttribute('data-nav')==='open'){h.removeAttribute('data-nav');$('#scrim').hidden=true}else{h.setAttribute('data-nav','open');$('#scrim').hidden=false}};
+  if(setHtml($('#top'),'<button class="ibtn navbtn" id="navBtn" aria-label="Open the sidebar">'+ico('menu')+'</button>'))$('#navBtn').onclick=function(){var h=document.documentElement;if(h.getAttribute('data-nav')==='open'){h.removeAttribute('data-nav');$('#scrim').hidden=true}else{h.setAttribute('data-nav','open');$('#scrim').hidden=false}};
   renderStatus();
 }
 function renderStatus(){
@@ -843,7 +910,7 @@ function renderStatus(){
    (S.page==='work'?'<button class="si" id="stPanel" aria-pressed="'+P.panel+'" title="'+(P.panel?'Hide':'Show')+' details (Ctrl+J)">'+ico('panel-r')+'<span>Details</span></button>':'')+
    (n?'<button class="si warn" id="stNeed">'+ico('bell')+'<span>'+n+' need'+(n===1?'s':'')+' you</span></button>':'')+
    '<button class="si opt" id="stModel" title="Model">'+esc(o.model?o.model.name:'')+'</button><button class="si opt" id="stOrg" title="Organisation and role">'+esc((o.tenant||'local')+' · '+roleName())+'</button><button class="si opt" disabled>v'+esc(o.version||'')+'</button>';
-  $('#status').innerHTML=h;
+  var sbar=$('#status');if(sbar._h===h)return;sbar.innerHTML=h;sbar._h=h;
   $('#stRec').onclick=function(){location.hash='#proof'};$('#stAuth').onclick=function(){location.hash='#rules'};
   var sp=$('#stPanel');if(sp)sp.onclick=function(){setPref('panel',!P.panel)};
   var sn=$('#stNeed');if(sn)sn.onclick=function(){location.hash=T.consent||T.question?'#work':(pending().length?'#approvals':'#home')};
@@ -988,7 +1055,7 @@ function renderTasks(){
   groups.forEach(function(g){var rows=tasks.filter(function(t){return g[1](t.status)});if(!rows.length)return;
     h+='<section class="panel"><header><h2>'+g[0]+'</h2><span class="faint">'+rows.length+'</span></header><div class="rows">'+rows.map(function(t){var w=statusWord(t.status),resumable=t.status!=='completed'&&t.status!=='running';
       return '<div class="row"><div style="flex:1;min-width:200px"><b>'+esc(taskName(t.taskId))+'</b><div class="faint" style="margin-top:2px">Updated '+esc(fmtDay(t.updatedAt))+(t.principal?' · for '+esc(t.principal):'')+(S.tech?' · epoch '+esc(t.epoch)+(t.runId?' · run '+esc(short(t.runId,12)):''):'')+'</div></div>'+st(w[0],w[1])+(resumable?'<button class="btn sm primary" data-task="'+esc(t.taskId)+'">Pick up</button>':(t.runId?'<button class="btn sm" data-run="'+esc(t.runId)+'">See the proof</button>':''))+'</div>'}).join('')+'</div></section>'});
-  h+='</div>';view.innerHTML=h;bindList(view);
+  h+='</div>';if(!put(h))return;bindList(view);
   $$('button[data-task]',view).forEach(function(b){b.onclick=function(e){e.stopPropagation();resumeTask(b.getAttribute('data-task'))}});
   $$('button[data-run]',view).forEach(function(b){b.onclick=function(e){e.stopPropagation();S.runId=b.getAttribute('data-run');loadRunNow().then(function(){location.hash='#proof'})}});
 }
@@ -1002,7 +1069,7 @@ function sessionPoll(){
     (s.entries||[]).forEach(function(e){T.entries.push(e);T.last=Math.max(T.last,e.n)});
     T.busy=s.busy;T.step=s.step;T.ended=s.ended;T.turns=s.turns;T.model=s.model;T.taskId=s.taskId;T.fault=s.fault;T.consent=s.consent||null;T.question=s.question||null;
     var ch=added||s.busy!==wasBusy||(T.consent&&T.consent.id)!==prevC||(T.question&&T.question.id)!==prevQ;
-    if(ch){renderRail();if(S.page==='work')paintWork();else if(S.page==='home'){$('#needs')&&($('#needs').innerHTML=needsHtml(),bindList($('#needs')))}}
+    if(ch){renderRail();if(S.page==='work')paintWork();else if(S.page==='home'){var nd=$('#needs');if(nd&&setHtml(nd,needsHtml()))bindList(nd)}}
     else if(S.page==='work')paintWorkMeta();
     if((T.consent||T.question)&&!(T._noted)){T._noted=1;if(S.page!=='work')toast('Jani needs you. Open Work to answer.')}
     if(!T.consent&&!T.question)T._noted=0;
@@ -1069,24 +1136,104 @@ function ctxHtml(){
 }
 function renderWork(){
   view.classList.add('fill');
-  view.innerHTML='<div class="work2" data-panel="'+(P.panel?'open':'closed')+'"><section class="run"><div class="run-body" id="rb"><div class="col"><div id="rstart"></div><div class="stream" id="rs" role="log" aria-live="off" aria-label="Activity"></div></div></div><form class="composer" id="comp"><div class="col"><div class="runbar" id="rh"></div><div class="cbox"><textarea id="tIn" rows="1" maxlength="60000" autocomplete="off" aria-label="Tell Jani what to do"></textarea><button class="send" id="sendBtn" type="submit" aria-label="Send" title="Send (Enter)">'+ico('send')+'</button></div></div></form></section><aside class="ctx" id="rctx" aria-label="Details"></aside></div>';
+  view.innerHTML='<div class="work2" data-panel="'+(P.panel?'open':'closed')+'"><section class="run"><div class="run-body" id="rb"><div class="col"><div id="rstart"></div><div class="stream" id="rs" role="log" aria-live="off" aria-label="Activity"></div></div></div><form class="composer" id="comp"><div class="col"><div class="runbar" id="rh"></div><div class="slash" id="slash" role="listbox" aria-label="Commands" hidden></div><div class="pmenu" id="plusMenu" role="menu" hidden></div><div class="pmenu pask" id="voiceAsk" role="dialog" aria-label="Voice input" hidden></div><div class="pill" id="pill"><button type="button" class="pbtn" id="plusBtn" aria-label="Add" aria-haspopup="true" aria-expanded="false" title="Add">'+ico('plus')+'</button><textarea id="tIn" rows="1" maxlength="60000" autocomplete="off" aria-label="Tell Jani what to do" placeholder="Type / for commands"></textarea><button type="button" class="pbtn" id="micBtn" aria-label="Voice input" title="Voice input">'+ico('mic')+'</button><button class="send" id="sendBtn" type="submit" aria-label="Send" title="Send (Enter)" hidden>'+ico('send')+'</button></div></div></form></section><aside class="ctx" id="rctx" aria-label="Details"></aside></div>';
+  view._h=null;view._p='work';
   var rb=$('#rb'),ti=$('#tIn');
   rb.addEventListener('scroll',function(){T.follow=rb.scrollHeight-rb.scrollTop-rb.clientHeight<80});
   rb.addEventListener('click',onWorkClick);
   function grow(){ti.style.height='auto';ti.style.height=Math.min(ti.scrollHeight,160)+'px'}
-  ti.addEventListener('input',grow);
+  S.growTi=grow;
+  ti.addEventListener('input',function(){grow();S.slashOff=false;paintSlash();paintRight()});
+  ti.addEventListener('blur',function(){setTimeout(function(){if(document.activeElement!==ti&&!$('#slash:hover'))hideSlash()},120)});
   ti.addEventListener('keydown',function(e){
-    if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('#comp').requestSubmit?$('#comp').requestSubmit():$('#comp').dispatchEvent(new Event('submit',{cancelable:true}))}
-    else if(e.key==='Escape'&&T.busy)api('/api/session/cancel',{}).catch(function(){});
+    var sl=slashState();
+    if(sl&&sl.items.length&&!S.slashOff){
+      if(e.key==='ArrowDown'){e.preventDefault();S.slashSel=(S.slashSel+1)%sl.items.length;paintSlash();return}
+      if(e.key==='ArrowUp'){e.preventDefault();S.slashSel=(S.slashSel+sl.items.length-1)%sl.items.length;paintSlash();return}
+      if(e.key==='Tab'){e.preventDefault();fillSlash(sl.items[S.slashSel]);return}
+      if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();pickSlash(sl.items[S.slashSel]);return}
+      if(e.key==='Escape'){e.preventDefault();S.slashOff=true;paintSlash();return}
+    }
+    if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();submitComposer()}
+    else if(e.key==='Escape'){if(!$('#plusMenu').hidden||!$('#voiceAsk').hidden){closeMenus();return}if(T.busy)api('/api/session/cancel',{}).catch(function(){})}
   });
-  $('#comp').onsubmit=function(e){e.preventDefault();var v=ti.value.trim();if(!v)return;ti.value='';grow();sendText(v)};
+  $('#comp').onsubmit=function(e){e.preventDefault();submitComposer()};
+  $('#plusBtn').onclick=function(e){e.stopPropagation();togglePlus()};
+  $('#micBtn').onclick=function(e){e.stopPropagation();micClick()};
+  $('#plusMenu').onclick=function(e){e.stopPropagation()};$('#voiceAsk').onclick=function(e){e.stopPropagation()};
+  $('#slash').addEventListener('mousedown',function(e){e.preventDefault()});
   $('#rctx').addEventListener('click',function(e){if(e.target.closest('#ctxClose'))setPref('panel',false)});
-  S.nodes={};paintWork(true);
+  S.nodes={};S.slashSel=0;S.slashOff=false;paintWork(true);
   if(S.pendingResume){var id=S.pendingResume;S.pendingResume=null;api('/api/session/resume',{taskId:id,prompt:''}).then(function(){T.busy=true;sessionPoll();toast('Picking up '+taskName(id))}).catch(function(e){toast(e.message,true)})}
   else if(S.pendingSend){var tx=S.pendingSend;S.pendingSend=null;sendText(tx)}
-  else if(S.pendingDraft){ti.value=S.pendingDraft;S.pendingDraft=null;grow();ti.focus();ti.setSelectionRange(ti.value.length,ti.value.length)}
+  else if(S.pendingDraft){ti.value=S.pendingDraft;S.pendingDraft=null;grow();paintRight();ti.focus();ti.setSelectionRange(ti.value.length,ti.value.length)}
   else setTimeout(function(){if(S.page==='work'&&ti&&!T.consent&&!T.question)ti.focus()},60);
 }
+function submitComposer(){var ti=$('#tIn');if(!ti)return;var v=ti.value.trim();if(!v||T.busy)return;ti.value='';if(S.growTi)S.growTi();hideSlash();paintRight();sendText(v)}
+/* what sits at the right of the pill: the mic when empty, send when there is text, stop while Jani works */
+function paintRight(){
+  var ti=$('#tIn'),sb=$('#sendBtn'),mb=$('#micBtn');if(!ti||!sb||!mb)return;
+  var has=ti.value.trim().length>0;
+  if(T.busy){mb.hidden=true;sb.hidden=false;sb.type='button';sb.classList.add('stop');setHtml(sb,ico('stop'));sb.setAttribute('aria-label','Stop');sb.title='Stop (Esc)';sb.onclick=function(){api('/api/session/cancel',{}).then(function(){toast('Stopping. Jani will finish the step it is on.')}).catch(function(x){toast(x.message,true)})}}
+  else{sb.classList.remove('stop');sb.onclick=null;sb.type='submit';setHtml(sb,ico('send'));sb.setAttribute('aria-label','Send');sb.title='Send (Enter)';sb.hidden=!has;mb.hidden=has}
+  mb.classList.toggle('on',!!S.listening);
+}
+/* slash commands */
+function slashState(){
+  var ti=$('#tIn');if(!ti)return null;var v=ti.value;
+  if(v.charAt(0)!=='/'||v.indexOf('\n')>-1)return null;
+  var m=/^\/model\s+(.*)$/.exec(v);
+  if(m){var q=m[1].toLowerCase(),prof=(S.ov&&S.ov.model&&S.ov.model.profiles)||[];return {items:prof.filter(function(p){return p.label.toLowerCase().indexOf(q)===0}).map(function(p){return {fill:'/model '+p.label,name:p.label,sum:p.model,done:true}})}}
+  var q2=v.slice(1);if(/\s/.test(q2))return null;
+  return {items:CMDS.filter(function(c){return c[0].indexOf(q2)===0}).map(function(c){return {fill:'/'+c[0]+(c[1]?' ':''),name:'/'+c[0]+(c[1]?' '+c[1]:''),sum:c[2],done:!c[1]}})};
+}
+function paintSlash(){
+  var box=$('#slash');if(!box)return;var sl=slashState();
+  if(!sl||!sl.items.length||S.slashOff){box.hidden=true;box._h='';return}
+  S.slashSel=Math.min(S.slashSel,sl.items.length-1);
+  var h=sl.items.map(function(it,i){return '<button type="button" class="sitem" role="option" data-si="'+i+'" aria-selected="'+(i===S.slashSel)+'"><span class="sn">'+esc(it.name)+'</span><span class="ss">'+esc(it.sum)+'</span></button>'}).join('');
+  if(setHtml(box,h)){$$('[data-si]',box).forEach(function(b){b.onclick=function(){pickSlash(sl.items[+b.getAttribute('data-si')])}})}
+  else $$('[data-si]',box).forEach(function(b,i){b.setAttribute('aria-selected',String(i===S.slashSel))});
+  box.hidden=false;
+}
+function hideSlash(){var b=$('#slash');if(b){b.hidden=true;b._h=''}}
+function fillSlash(it){var ti=$('#tIn');ti.value=it.fill;if(S.growTi)S.growTi();S.slashSel=0;paintSlash();paintRight();ti.focus()}
+function pickSlash(it){if(it.done){var ti=$('#tIn');ti.value=it.fill.trim();submitComposer()}else fillSlash(it)}
+/* plus: ways to begin */
+function closeMenus(){var p=$('#plusMenu'),v=$('#voiceAsk'),b=$('#plusBtn');if(p)p.hidden=true;if(v)v.hidden=true;if(b)b.setAttribute('aria-expanded','false')}
+function togglePlus(){
+  var m=$('#plusMenu');if(!m)return;if(!m.hidden){closeMenus();return}
+  closeMenus();
+  m.innerHTML='<h4>Commands</h4><button class="mi" data-pm="slash" role="menuitem">'+ico('chat')+'<span style="flex:1">Show the commands</span><kbd>/</kbd></button><h4>Start from an idea</h4>'+STARTERS.map(function(s,i){return '<button class="mi" data-pm="start" data-i="'+i+'" role="menuitem">'+ico('star')+'<span>'+esc(s[0])+'</span></button>'}).join('')+'<h4>Extend</h4><button class="mi" data-pm="plugins" role="menuitem">'+ico('plug')+'<span>Plugins</span></button>';
+  m.hidden=false;$('#plusBtn').setAttribute('aria-expanded','true');
+  $$('[data-pm]',m).forEach(function(b){b.onclick=function(){
+    var k=b.getAttribute('data-pm'),ti=$('#tIn');closeMenus();
+    if(k==='slash'){ti.value='/';if(S.growTi)S.growTi();S.slashOff=false;paintSlash();paintRight();ti.focus()}
+    else if(k==='start'){ti.value=STARTERS[+b.getAttribute('data-i')][1];if(S.growTi)S.growTi();paintRight();ti.focus()}
+    else if(k==='plugins')location.hash='#plugins';
+  }});
+}
+/* mic: browser dictation, only after the person agrees, because the browser's speech service may send audio to its vendor */
+function micClick(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(S.listening){if(S.rec)S.rec.stop();return}
+  if(!SR){toast('This browser has no voice input.',true);return}
+  if(store('jani.voice')!=='1'){
+    var v=$('#voiceAsk');closeMenus();
+    v.innerHTML='<b>Turn on voice input?</b><p class="muted">Your browser turns speech into text, and it may send the audio to its maker to do it. Jani does not receive the audio, only the text you review before sending.</p><div class="row"><button class="btn primary sm" id="voiceYes">Turn on</button><button class="btn sm quiet" id="voiceNo">Not now</button></div>';
+    v.hidden=false;$('#voiceYes').onclick=function(){store('jani.voice','1');v.hidden=true;startVoice(SR)};$('#voiceNo').onclick=function(){v.hidden=true};return;
+  }
+  startVoice(SR);
+}
+function startVoice(SR){
+  var ti=$('#tIn'),base=ti.value?ti.value.replace(/\s+$/,'')+' ':'',rec=new SR();
+  rec.lang=navigator.language||'en-US';rec.interimResults=true;rec.continuous=true;
+  rec.onresult=function(e){var t='';for(var i=0;i<e.results.length;i++)t+=e.results[i][0].transcript;ti.value=base+t;if(S.growTi)S.growTi();paintRight()};
+  rec.onend=function(){S.listening=false;S.rec=null;paintRight()};
+  rec.onerror=function(e){S.listening=false;S.rec=null;paintRight();if(e.error==='not-allowed')toast('Microphone access was blocked.',true)};
+  try{rec.start();S.rec=rec;S.listening=true;paintRight();ti.focus()}catch(x){toast('Could not start voice input.',true)}
+}
+document.addEventListener('click',function(){if(S.page==='work')closeMenus()});
 function onWorkClick(e){
   var t;
   if(t=e.target.closest('[data-consent]')){var c=T.consent;if(!c)return;api('/api/consent',{id:c.id,answer:t.getAttribute('data-consent')}).then(function(){T.consent=null;sessionPoll()}).catch(function(x){toast(x.message,true);sessionPoll()});return}
@@ -1098,7 +1245,7 @@ function onWorkClick(e){
   if(t=e.target.closest('[data-think]')){var n=+t.getAttribute('data-think');T.open[n]=!T.open[n];S.nodes={};paintWork();return}
   if(t=e.target.closest('[data-ap]')){decide(t.getAttribute('data-ap'),!!t.getAttribute('data-yes'));return}
   if(t=e.target.closest('[data-stop]')){api('/api/session/cancel',{}).then(function(){toast('Stopping. Jani will finish the step it is on.')}).catch(function(x){toast(x.message,true)});return}
-  if(t=e.target.closest('[data-starter]')){$('#tIn').value=STARTERS[+t.getAttribute('data-starter')][1];$('#tIn').focus();return}
+  if(t=e.target.closest('[data-starter]')){$('#tIn').value=STARTERS[+t.getAttribute('data-starter')][1];if(S.growTi)S.growTi();paintRight();$('#tIn').focus();return}
 }
 document.addEventListener('keydown',function(e){
   if(S.page!=='work'||e.repeat||e.ctrlKey||e.metaKey||e.altKey)return;
@@ -1116,9 +1263,9 @@ function decide(id,approve){
 function paintWorkMeta(){
   var rh=$('#rh');if(!rh)return;
   var w=stateOfWork(),show=T.busy||T.consent||T.question||T.fault||pending().some(function(a){return !T.taskId||a.taskId===T.taskId});
-  rh.innerHTML=show?'<span class="st '+w[1]+'">'+esc(w[0])+'</span>'+(T.busy&&T.step?'<span class="faint">'+esc(T.step)+'</span>':'')+(T.fault?'<span class="faulttx">'+esc(T.fault)+'</span>':''):'';
-  var sb=$('#sendBtn');if(sb){if(T.busy){sb.type='button';sb.innerHTML=ico('stop');sb.setAttribute('aria-label','Stop');sb.title='Stop (Esc)';sb.onclick=function(){api('/api/session/cancel',{}).then(function(){toast('Stopping. Jani will finish the step it is on.')}).catch(function(x){toast(x.message,true)})}}else{sb.type='submit';sb.innerHTML=ico('send');sb.setAttribute('aria-label','Send');sb.title='Send (Enter)';sb.onclick=null}}
-  var ti=$('#tIn');if(ti){ti.disabled=T.ended;ti.placeholder=T.ended?'This conversation has ended.':T.entries.length?'Reply, add a limit, or give the next step':'Describe the job in your own words'}
+  setHtml(rh,show?'<span class="st '+w[1]+'">'+esc(w[0])+'</span>'+(T.busy&&T.step?'<span class="faint">'+esc(T.step)+'</span>':'')+(T.fault?'<span class="faulttx">'+esc(T.fault)+'</span>':''):'');
+  var ti=$('#tIn');if(ti){ti.disabled=T.ended;var ph=T.ended?'This conversation has ended.':'Type / for commands';if(ti.placeholder!==ph)ti.placeholder=ph}
+  paintRight();
 }
 function paintWork(full){
   if(S.page!=='work'||!$('#rs'))return;
@@ -1145,8 +1292,8 @@ function paintWork(full){
     prev=n;
   });
   var st=$('#rstart');
-  st.innerHTML=(!T.entries.length&&!T.busy)?'<div class="start"><span class="avatar jani lg">'+ico('star')+'</span><h2 style="font-size:20px;letter-spacing:-.01em">Ready when you are.</h2><p class="muted">Describe the job. Jani reads what it needs, shows you what it finds, and stops to ask before it changes or runs anything. You can stop it at any time.</p><div class="ask-row" style="justify-content:center">'+STARTERS.map(function(s,i){return '<button class="chip" data-starter="'+i+'">'+esc(s[0])+'</button>'}).join('')+'</div></div>':'';
-  $('#rctx').innerHTML='<div class="ctxhead"><span>Details</span><button class="ibtn" id="ctxClose" aria-label="Hide details" title="Hide details (Ctrl+J)">'+ico('x')+'</button></div>'+ctxHtml();
+  setHtml(st,(!T.entries.length&&!T.busy)?'<div class="start"><span class="avatar jani lg">'+ico('star')+'</span><h2 style="font-size:20px;letter-spacing:-.01em">Ready when you are.</h2><p class="muted">Describe the job. Jani reads what it needs, shows you what it finds, and stops to ask before it changes or runs anything. You can stop it at any time.</p><div class="ask-row" style="justify-content:center">'+STARTERS.map(function(s,i){return '<button class="chip" data-starter="'+i+'">'+esc(s[0])+'</button>'}).join('')+'</div></div>':'');
+  setHtml($('#rctx'),'<div class="ctxhead"><span>Details</span><button class="ibtn" id="ctxClose" aria-label="Hide details" title="Hide details (Ctrl+J)">'+ico('x')+'</button></div>'+ctxHtml());
   if(near||full)rb.scrollTop=rb.scrollHeight;
 }
 
@@ -1373,9 +1520,18 @@ function H(x){return {html:x}}
 function chipsRow(list,empty){return list&&list.length?'<div class="ask-row">'+list.map(function(x){return '<span class="chip static">'+esc(x)+'</span>'}).join('')+'</div>':'<span class="faint">'+esc(empty||'None')+'</span>'}
 function noteHtml(t,c){return '<div class="note '+(c||'')+'">'+ico(c==='bad'?'alert':'info')+' '+esc(t)+'</div>'}
 function download(name,obj){var blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1000)}
+S.cache={};
 function asyncPage(id,build){
-  var tk=(asyncPage.tk=(asyncPage.tk||0)+1);view.innerHTML='<div class="faint" style="padding:8px 2px">Loading…</div>';
-  Promise.resolve().then(build).then(function(h){if(tk!==asyncPage.tk||S.page!==id)return;view.innerHTML=h.html||h;(h.after||function(){})()}).catch(function(e){if(tk!==asyncPage.tk||S.page!==id)return;view.innerHTML=failHtml(e)});
+  var tk=(asyncPage.tk=(asyncPage.tk||0)+1),c=S.cache[id],lt=null;
+  if(view._p!==id){
+    if(c){put(c.html);c.after()}
+    else lt=setTimeout(function(){if(tk===asyncPage.tk&&S.page===id&&view._p!==id){view.innerHTML='<div class="faint" style="padding:8px 2px">Loading…</div>';view._h=null;view._p=id}},220);
+  }
+  Promise.resolve().then(build).then(function(h){
+    clearTimeout(lt);if(tk!==asyncPage.tk||S.page!==id)return;
+    var html=h.html||h,after=h.after||function(){};S.cache[id]={html:html,after:after};
+    if(put(html))after();
+  }).catch(function(e){clearTimeout(lt);if(tk!==asyncPage.tk||S.page!==id)return;view.innerHTML=failHtml(e);view._h=null;view._p=id});
 }
 function runPickChips(){
   if(!S.runs.length)return '';
@@ -1426,9 +1582,10 @@ function renderMap(){
     h+='<div class="map" id="map"><svg class="edges" id="edges" aria-hidden="true"></svg>'+cols.map(function(c,ci){return '<div class="col"><h3>'+esc(c)+'</h3><div class="nodes">'+nodes.filter(function(n){return n.c===ci}).map(function(n){return '<button class="node'+(n.id==='people'?' you':'')+'" data-id="'+n.id+'" aria-pressed="'+(n.id===sel.id)+'"><b>'+esc(n.t)+'</b><span class="sub">'+esc(n.s)+'</span><span>'+st(n.w[0],n.w[1])+'</span></button>'}).join('')+'</div></div>'}).join('')+'</div>';
     h+='<div class="detail"><div class="row"><b style="font-size:15px">'+esc(sel.t)+'</b>'+st(sel.w[0],sel.w[1])+'<span class="sp">'+techToggle()+'</span></div><p class="muted" style="margin-top:6px;max-width:72ch">'+esc(detail[0])+'</p>'+(detail[1].length?'<div class="rows" style="margin-top:10px;border:1px solid var(--line);border-radius:var(--r-s)">'+detail[1].slice(-12).map(function(x){return '<div>'+describe(x)+'</div>'}).join('')+'</div>'+(detail[1].length>12?'<p class="faint" style="margin-top:6px">Showing the latest 12 of '+detail[1].length+'.</p>':''):'')+(S.tech?'<p class="faint" style="margin-top:8px">Names of files are not kept in the record, only a fingerprint of each, so a step shows what kind of thing it touched and when.</p>':'')+'</div>';
   }
-  view.innerHTML=h;
-  bindTech(renderMap);bindPickRun(renderMap);
-  $$('[data-id]',view).forEach(function(b){b.onclick=function(){S.mapSel=b.getAttribute('data-id');renderMap()}});
+  if(put(h)){
+    bindTech(renderMap);bindPickRun(renderMap);
+    $$('[data-id]',view).forEach(function(b){b.onclick=function(){S.mapSel=b.getAttribute('data-id');renderMap()}});
+  }
   drawEdges(links,sel.id);
 }
 function drawEdges(links,selId){
@@ -1607,9 +1764,9 @@ function approvalsData(){
 function riskRank(r){return {critical:0,high:1,medium:2,low:3}[r]==null?4:{critical:0,high:1,medium:2,low:3}[r]}
 function renderApprovals(soft,force){
   var tk=(renderApprovals.tk=(renderApprovals.tk||0)+1);
-  if(!soft)view.innerHTML='<div class="faint" style="padding:8px 2px">Loading…</div>';
+  var lt=(!soft&&view._p!=='approvals')?setTimeout(function(){if(tk===renderApprovals.tk&&S.page==='approvals'&&view._p!=='approvals'){view.innerHTML='<div class="faint" style="padding:8px 2px">Loading…</div>';view._h=null;view._p='approvals'}},220):null;
   approvalsData().then(function(all){
-    if(tk!==renderApprovals.tk||S.page!=='approvals')return;
+    clearTimeout(lt);if(tk!==renderApprovals.tk||S.page!=='approvals')return;
     var q=S.apQ.trim().toLowerCase(),list=all.filter(function(a){
       if(S.apRisk!=='all'&&String(a.risk).toLowerCase()!==S.apRisk)return false;
       return !q||(String(a.requester)+' '+a.capability+' '+(a.resourcePreview||a.resource)+' '+((a.taskContext&&a.taskContext.purpose)||'')).toLowerCase().indexOf(q)>-1});
@@ -1628,7 +1785,7 @@ function renderApprovals(soft,force){
       return '<tr><td>'+esc(a.requester)+(a.own?' (you)':'')+'</td><td><b>'+esc(wouldDo(a.capability))+'</b><div class="mono faint">'+esc(a.capability)+'</div><div class="mono" style="margin-top:4px;overflow-wrap:anywhere">'+esc(a.resourcePreview||a.resource)+(a.redactedTokens?' <span class="faint">('+a.redactedTokens+' secret'+(a.redactedTokens===1?'':'s')+' hidden)</span>':'')+'</div></td><td>'+esc(clip(purpose,70))+'<div style="margin-top:4px">'+ver+'</div></td><td>'+esc(a.risk)+'</td><td>'+esc(fmtDay(a.expiresAt))+'</td><td>'+act+'</td></tr>'}).join('')+'</tbody></table></div>':'<div class="hero-empty panel" style="padding:32px">'+(all.length?'Nothing matches.':'Nothing is waiting for you.<br><span class="faint">When someone\'s assistant needs a second person, it shows here.</span>')+'</div>')+'</div>';
     h+='<p class="muted" id="status" role="status" aria-live="polite" style="margin-top:10px">'+esc(S.apMsg)+'</p>';
     if(soft&&!force&&document.activeElement&&document.activeElement.id==='apQ')return;
-    view.innerHTML=h;
+    if(!put(h))return;
     var qi=$('#apQ');qi.oninput=function(){S.apQ=qi.value;S.armed=null;var pos=qi.selectionStart;renderApprovals(true,true);var n=$('#apQ');if(n){n.focus();n.setSelectionRange(pos,pos)}};
     $$('[data-risk]',view).forEach(function(b){b.onclick=function(){S.apRisk=b.getAttribute('data-risk');renderApprovals(true)}});
     $$('[data-k]',view).forEach(function(b){b.onclick=function(){
@@ -1651,7 +1808,7 @@ function renderOrg(){
   h+='<section class="panel"><header><h2>Emergency stop</h2></header><div class="rows"><div class="muted">Stops every active workspace in this organisation at once and refuses new work until it is lifted. Use it if something is going wrong. Everything already done stays in the record.</div>'+(hosted()&&isApprover()?'<div class="row"><button class="btn danger" id="kill" data-testid="kill-switch">Pause everything</button></div><p class="muted" id="killMsg" role="status" aria-live="polite"></p>':'<div class="note">'+ico('lock')+' '+(hosted()?'Only an approver can use this.':'This applies to hosted deployments. On a local machine, stop Jani with Ctrl+C.')+'</div>')+'</div></section></div>';
   h+='<section class="panel" style="margin-top:16px"><header><h2>Not built in this version</h2><span class="faint">What a large, multi-organisation rollout needs next</span></header><div class="rows">'+NOT_BUILT.map(function(x){return '<div><div class="row"><b style="flex:1">'+esc(x[0])+'</b>'+st('Not built','warn')+'</div><div class="muted" style="margin-top:2px;max-width:76ch">'+esc(x[1])+'</div></div>'}).join('')+'</div></section>';
   h+='<div style="margin-top:12px">'+techToggle()+'</div>';
-  view.innerHTML=h;bindTech(renderOrg);
+  if(!put(h))return;bindTech(renderOrg);
   var k=$('#kill');if(k)k.onclick=function(){
     if(!S.killArmed){S.killArmed=true;k.textContent='Confirm: stop everyone now';return}
     S.killArmed=false;k.textContent='Pause everything';$('#killMsg').textContent='Stopping…';
@@ -1661,25 +1818,23 @@ function renderOrg(){
 
 /* ---------- about ---------- */
 function renderAbout(){
-  view.innerHTML=head('About this workspace','Built for people who are not engineers. It shows how one agent can serve many jobs without anyone needing to learn how it works.')+
-  '<div class="grid g2"><section class="panel"><header><h2>How it behaves</h2></header><div class="rows"><div><b>A run, not a chat.</b> Every piece of work shows its state, what happened, and a clear stop before anything changes.</div><div><b>Reads are free, actions wait.</b> Anything that writes, runs or sends stops at a card that shows exactly what would happen.</div><div><b>Jani proposes, people decide.</b> Approvals are recorded with who decided and when.</div><div><b>Everything leaves proof</b> in plain language, with technical detail one click away.</div></div></section><section class="panel"><header><h2>What is real here</h2></header><div class="rows"><div>Everything on these pages is read from this running process: its work, approvals, limits and record. Nothing is sample data.</div><div>An empty page means nothing has happened yet, not that something is hidden.</div><div>The record proves what was done, not that it was right. Check the results before you rely on them.</div></div></section></div>';
+  put(head('About this workspace','Built for people who are not engineers. It shows how one agent can serve many jobs without anyone needing to learn how it works.')+
+  '<div class="grid g2"><section class="panel"><header><h2>How it behaves</h2></header><div class="rows"><div><b>A run, not a chat.</b> Every piece of work shows its state, what happened, and a clear stop before anything changes.</div><div><b>Reads are free, actions wait.</b> Anything that writes, runs or sends stops at a card that shows exactly what would happen.</div><div><b>Jani proposes, people decide.</b> Approvals are recorded with who decided and when.</div><div><b>Everything leaves proof</b> in plain language, with technical detail one click away.</div></div></section><section class="panel"><header><h2>What is real here</h2></header><div class="rows"><div>Everything on these pages is read from this running process: its work, approvals, limits and record. Nothing is sample data.</div><div>An empty page means nothing has happened yet, not that something is hidden.</div><div>The record proves what was done, not that it was right. Check the results before you rely on them.</div></div></section></div>');
 }
 
 /* ---------- router ---------- */
 function renderPage(soft){
   var p=S.page;
   if(p!=='work')view.classList.remove('fill');
-  if(p==='home'){view.innerHTML=homeHtml();bindHome()}
+  if(p==='home'){if(put(homeHtml()))bindHome()}
   else if(p==='work'){if(soft&&$('#rs')){paintWork();return}renderWork()}
   else if(p==='plugins')renderPlugins();else if(p==='approvals')renderApprovals();else if(p==='org')renderOrg();else if(p==='tasks')renderTasks();else if(p==='map')renderMap();else if(p==='proof')renderProof();else if(p==='rules')renderRules();
   else if(p==='insights')renderInsights();else if(p==='setup')renderSetup();else renderAbout();
 }
 function route(){
   var h=(location.hash||'#home').slice(1);if(!PAGES[h]||allowedPages().indexOf(h)<0)h='home';
-  S.page=h;renderRail();renderTop();
-  if(h==='home'||h==='tasks'||h==='map'||h==='rules'||h==='proof'||h==='approvals'||h==='org'||h==='plugins'){loadAll().then(function(){if(S.page===h){renderRail();renderPage()}})}
-  else renderPage();
-  if(h!=='work')view.scrollTop=0;
+  S.page=h;renderRail();renderTop();renderPage();
+  if(h==='home'||h==='tasks'||h==='map'||h==='rules'||h==='proof'||h==='approvals'||h==='org'||h==='plugins'){loadAll().then(function(){if(S.page===h){renderRail();renderPage(true)}})}
 }
 window.addEventListener('hashchange',route);
 window.addEventListener('resize',function(){if(S.page==='map')renderMap()});
