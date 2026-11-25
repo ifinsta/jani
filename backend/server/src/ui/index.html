@@ -679,6 +679,13 @@ body{background:var(--surface)}
 .node[aria-pressed="true"]{outline-offset:0}
 .skip:focus{outline-offset:0}
 
+/* download menu */
+.menu.dlmenu{position:fixed;left:0;top:0;right:auto;bottom:auto;width:310px;z-index:70;padding:6px}
+.menu .mi.dl{flex-direction:column;align-items:flex-start;height:auto;gap:1px;padding:8px 10px}
+.menu .mi.dl b{font-weight:600}
+.menu .mi.dl small{color:var(--text-3);font-size:12px;line-height:1.35;white-space:normal}
+.btn[aria-haspopup="menu"] svg:last-child{transform:rotate(90deg);width:14px;height:14px}
+
 </style></head><body>
 <a class="skip" href="#view">Skip to the work</a>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -1510,6 +1517,142 @@ function md(src,opt){
   return html;
 }
 
+/* ---------- proof exports: a readable report, a Markdown copy, a spreadsheet and the verification file ----------
+   All four are made in the page from the verified evidence export, so nothing leaves the machine. */
+var RPT_OUTCOME={recorded_model_complete:'Completed',recorded_model_failed:'Failed',unknown_requires_reconciliation:'Did not finish cleanly'};
+function rptName(id){return 'jani-'+String(id).replace(/[^\w.-]/g,'').slice(0,40)}
+function rptStamp(u){var d=new Date(u*1000);return isNaN(d)?'':d.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'})}
+function rptIso(u){var d=new Date(u*1000);return isNaN(d)?'':d.toISOString()}
+function rptSteps(events){
+  events=events.map(function(e,i){var c=Object.assign({},e);c.seq=i;return c});   // the export is in record order
+  var rows=[],groups={},order=[];
+  events.forEach(function(e){
+    var id=e.invocation_id;
+    if(!id||id==='run'||e.action==='agent.run'||e.action==='agent.model'||e.action==='mirror.compare'){
+      if(e.action==='agent.run')rows.push({seq:e.seq,t:e.timestamp,what:e.decision==='started'?'Jani started the work':'Jani finished the work',result:e.decision==='started'?'':'Done',kind:'run',action:e.action,chain:e.decision,reason:e.reason_code||'',approval:'',digest:e.event_digest});
+      else rows.push({seq:e.seq,t:e.timestamp,what:actionOf(e.action)[0],result:'Done',kind:'run',action:e.action,chain:e.decision,reason:e.reason_code||'',approval:'',digest:e.event_digest});
+      return;
+    }
+    if(!groups[id]){groups[id]=[];order.push(id)}groups[id].push(e);
+  });
+  order.forEach(function(id){
+    var g=groups[id],first=g[0],last=g[g.length-1],chain=g.map(function(e){return e.decision}),asked=chain.indexOf('approval_required')>-1;
+    var cat=actionOf(first.action)[1],res;
+    if(chain.indexOf('deny')>-1)res='Refused';else if(chain.indexOf('failed')>-1)res='Failed';else if(last.decision==='approval_required')res='Waiting for approval';else if(asked)res='Done, after a person approved';else res='Done';
+    var ap=g.filter(function(e){return e.approval_id})[0];
+    rows.push({seq:first.seq,t:first.timestamp,what:/^(Refused|Failed)$/.test(res)?'Tried to '+wouldDo(first.action).toLowerCase():actionOf(first.action)[0],result:res,kind:asked?'asked':cat==='read'?'read':'change',action:first.action,chain:chain.join(' > '),reason:(g.filter(function(e){return e.reason_code}).pop()||{}).reason_code||'',approval:ap?ap.approval_id:'',digest:first.event_digest});
+  });
+  rows.sort(function(a,b){return (a.seq||0)-(b.seq||0)||a.t-b.t});
+  return rows;
+}
+function rptModel(id){
+  return api('/api/evidence?id='+encodeURIComponent(id)).then(function(ex){
+    var rc=ex.receipt||{},events=ex.events||[],steps=rptSteps(events),o=S.ov||{},j=o.journal||{};
+    var run=S.runs.filter(function(r){return r.runId===id})[0]||{};
+    var ids=[];events.forEach(function(e){if(e.approval_id&&ids.indexOf(e.approval_id)<0)ids.push(e.approval_id)});
+    return Promise.all(ids.slice(0,25).map(function(a){return api('/api/approval?id='+encodeURIComponent(a)).then(function(d){return d.approval}).catch(function(){return null})})).then(function(aps){
+      var first=events[0]||{},last=events[events.length-1]||{};
+      var R={
+        runId:id,taskId:first.task_id||run.taskId||'',exportedAt:ex.exportedAt||Math.floor(Date.now()/1000),
+        start:first.timestamp||run.firstAt||0,end:last.timestamp||run.lastAt||0,
+        outcome:RPT_OUTCOME[rc.modelStatus]||(statusWord(run.status)[0])||'Unknown',
+        org:o.tenant||'local',who:S.acct||(o.principal&&!/^(local-)?operator$/.test(o.principal)?o.principal:'you'),version:o.version||'',
+        chainOk:rc.journalChainVerified!==false&&j.ok!==false,journalEntries:j.events||0,receipt:rc,note:ex.note||'',
+        steps:steps,
+        approvals:aps.filter(Boolean).map(function(a){return {id:a.approvalId,what:wouldDo(a.capability),resource:a.resource||'',requester:a.requester||'',approver:a.approver||'',status:a.status||'',role:a.requiredRole||'',risk:a.risk||'',decidedAt:a.decidedAt||0,expiresAt:a.expiresAt||0}}),
+        counts:{steps:steps.filter(function(s){return s.kind!=='run'}).length,reads:steps.filter(function(s){return s.kind==='read'}).length,changes:steps.filter(function(s){return s.kind==='change'&&/^Done/.test(s.result)}).length,refused:steps.filter(function(s){return /^(Refused|Failed)$/.test(s.result)}).length,asked:steps.filter(function(s){return s.kind==='asked'}).length}
+      };
+      return {R:R,raw:ex};
+    });
+  });
+}
+function rptCaveat(R){return 'This is a record of what was done, not proof that it was done correctly. It does not check that tests passed, that the result is right, or that the changes were reconciled with other systems.'}
+function rptHtml(R,nonce){
+  var rc=R.receipt||{},c=R.counts;
+  var css='@page{margin:16mm}*{box-sizing:border-box}body{font:14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#12161C;margin:0;background:#fff}main{max-width:860px;margin:0 auto;padding:28px 24px 48px}h1{font-size:24px;margin:4px 0 6px;letter-spacing:-.01em}h2{font-size:15px;margin:26px 0 8px;padding-bottom:5px;border-bottom:1px solid #DCE1E9}.kicker{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#636D7C}.meta{color:#454E5C;font-size:13px}.ok{color:#146C43;font-weight:600}.bad{color:#B42318;font-weight:600}.warn{color:#8A4B00;font-weight:600}.glance{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid #DCE1E9;border-radius:8px;margin:14px 0}.glance div{padding:10px 14px;border-left:1px solid #DCE1E9}.glance div:first-child{border-left:0}.glance b{display:block;font-size:22px;line-height:1.2}.glance span{font-size:12px;color:#636D7C}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#636D7C;padding:6px 8px;border-bottom:1px solid #8A93A3}td{padding:6px 8px;border-bottom:1px solid #E6E8EC;vertical-align:top}tr{break-inside:avoid}.tech{font-size:11px;color:#454E5C}.tech td,.tech th{padding:4px 6px}.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;overflow-wrap:anywhere}.note{background:#F6F7F9;border:1px solid #E6E8EC;border-radius:8px;padding:10px 14px;font-size:13px}.bar{display:flex;gap:10px;align-items:center;margin:0 0 18px}.bar button{font:inherit;padding:6px 12px;border:1px solid #8A93A3;border-radius:6px;background:#fff;cursor:pointer}footer{margin-top:30px;font-size:11px;color:#636D7C}@media print{.bar{display:none}main{padding:0}}';
+  var rows=R.steps.map(function(s){var cls=/^Done/.test(s.result)?'ok':/^(Refused|Failed)$/.test(s.result)?'bad':s.result?'warn':'';return '<tr><td>'+esc(rptStamp(s.t))+'</td><td>'+esc(s.what)+'</td><td class="'+cls+'">'+esc(s.result)+'</td></tr>'}).join('');
+  var ap=R.approvals.length?'<h2>Decisions by people</h2><table><thead><tr><th>What</th><th>Asked by</th><th>Decided by</th><th>Result</th><th>When</th></tr></thead><tbody>'+R.approvals.map(function(a){return '<tr><td>'+esc(a.what)+'<div class="mono">'+esc(clip(a.resource,90))+'</div></td><td>'+esc(a.requester)+'</td><td>'+esc(a.approver||'Not decided')+'</td><td>'+esc({approved:'Approved',rejected:'Rejected',consumed:'Approved and used',pending:'Waiting',expired:'Expired'}[a.status]||a.status)+'</td><td>'+esc(a.decidedAt?rptStamp(a.decidedAt):'')+'</td></tr>'}).join('')+'</tbody></table>':'';
+  var tech=R.steps.map(function(s){return '<tr><td>'+esc(rptIso(s.t))+'</td><td class="mono">'+esc(s.action)+'</td><td class="mono">'+esc(s.chain)+'</td><td class="mono">'+esc(s.reason)+'</td><td class="mono">'+esc(short(s.digest,16))+'</td></tr>'}).join('');
+  var oc=/^Completed$/.test(R.outcome)?'ok':/^Failed$/.test(R.outcome)?'bad':'warn';
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Record of work · '+esc(short(R.runId,14))+'</title><style nonce="'+esc(nonce)+'">'+css+'</style></head><body><main>'+
+   '<div class="bar"><button id="print" type="button">Print or save as PDF</button><span class="meta">Choose “Save as PDF” as the printer.</span></div>'+
+   '<div class="kicker">Record of work</div><h1>'+esc(R.taskId?'Task '+short(String(R.taskId).replace(/^task-/,''),10):'Run '+short(R.runId,12))+'</h1>'+
+   '<div class="meta">'+esc(R.org)+' · for '+esc(R.who)+' · '+esc(rptStamp(R.start))+(R.end&&R.end!==R.start?' to '+esc(rptStamp(R.end)):'')+'</div>'+
+   '<p>Outcome: <span class="'+oc+'">'+esc(R.outcome)+'</span>. Record: <span class="'+(R.chainOk?'ok':'bad')+'">'+(R.chainOk?'verified, no entry was changed after the fact':'damaged, do not rely on this report')+'</span>.</p>'+
+   '<div class="glance"><div><b>'+c.steps+'</b><span>Steps taken</span></div><div><b>'+c.reads+'</b><span>Things read</span></div><div><b>'+c.changes+'</b><span>Changes made</span></div><div><b>'+c.refused+'</b><span>Refused or failed</span></div></div>'+
+   (c.asked?'<p class="meta">'+c.asked+(c.asked===1?' step needed':' steps needed')+' a person to decide before it ran.</p>':'')+
+   '<h2>What happened</h2>'+(rows?'<table><thead><tr><th>When</th><th>Step</th><th>Result</th></tr></thead><tbody>'+rows+'</tbody></table>':'<p class="meta">No steps were recorded.</p>')+ap+
+   '<h2>How to read this</h2><div class="note">'+esc(rptCaveat(R))+'</div>'+
+   '<h2>Technical details, for an auditor</h2><table class="tech"><thead><tr><th>Time (UTC)</th><th>Action</th><th>Decisions</th><th>Reason</th><th>Entry</th></tr></thead><tbody>'+tech+'</tbody></table>'+
+   '<p class="tech">Run <span class="mono">'+esc(R.runId)+'</span>. Entries for this run: '+esc(rc.auditEventCount!=null?rc.auditEventCount:R.steps.length)+'. Last entry <span class="mono">'+esc(short(rc.lastRunEventDigest||'',32))+'</span>. To check this report, use the file <span class="mono">'+esc(rptName(R.runId))+'-verification.json</span> with <span class="mono">jani audit verify</span>.</p>'+
+   '<footer>Made by Jani '+esc(R.version)+' on '+esc(rptStamp(R.exportedAt))+'. Everything here was read from the local record. Nothing was sent anywhere.</footer></main>'+
+   '<script nonce="'+esc(nonce)+'">document.getElementById("print").addEventListener("click",function(){window.print()})<\/script></body></html>';
+}
+function mdCell(s){return String(s==null?'':s).replace(/\|/g,'\\|').replace(/\n/g,' ')}
+function rptMd(R){
+  var c=R.counts,rc=R.receipt||{},L=[];
+  L.push('# Record of work: '+(R.taskId?'task '+short(String(R.taskId).replace(/^task-/,''),10):'run '+short(R.runId,12)),'');
+  L.push('**Organisation:** '+R.org+'  ','**For:** '+R.who+'  ','**When:** '+rptStamp(R.start)+(R.end&&R.end!==R.start?' to '+rptStamp(R.end):'')+'  ','**Outcome:** '+R.outcome+'  ','**Record:** '+(R.chainOk?'verified, no entry was changed after the fact':'damaged, do not rely on this report'),'');
+  L.push('## At a glance','','| Steps taken | Things read | Changes made | Refused or failed |','|---:|---:|---:|---:|','| '+c.steps+' | '+c.reads+' | '+c.changes+' | '+c.refused+' |','');
+  if(c.asked)L.push(c.asked+(c.asked===1?' step needed':' steps needed')+' a person to decide before it ran.','');
+  L.push('## What happened','');
+  if(R.steps.length){L.push('| When | Step | Result |','|---|---|---|');R.steps.forEach(function(s){L.push('| '+mdCell(rptStamp(s.t))+' | '+mdCell(s.what)+' | '+mdCell(s.result)+' |')})}else L.push('No steps were recorded.');
+  L.push('');
+  if(R.approvals.length){L.push('## Decisions by people','','| What | Asked by | Decided by | Result | When |','|---|---|---|---|---|');R.approvals.forEach(function(a){L.push('| '+mdCell(a.what+(a.resource?' ('+clip(a.resource,70)+')':''))+' | '+mdCell(a.requester)+' | '+mdCell(a.approver||'Not decided')+' | '+mdCell({approved:'Approved',rejected:'Rejected',consumed:'Approved and used',pending:'Waiting',expired:'Expired'}[a.status]||a.status)+' | '+mdCell(a.decidedAt?rptStamp(a.decidedAt):'')+' |')});L.push('')}
+  L.push('## How to read this','',rptCaveat(R),'');
+  L.push('## Technical details','','Run `'+R.runId+'`. Entries for this run: '+(rc.auditEventCount!=null?rc.auditEventCount:R.steps.length)+'. Last entry `'+short(rc.lastRunEventDigest||'',32)+'`. To check this report, use `'+rptName(R.runId)+'-verification.json` with `jani audit verify`.','');
+  L.push('| Time (UTC) | Action | Decisions | Reason | Entry |','|---|---|---|---|---|');
+  R.steps.forEach(function(s){L.push('| '+rptIso(s.t)+' | `'+mdCell(s.action)+'` | '+mdCell(s.chain)+' | '+mdCell(s.reason)+' | `'+short(s.digest,16)+'` |')});
+  L.push('','_Made by Jani '+R.version+' on '+rptStamp(R.exportedAt)+'. Read from the local record; nothing was sent anywhere._','');
+  return L.join('\n');
+}
+function csvCell(v){
+  if(v==null)return '';
+  if(typeof v==='number')return String(v);
+  var s=String(v);
+  if(/^[=+\-@\t\r]/.test(s))s="'"+s;   // a spreadsheet must never read text from the record as a formula
+  return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+}
+function rptCsv(R){
+  var head=['time_utc','time_local','step','result','kind','action','decisions','reason_code','approval_id','entry_digest','run_id','task_id'];
+  var out=[head.join(',')];
+  R.steps.forEach(function(s){out.push([rptIso(s.t),rptStamp(s.t),s.what,s.result,s.kind,s.action,s.chain,s.reason,s.approval,s.digest,R.runId,R.taskId].map(csvCell).join(','))});
+  return '﻿'+out.join('\r\n')+'\r\n';
+}
+function saveBlob(name,text,type){
+  var blob=new Blob([text],{type:type+';charset=utf-8'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1500);
+}
+function exportRun(id,kind){
+  if(kind==='json'){return api('/api/evidence?id='+encodeURIComponent(id)).then(function(x){saveBlob(rptName(id)+'-verification.json',JSON.stringify(x,null,2),'application/json');toast('Saved the verification file')}).catch(function(e){toast(e.message,true)})}
+  var w=null;
+  if(kind==='report'){try{w=window.open('','_blank')}catch(e){w=null}}
+  return rptModel(id).then(function(m){
+    var R=m.R,nonce=(document.querySelector('script[nonce]')||{}).nonce||'';
+    if(kind==='report'){
+      var html=rptHtml(R,nonce);
+      if(w){w.document.open();w.document.write(html);w.document.close();try{w.opener=null}catch(e){}toast('Report opened in a new tab. Use Print or save as PDF there.')}
+      else{saveBlob(rptName(id)+'-report.html',html,'text/html');toast('Saved the report. Open it and choose Print, then Save as PDF.')}
+    }else if(kind==='md'){saveBlob(rptName(id)+'-report.md',rptMd(R),'text/markdown');toast('Saved the Markdown report')}
+    else if(kind==='csv'){saveBlob(rptName(id)+'-timeline.csv',rptCsv(R),'text/csv');toast('Saved the spreadsheet')}
+  }).catch(function(e){if(w)try{w.close()}catch(x){}toast(e.message,true)});
+}
+var DL_OPTIONS=[['report','Report','Readable, printable. Save as PDF from the print dialog.'],['md','Markdown','The same report as text, for tickets and notes.'],['csv','Spreadsheet','Every step as a table, for sorting and filtering.'],['json','Verification file','For an auditor or a tool that re-checks the record.']];
+function closeDlMenu(){var m=$('#dlMenu');if(m)m.remove()}
+function openDlMenu(btn,id){
+  closeDlMenu();
+  var r=btn.getBoundingClientRect(),m=document.createElement('div');m.id='dlMenu';m.className='menu dlmenu';m.setAttribute('role','menu');
+  m.innerHTML=DL_OPTIONS.map(function(o){return '<button class="mi dl" role="menuitem" data-kind="'+o[0]+'"><b>'+esc(o[1])+'</b><small>'+esc(o[2])+'</small></button>'}).join('');
+  document.body.appendChild(m);
+  var w=m.offsetWidth,hgt=m.offsetHeight,left=Math.max(8,Math.min(innerWidth-w-8,r.right-w)),top=r.bottom+4+hgt>innerHeight?Math.max(8,r.top-hgt-4):r.bottom+4;
+  m.style.left=left+'px';m.style.top=top+'px';
+  $$('[data-kind]',m).forEach(function(b){b.onclick=function(e){e.stopPropagation();var k=b.getAttribute('data-kind');closeDlMenu();exportRun(id,k)}});
+  m.onclick=function(e){e.stopPropagation()};
+  var first=$('[data-kind]',m);if(first)first.focus();
+}
+document.addEventListener('click',closeDlMenu);
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDlMenu()});
+window.addEventListener('resize',closeDlMenu);
+
 /* ---------- helpers for pages ---------- */
 function head(title,lead,actions){return '<div class="page-head"><div><h1>'+esc(title)+'</h1>'+(lead?'<p class="lead">'+esc(lead)+'</p>':'')+'</div>'+(actions?'<div class="act">'+actions+'</div>':'')+'</div>'}
 function techToggle(){return '<label class="sp row" style="gap:8px;cursor:pointer"><input type="checkbox" id="techT" '+(S.tech?'checked':'')+'> Show technical details</label>'}
@@ -1617,14 +1760,14 @@ function renderProof(){
       h+='<div class="row" style="margin-bottom:14px"><div class="ask-row" role="group" aria-label="Filter">'+[['all','Everything'],['dec','Asked a person'],['chg','Changes'],['bad','Refused or failed'],['read','Reads']].map(function(c){return '<button class="chip" aria-pressed="'+(f===c[0])+'" data-pf="'+c[0]+'">'+c[1]+'</button>'}).join('')+'<label class="chip static" style="cursor:pointer"><input type="checkbox" id="jrun" '+(S.jfRun?'checked':'')+'> This run only</label></div>'+techToggle()+'</div>';
       h+=rows.length?'<div class="tl" role="list">'+rows.map(function(e){var s=eventSentence(e);return '<div class="e '+s.k+'" role="listitem"><div class="t">'+esc(fmtDay(e.timestamp))+(s.k==='dec'?' · needs a person':s.k==='chg'?' · change made':s.k==='bad'?' · stopped':'')+'</div><div><b>'+esc(s.who)+'</b> '+esc(s.text)+' '+st(s.d[0],s.d[1])+'</div>'+(S.tech?'<div class="mono faint" style="margin-top:4px">'+esc(e.action+' · '+(e.reason_code||'no reason')+' · run '+short(e.run_id,12)+' · sha256:'+short(e.event_digest,20))+'</div>':'')+'</div>'}).join('')+'</div>':'<div class="hero-empty panel" style="padding:32px">'+(j.total?'Nothing matches this filter.':'Nothing recorded yet.<br><span class="faint">The record starts with the first piece of work.</span>')+'</div>';
       if(j.hasMore)h+='<p class="faint" style="margin-top:8px">Showing the latest '+lim+' entries. Narrow with the filters above.</p>';
-      h+='<section class="panel" style="margin-top:20px"><header><h2>Evidence packs</h2><span class="faint">One signed-off summary per piece of work</span></header>'+(ev.length?tbl(['Work','Outcome','Steps','Refused',''],ev.map(function(x){var rc=x.receipt;if(!rc)return [x.runId,st('No receipt','bad'),'','',''];var w={recorded_model_complete:['Completed','ok'],recorded_model_failed:['Failed','bad'],unknown_requires_reconciliation:['Not finished cleanly','warn']}[rc.modelStatus]||[rc.modelStatus,''];return [short(x.runId,14),H(st(w[0],w[1])),rc.auditEventCount,rc.decisionDenials,H('<button class="btn sm" data-ev="'+esc(x.runId)+'">'+ico('file')+' Download</button>')]})):'<div class="rows"><div class="faint">No evidence packs yet. One appears when a piece of work is recorded.</div></div>')+'<div class="rows"><div class="faint">An evidence pack shows what was recorded. It does not prove the work is correct, that tests passed, or that effects were reconciled.</div></div></section>';
+      h+='<section class="panel" style="margin-top:20px"><header><h2>Evidence packs</h2><span class="faint">A readable report, a spreadsheet and a file an auditor can check</span></header>'+(ev.length?tbl(['Work','Outcome','Steps','Refused',''],ev.map(function(x){var rc=x.receipt;if(!rc)return [x.runId,st('No receipt','bad'),'','',''];var w={recorded_model_complete:['Completed','ok'],recorded_model_failed:['Failed','bad'],unknown_requires_reconciliation:['Not finished cleanly','warn']}[rc.modelStatus]||[rc.modelStatus,''];return [short(x.runId,14),H(st(w[0],w[1])),rc.auditEventCount,rc.decisionDenials,H('<button class="btn sm" data-ev="'+esc(x.runId)+'" aria-haspopup="menu" title="Choose a format">'+ico('file')+' Download '+ico('chev')+'</button>')]})):'<div class="rows"><div class="faint">No evidence packs yet. One appears when a piece of work is recorded.</div></div>')+'<div class="rows"><div class="faint">An evidence pack shows what was recorded. It does not prove the work is correct, that tests passed, or that effects were reconciled.</div></div></section>';
       if(rec&&rec.runs&&rec.runs.length){var bad=rec.runs.filter(function(x){return x.outcome==='unknown_requires_reconciliation'});h+='<section class="panel" style="margin-top:16px"><header><h2>Work that did not finish cleanly</h2><span class="faint">'+bad.length+' to check</span></header><div class="rows">'+(bad.length?bad.slice(0,8).map(function(x){return '<div class="row"><div style="flex:1;min-width:200px"><b>'+esc(taskName(x.taskId))+'</b><div class="faint">'+esc(x.reason||'')+' · last activity '+esc(fmtDay(x.lastTimestamp))+'</div></div>'+st('Needs a look','warn')+'</div>'}).join(''):'<div class="faint">Everything recorded finished cleanly.</div>')+'<div class="faint">'+esc(rec.note||'')+'</div></div></section>'}
       return {html:h,after:function(){
         bindTech(renderProof);
         $$('[data-pf]',view).forEach(function(b){b.onclick=function(){S.jf=b.getAttribute('data-pf');renderProof()}});
         $('#jrun').onchange=function(e){S.jfRun=e.target.checked;renderProof()};
         $('#verify').onclick=function(){api('/api/audit').then(function(x){$('#verifyMsg').textContent=x.ok?plural(x.events||0,'entry','entries')+' checked just now. None were changed after the fact.':'Check failed at line '+x.failure_line+'.';toast(x.ok?'Record verified':'Record damaged',!x.ok);if(!x.ok)loadOverview()}).catch(function(e){toast(e.message,true)})};
-        $$('[data-ev]',view).forEach(function(b){b.onclick=function(){api('/api/evidence?id='+encodeURIComponent(b.getAttribute('data-ev'))).then(function(x){download('jani-evidence-'+b.getAttribute('data-ev')+'.json',x)}).catch(function(e){toast(e.message,true)})}});
+        $$('[data-ev]',view).forEach(function(b){b.onclick=function(e){e.stopPropagation();openDlMenu(b,b.getAttribute('data-ev'))}});
       }};
     });
   });

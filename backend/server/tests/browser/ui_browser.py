@@ -52,6 +52,32 @@ try:
                 check('the approved write landed in the worktree', os.path.exists(os.path.join(repo, 'out/notes.txt')))
                 p.evaluate('location.hash="#proof"'); p.wait_for_timeout(900)
                 txt = p.inner_text('#view'); check('Proof shows the record verified with changes and a decision', 'Record verified' in txt and 'changed a file' in txt.lower())
+                # Proof can be taken away in four forms: a readable report, Markdown, a spreadsheet and the verification file.
+                p.wait_for_selector('[data-ev]', timeout=10000); p.click('[data-ev]'); p.wait_for_timeout(200)
+                names = p.eval_on_selector_all('#dlMenu .mi b', 'e=>e.map(x=>x.textContent)')
+                check('Download offers a report, Markdown, a spreadsheet and a verification file', names == ['Report', 'Markdown', 'Spreadsheet', 'Verification file'], str(names))
+                with p.expect_download() as dl:
+                    p.click('#dlMenu [data-kind="md"]')
+                md_text = open(dl.value.path(), encoding='utf-8').read()
+                check('the Markdown report reads in plain words', md_text.startswith('# Record of work') and '## What happened' in md_text and '| Steps taken |' in md_text and 'Ran a command' in md_text and 'Changed a file' in md_text and dl.value.suggested_filename.endswith('-report.md'))
+                p.click('[data-ev]')
+                with p.expect_download() as dl:
+                    p.click('#dlMenu [data-kind="csv"]')
+                csv_text = open(dl.value.path(), encoding='utf-8').read()
+                check('the spreadsheet has a header and one row per step', csv_text.startswith('\ufefftime_utc,time_local,step,result') and len(csv_text.strip().split('\r\n')) >= 5 and dl.value.suggested_filename.endswith('-timeline.csv'))
+                p.click('[data-ev]')
+                with p.expect_download() as dl:
+                    p.click('#dlMenu [data-kind="json"]')
+                ev = json.load(open(dl.value.path(), encoding='utf-8'))
+                check('the verification file is the full evidence export', ev.get('schemaVersion', '').startswith('jani.run-evidence-export') and 'receipt' in ev and len(ev.get('events', [])) >= 5)
+                p.click('[data-ev]')
+                with p.context.expect_page() as pg:
+                    p.click('#dlMenu [data-kind="report"]')
+                rep = pg.value; rep.wait_for_load_state(); rep.wait_for_timeout(400)
+                check('the report opens as a readable, styled page with a print button', rep.query_selector('h1') is not None and rep.query_selector('#print') is not None and rep.eval_on_selector('body', 'e=>getComputedStyle(e).fontSize') == '14px' and 'Record of work' in rep.inner_text('body') and 'verified' in rep.inner_text('body'))
+                rep.evaluate('window.__n=0;window.print=()=>{window.__n++}'); rep.click('#print')
+                check('the report’s print button opens the print dialog', rep.evaluate('window.__n') == 1)
+                rep.close()
                 p.evaluate('location.hash="#map"'); p.wait_for_timeout(700)
                 check('How it fits shows the nodes', len(p.query_selector_all('.node[data-id]')) >= 5)
                 # Markdown: a scripted answer that uses every construct, plus things that must never run.
