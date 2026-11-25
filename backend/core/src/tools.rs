@@ -31,6 +31,11 @@ pub mod action {
     pub const MIRROR_COMPARE: &str = "mirror.compare";
     /// Recorded when a tool request fails argument validation.
     pub const TOOL_INVALID_ARGUMENTS: &str = "tool.invalid_arguments";
+    /// An acceptance check the *operator side* ran after a delivery attempt. Never
+    /// a model-invoked tool: the model cannot claim or forge one.
+    pub const ACCEPTANCE_RUN: &str = "acceptance.run";
+    /// The end of one delivery: its outcome, verified or not.
+    pub const DELIVERY_RUN: &str = "delivery.run";
 }
 
 /// Tools the model may invoke. Matching on the enum is exhaustive, so a new

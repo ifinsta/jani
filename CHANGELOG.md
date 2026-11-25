@@ -20,6 +20,11 @@ This page records what changed and what it means for compatibility. It is a deve
 - `releases/` is a commit-based channel, not a tagged release feed. `releases/agent/windows/v0.1.2/` contains the Windows binary built from commit `c2b8b60` with clean build inputs (SHA-256 `5c11ec31…`, 9,818,112 bytes); the installed copy at `%LOCALAPPDATA%\Jani\bin\jani.exe` has the same digest.
 - This page describes commit `c2b8b60` (2026-10-27). Later documentation, probe and evidence changes are listed under Unreleased.
 
+## Unreleased: delivery
+
+- **`jani deliver "TASK" --accept CMD`** runs a task on its own git branch (a worktree; your checkout is untouched), then has the **host** run the acceptance checks, which the model cannot run, skip or edit. A failing check goes back to the agent for up to `--repair-rounds` turns of the same conversation. Changes inside the write scope are committed (hooks disabled) with the outcome in the message; `--push` and `--pr` publish if asked. The report (`deliveries/<id>/report.md`) lists every check, the diff, and any test files the agent changed. Outcomes are `verified`, `unverified` (no checks declared) or `failed`; a false "all tests pass" is `failed`. See [DELIVERY.md](DELIVERY.md).
+- Journal: `acceptance.run` and `delivery.run` events.
+
 ## Unreleased: smart command execution
 
 - **`--exec smart`**: the agent is no longer limited to a fixed list of test commands. Read-only inspection (`ls`, `grep`, `rg`, `find`, `git status`...) runs on its own; builds and tests (`cargo`, `npm run`, `make`, `pytest`...) run on their own when a sandbox confines them (worktree read-only apart from the write scope, no network) and ask otherwise; privilege escalation, disk tools, deleting outside the worktree, force-push and publishing are always refused; everything else asks the operator. See [EXECUTION.md](EXECUTION.md).

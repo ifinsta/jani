@@ -15,6 +15,7 @@ pub mod defaults {
     pub const API_BASE: &str = "https://api.openai.com/v1";
     pub const MAX_OUTPUT_TOKENS: usize = 4096;
     pub const MAX_STEPS: usize = 100;
+    pub const REPAIR_ROUNDS: usize = 3;
     pub const TENANT: &str = "local";
     pub const PRINCIPAL: &str = "local-operator";
     pub const PURPOSE: &str = "SOFTWARE_DEV";
@@ -165,6 +166,14 @@ pub struct Config {
     pub allow_write: bool,
     pub allow_exec: bool,
     pub exec_mode: ExecMode,
+    /// `jani deliver`: acceptance checks the host runs after the agent finishes.
+    pub accept: Vec<String>,
+    pub repair_rounds: usize,
+    pub branch: Option<String>,
+    pub no_worktree: bool,
+    pub no_commit: bool,
+    pub push_remote: Option<String>,
+    pub open_pr: bool,
     pub write_paths: Vec<PathBuf>,
     pub exec_programs: Vec<String>,
     pub mode: RuntimeMode,
@@ -250,6 +259,7 @@ USAGE:
   jani skills [OPTIONS]
   jani run "TASK" [OPTIONS]
   jani --print "TASK" [OPTIONS]
+  jani deliver "TASK" [--accept CMD]... [OPTIONS]
   jani repl [OPTIONS]
   jani sandbox doctor|check [OPTIONS]
   jani plugins list|inspect|verify [ID] [OPTIONS]
@@ -320,6 +330,13 @@ OPTIONS:
   --allow-write           Enable gated file editing
   --write-path PATH       Approved relative edit scope; repeat as necessary
   --allow-exec            Enable allowlisted test/git commands
+  --accept CMD            deliver: a check the host runs after the agent finishes (repeatable)
+  --repair-rounds N       deliver: times a failing check is fed back to the agent (default {repair_rounds})
+  --branch NAME           deliver: branch for the work (default jani/<delivery id>)
+  --no-worktree           deliver: work in the checkout itself, not a git worktree
+  --no-commit             deliver: leave the changes uncommitted
+  --push REMOTE           deliver: push the branch to REMOTE when done
+  --pr                    deliver: open a pull request with `gh` after pushing
   --exec MODE             Command execution: off (default), allowlist (= --allow-exec) or smart:
                           read-only inspection runs, builds/tests run when a sandbox contains
                           them, anything else asks the operator. See docs/EXECUTION.md
@@ -381,6 +398,7 @@ verified backend is selected and attested.
         mcp_agent = defaults::MCP_AGENT,
         max_tokens = defaults::MAX_OUTPUT_TOKENS,
         max_steps = defaults::MAX_STEPS,
+        repair_rounds = defaults::REPAIR_ROUNDS,
         interval = defaults::UPDATE_INTERVAL_SECONDS,
         state_dir = defaults::STATE_DIR_NAME,
         settings_file = defaults::SETTINGS_FILE_NAME,
@@ -520,6 +538,13 @@ impl Config {
             allow_write: false,
             allow_exec: false,
             exec_mode: ExecMode::Off,
+            accept: Vec::new(),
+            repair_rounds: defaults::REPAIR_ROUNDS,
+            branch: None,
+            no_worktree: false,
+            no_commit: false,
+            push_remote: None,
+            open_pr: false,
             write_paths: Vec::new(),
             exec_programs: Vec::new(),
             mode: RuntimeMode::LocalUnmanaged,
@@ -914,7 +939,7 @@ impl Config {
                         }
                     }
                 }
-                "inspect" | "evidence" => {
+                "inspect" | "evidence" | "deliver" => {
                     cfg.command = a.into();
                     command_seen = true;
                     if let Some(next) = args.get(i + 1) {
@@ -1022,6 +1047,20 @@ impl Config {
                         cfg.exec_mode = ExecMode::Allowlist;
                     }
                 }
+                "--accept" => cfg.accept.push(take_value(args, &mut i, a)?),
+                "--repair-rounds" => {
+                    cfg.repair_rounds = take_value(args, &mut i, a)?
+                        .parse()
+                        .map_err(|_| "--repair-rounds must be 0..10".to_string())?;
+                    if cfg.repair_rounds > 10 {
+                        return Err("--repair-rounds must be 0..10".into());
+                    }
+                }
+                "--branch" => cfg.branch = Some(take_value(args, &mut i, a)?),
+                "--no-worktree" => cfg.no_worktree = true,
+                "--no-commit" => cfg.no_commit = true,
+                "--push" => cfg.push_remote = Some(take_value(args, &mut i, a)?),
+                "--pr" => cfg.open_pr = true,
                 "--exec" => {
                     let value = take_value(args, &mut i, a)?;
                     cfg.exec_mode = ExecMode::parse(&value)

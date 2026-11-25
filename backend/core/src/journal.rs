@@ -40,6 +40,13 @@ pub mod reason {
     /// was closed with a handoff instead of being thrown away. Recorded as completed.
     pub const CHECKPOINT: &str = "step_checkpoint";
     pub const STALLED: &str = "repeated_calls";
+    /// Acceptance checks run by the host after a delivery attempt.
+    pub const ACCEPTANCE_PASSED: &str = "acceptance_passed";
+    pub const ACCEPTANCE_FAILED: &str = "acceptance_failed";
+    /// How a delivery ended. Only `delivery_verified` means checks the host ran passed.
+    pub const DELIVERY_VERIFIED: &str = "delivery_verified";
+    pub const DELIVERY_UNVERIFIED: &str = "delivery_unverified";
+    pub const DELIVERY_FAILED: &str = "delivery_failed";
     pub const OK: &str = "ok";
     pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
     pub const EXECUTION_FAILED: &str = "execution_failed";

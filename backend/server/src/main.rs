@@ -6,6 +6,7 @@ mod agent;
 mod attention;
 mod broker;
 mod consent;
+mod deliver;
 mod exec;
 mod execpolicy;
 mod gateway;
@@ -117,6 +118,7 @@ fn run() -> JResult<()> {
         "plugins" => plugins_command(&cfg),
         "policy" => policy_command(&cfg),
         "exec" => exec_command(&cfg),
+        "deliver" => deliver::command(&cfg, &catalog),
         "audit" => audit_command(&cfg),
         "inspect" => inspect_command(&cfg),
         "approvals" => approvals_command(&cfg),
