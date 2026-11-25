@@ -4,6 +4,7 @@ ROOT = sys.argv[1]                      # jani checkout
 JANI = os.path.join(ROOT, 'target/debug/jani')
 FAKE = os.path.join(ROOT, 'cloud/e2e/fake_provider.py')
 res, errs = [], []
+MARKDOWN = '## Findings\n\nI read `README.md` and checked **three** things:\n\n1. The *build* is fine\n2. Tests: ~~none~~ **18 pass**\n   - unit\n   - integration\n\n| File | Lines | Status |\n|:--|--:|:-:|\n| `a.rs` | 120 | ok |\n| `b.rs` | 8 | **new** |\n\n> Note: this was read only.\n\n```rust\nfn main() {\n    // say hello\n    println!("hello {}", 42);\n}\n```\n\n```diff\n+ added line\n- removed line\n```\n\n- [x] checked\n- [ ] to do\n\nSee [the docs](https://docs.example/guide) or https://example.org/a_b. Footnote here[^1].\n\n<script>window.__xss=1</script>\n[bad](javascript:window.__xss=2) ![pic](https://img.example/x.png)\n\n[^1]: The footnote text.\n'
 def check(name, ok, info=''):
     res.append(bool(ok)); print(('PASS ' if ok else 'FAIL ') + name, info, flush=True)
 work = tempfile.mkdtemp()
@@ -24,7 +25,7 @@ try:
     with sync_playwright() as pw:
         b = pw.chromium.launch(args=['--no-sandbox'])
         for w, h, scheme in [(1366, 820, 'light'), (375, 740, 'dark')]:
-            p = b.new_context(viewport={'width': w, 'height': h}, color_scheme=scheme).new_page()
+            p = b.new_context(viewport={'width': w, 'height': h}, color_scheme=scheme, permissions=['clipboard-read', 'clipboard-write']).new_page()
             p.on('pageerror', lambda e: errs.append(str(e)))
             p.on('console', lambda m: errs.append(m.text) if m.type == 'error' else None)
             p.goto(url); p.wait_for_timeout(800)
@@ -53,6 +54,21 @@ try:
                 txt = p.inner_text('#view'); check('Proof shows the record verified with changes and a decision', 'Record verified' in txt and 'changed a file' in txt.lower())
                 p.evaluate('location.hash="#map"'); p.wait_for_timeout(700)
                 check('How it fits shows the nodes', len(p.query_selector_all('.node[data-id]')) >= 5)
+                # Markdown: a scripted answer that uses every construct, plus things that must never run.
+                urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:18941/__script', method='POST', data=json.dumps({'turns': [[{'final': MARKDOWN}]]}).encode()))
+                p.evaluate('location.hash="#work"'); p.wait_for_timeout(400)
+                p.click('#tIn'); p.keyboard.type('show me markdown'); p.keyboard.press('Enter')
+                p.wait_for_selector('.k-jani .md h2', timeout=20000); p.wait_for_timeout(400)
+                r = p.evaluate("""()=>{const m=[...document.querySelectorAll('.k-jani .md')].pop();return {h2:!!m.querySelector('h2'),ol:m.querySelectorAll('ol>li').length,nested:!!m.querySelector('ol ul li'),tbl:m.querySelectorAll('table tr').length,right:getComputedStyle(m.querySelector('tbody td:nth-child(2)')).textAlign,hl:!!m.querySelector('pre code .tk-k'),diff:!!m.querySelector('.td-add')&&!!m.querySelector('.td-del'),task:m.querySelectorAll('input[type=checkbox]').length,checked:m.querySelectorAll('input:checked').length,bq:!!m.querySelector('blockquote'),del:!!m.querySelector('del'),script:!!m.querySelector('script'),xss:window.__xss||0,jslink:[...m.querySelectorAll('a')].some(a=>/^javascript/i.test(a.getAttribute('href'))),imgs:m.querySelectorAll('img').length,ext:[...m.querySelectorAll('a[href^="http"]')].every(a=>a.rel.includes('noopener')&&a.target==='_blank'),links:m.querySelectorAll('a[href^="http"]').length,fn:!!m.querySelector('.mdfn li'),escaped:m.textContent.includes('<script>')}}""")
+                check('markdown: headings, lists (nested), emphasis, quotes and rules render', r['h2'] and r['ol'] >= 2 and r['nested'] and r['bq'] and r['del'], str(r))
+                check('markdown: tables keep their alignment', r['tbl'] == 3 and r['right'] == 'right')
+                check('markdown: code is highlighted, diffs are coloured, task lists show state', r['hl'] and r['diff'] and r['task'] == 2 and r['checked'] == 1)
+                check('markdown: links are safe and outside images are not loaded', r['ext'] and r['links'] == 3 and not r['jslink'] and r['imgs'] == 0)
+                check('markdown: raw HTML is shown as text and never runs', r['escaped'] and not r['script'] and r['xss'] == 0)
+                check('markdown: footnotes are collected at the end', r['fn'])
+                p.click('.mdcopy'); p.wait_for_timeout(300)
+                check('markdown: the Copy button copies the code', p.inner_text('.mdcopy') == 'Copied' and p.evaluate('navigator.clipboard.readText()').startswith('fn main()'))
+
                 check('status bar shows the record, authority and model', all(t in p.inner_text('#status') for t in ['Record verified', 'Can edit files', 'scripted']))
                 p.keyboard.press('Control+k'); p.keyboard.type('proof'); p.keyboard.press('Enter'); p.wait_for_timeout(500)
                 check('the palette jumps to a page', p.evaluate('location.hash') == '#proof')
