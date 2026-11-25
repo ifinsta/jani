@@ -1,7 +1,7 @@
 // Unit tests for the markdown renderer inside backend/server/src/ui/index.html. Run: node backend/server/tests/browser/markdown_unit.js
 const fs=require('fs');const path=require('path');
 const page=fs.readFileSync(path.join(__dirname,'../../src/ui/index.html'),'utf8');
-const a=page.indexOf('/* ---------- markdown:'),z=page.indexOf('/* ---------- helpers for pages');
+const a=page.indexOf('/* ---------- markdown:'),z=page.indexOf('/* ---------- proof exports');
 if(a<0||z<a){console.error('markdown block not found in index.html');process.exit(2)}
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 eval(page.slice(a,z)+';global.md=md;global.mdHl=mdHl');
