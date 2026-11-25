@@ -6,8 +6,8 @@
 :root{
   --font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
-  --bg:#F4F6F9; --surface:#FFFFFF; --surface-2:#EDF0F5; --surface-3:#E4E9F0;
-  --line:#DCE1E9; --line-strong:#8A93A3;
+  --bg:#FFFFFF; --surface:#FFFFFF; --surface-2:#F6F7F9; --surface-3:#EDEFF3;
+  --line:#E6E8EC; --line-strong:#8A93A3;
   --text:#12161C; --text-2:#454E5C; --text-3:#636D7C;
   --accent:#1F5EFF; --accent-tint:#E5EDFF; --on-accent:#FFFFFF;
   --ok:#146C43; --ok-tint:#DFF3E7; --warn:#8A4B00; --warn-tint:#FCEFD2; --bad:#B42318; --bad-tint:#FCE6E3;
@@ -548,6 +548,53 @@ code{font-family:var(--mono);font-size:12px;background:var(--surface-3);padding:
 @media (max-width:900px){.fab{display:block}.view{padding:44px 12px 24px}.view.fill{padding:0}.split{grid-template-columns:minmax(0,1fr)}.work2 .run-body{padding-top:44px}}
 .plist .rows>.pitem{padding:8px 12px}
 
+/* ============ sidebar polish: pure white in light mode, hairlines, quiet states ============ */
+.sb{background:var(--surface);border-right:1px solid var(--line)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .sb{background:var(--surface-2)}}
+:root[data-theme="dark"] .sb{background:var(--surface-2)}
+.sb-head{padding:10px 8px 6px 14px;min-height:46px}
+.sb-head .brand{font-size:14.5px;font-weight:650;letter-spacing:-.01em;gap:9px}
+.sb-head .mark{width:22px;height:22px;border-radius:6px}
+.sb-new{height:32px;margin:2px 10px 6px;border-radius:8px;font-weight:600;gap:8px}
+.sb-new svg{width:15px;height:15px}
+.sb-search{height:32px;margin:0 10px 8px;width:calc(100% - 20px);border:1px solid var(--line);border-radius:8px;background:var(--surface);font-size:12.5px}
+.sb-search:hover{background:var(--surface-2);border-color:var(--line-strong)}
+.sb-search kbd{border:0;background:var(--surface-3);border-radius:4px;padding:1px 5px;font-size:10.5px;color:var(--text-3)}
+.sb-body{padding:0 8px 8px}
+.orgbox{margin:0 2px 4px;padding:6px 8px;border:0;border-radius:6px;background:var(--surface-2)}
+.orgbox b{font-size:12.5px}
+.sb .rail-group{padding:14px 10px 4px;font-size:10.5px;font-weight:600;letter-spacing:.07em;color:var(--text-3)}
+.sb .nav{position:relative;height:32px;padding:0 10px;border:0;border-radius:6px;color:var(--text-2);font-weight:500;gap:10px}
+.sb .nav svg{width:16px;height:16px;color:var(--text-3);transition:color .12s}
+.sb .nav:hover{background:var(--surface-2);color:var(--text)}
+.sb .nav:hover svg{color:var(--text-2)}
+.sb .nav[aria-current="page"],.sb .nav[aria-current="true"]{background:var(--surface-3);color:var(--text);font-weight:600;border:0}
+.sb .nav[aria-current="page"] svg{color:var(--accent)}
+.sb .nav[aria-current="page"]::before{content:"";position:absolute;left:-8px;top:7px;bottom:7px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
+.sb .nav .n{background:var(--text);color:var(--surface);height:17px;min-width:17px;font-size:10.5px;font-weight:650;padding:0 5px;border-radius:9px}
+.sb .nav.recent{min-height:30px;padding:5px 10px;align-items:center}
+.sb .nav.recent .dot{margin-top:0}
+.sb .nav.recent[aria-current="true"]{background:var(--surface-3)}
+.sb-foot{border-top:1px solid var(--line);padding:8px;gap:4px}
+.acctbtn{height:36px;border-radius:8px;padding:0 8px}
+.acctbtn .who2 b{font-size:12.5px;font-weight:600}
+.acctbtn .who2 small{font-size:11px}
+.avatar{background:var(--surface-3);color:var(--text-2);font-weight:650}
+.ibtn{border-radius:6px}
+.menu{border-radius:10px;border:1px solid var(--line);box-shadow:0 10px 32px rgba(16,24,40,.14)}
+.menu .seg{border-color:var(--line-strong)}
+.sash:hover,.sash.drag,.sash:focus-visible{background:var(--line-strong);opacity:1}
+html[data-sidebar="collapsed"] .sb .nav[aria-current="page"]::before{left:-6px}
+html[data-sidebar="collapsed"] .sb-head{padding:10px 0 6px}
+.status{background:var(--surface);border-top:1px solid var(--line)}
+.main,.view{background:var(--surface)}
+body{background:var(--surface)}
+.pal-box,.menu{background:var(--surface)}
+
+.menu .seg button[aria-pressed="true"]{background:var(--surface-3);color:var(--text);font-weight:650}
+.menu .seg button{border-color:var(--line-strong)}
+.sb .nav.recent[aria-current="true"]{font-weight:500}
+
 </style></head><body>
 <a class="skip" href="#view">Skip to the work</a>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -586,6 +633,10 @@ code{font-family:var(--mono);font-size:12px;background:var(--surface-3);padding:
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 004 0"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
     <symbol id="i-chev-up" viewBox="0 0 24 24"><path d="M7 14l5-5 5 5"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3.5v4.5M15 3.5v4.5"/><path d="M6 8h12v3.2a6 6 0 01-12 0z"/><path d="M12 17.2v3.3"/></symbol>
+    <symbol id="i-building" viewBox="0 0 24 24"><rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M9 8h2M13 8h2M9 12h2M13 12h2M10 20.5v-4h4v4"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.3M12 18.2v2.3M20.5 12h-2.3M5.8 12H3.5M18 6l-1.6 1.6M7.6 16.4L6 18M18 18l-1.6-1.6M7.6 7.6L6 6"/></symbol>
+    <symbol id="i-stamp" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.4 12.2l2.5 2.5 4.7-5"/></symbol>
   </defs>
 </svg>
 <div class="app" id="app">
@@ -662,7 +713,7 @@ function stFor(s){var w=statusWord(s);return st(w[0],w[1])}
 var STARTERS=[['Map this project','Map the modules and how they depend on each other. Read only: do not edit files or run commands.'],['Plan the next piece of work','Propose phases and acceptance criteria for the next piece of work. Do not edit files or run commands.'],['Find the biggest risks','Look for security and quality risks and cite the files. Read only: do not make changes.'],['Find what is not tested','Find workflows that have no tests and the failures that are likely there. Do not edit files or run commands.']];
 var S={ov:null,runs:[],runId:null,run:null,approvals:[],journal:null,budgets:[],tasks:[],page:'home',tech:false,jf:'all',acct:null,approver:null,mapSel:null,insTab:'mirror',setTab:'system',ruleOpen:{},apDetail:{},verify:null,evidence:null,recovery:null};
 var T={entries:[],last:-1,busy:false,step:'',ended:false,turns:0,model:'',taskId:'',fault:null,consent:null,question:null,follow:true,open:{}};
-var PAGES={home:['Today','What needs you, and what Jani is doing','home'],work:['Work','Ask Jani, watch it work, decide when it asks','chat'],tasks:['Tasks','Work in progress and work to pick back up','tasks'],map:['How it fits','Follow one piece of work from what it read to the proof it left','map'],proof:['Proof','A plain record of who did what','shield'],rules:['Rules','What Jani may do, what needs a person, and the limits','lock'],insights:['Insights','What the record suggests, and what is running','chart'],setup:['Setup','Safety, tools and updates','layers'],plugins:['Plugins','Connectors Jani can use, who signed them, and what each may do','layers'],approvals:['Approvals','Actions people are waiting to take, for you to decide','shield'],org:['Organisation','Who this is for, what is in force, and the emergency stop','layers'],about:['About','How this workspace behaves','info']};
+var PAGES={home:['Today','What needs you, and what Jani is doing','home'],work:['Work','Ask Jani, watch it work, decide when it asks','chat'],tasks:['Tasks','Work in progress and work to pick back up','tasks'],map:['How it fits','Follow one piece of work from what it read to the proof it left','map'],proof:['Proof','A plain record of who did what','shield'],rules:['Rules','What Jani may do, what needs a person, and the limits','lock'],insights:['Insights','What the record suggests, and what is running','chart'],setup:['Setup','Safety, tools and updates','gear'],plugins:['Plugins','Connectors Jani can use, who signed them, and what each may do','plug'],approvals:['Approvals','Actions people are waiting to take, for you to decide','stamp'],org:['Organisation','Who this is for, what is in force, and the emergency stop','building'],about:['About','How this workspace behaves','info']};
 function isApprover(){return !!(S.approver&&S.approver.approver)}
 function roleName(){return hosted()?(isApprover()?'Approver':'Member'):'Operator'}
 function navGroups(){
