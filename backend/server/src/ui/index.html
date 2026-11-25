@@ -352,6 +352,10 @@ pre.rawpre{margin:8px 0 0;padding:10px 12px;font:12px/1.5 var(--mono);background
 .top .acct .btn{padding:4px 8px}
 @media (max-width:900px){.top{flex-wrap:wrap}}
 
+.orgbox{display:flex;flex-direction:column;gap:2px;margin:0 8px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--surface);font-size:12px;align-items:flex-start}
+.orgbox b{font-size:13px;overflow-wrap:anywhere}
+@media (max-width:900px){.orgbox{display:none}}
+
 </style></head><body>
 <a class="skip" href="#view">Skip to the work</a>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -454,8 +458,18 @@ function stFor(s){var w=statusWord(s);return st(w[0],w[1])}
 var STARTERS=[['Map this project','Map the modules and how they depend on each other. Read only: do not edit files or run commands.'],['Plan the next piece of work','Propose phases and acceptance criteria for the next piece of work. Do not edit files or run commands.'],['Find the biggest risks','Look for security and quality risks and cite the files. Read only: do not make changes.'],['Find what is not tested','Find workflows that have no tests and the failures that are likely there. Do not edit files or run commands.']];
 var S={ov:null,runs:[],runId:null,run:null,approvals:[],journal:null,budgets:[],tasks:[],page:'home',tech:false,jf:'all',acct:null,approver:null,mapSel:null,insTab:'mirror',setTab:'system',ruleOpen:{},apDetail:{},verify:null,evidence:null,recovery:null};
 var T={entries:[],last:-1,busy:false,step:'',ended:false,turns:0,model:'',taskId:'',fault:null,consent:null,question:null,follow:true,open:{}};
-var PAGES={home:['Today','What needs you, and what Jani is doing','home'],work:['Work','Ask Jani, watch it work, decide when it asks','chat'],tasks:['Tasks','Work in progress and work to pick back up','tasks'],map:['How it fits','Follow one piece of work from what it read to the proof it left','map'],proof:['Proof','A plain record of who did what','shield'],rules:['Rules','What Jani may do, what needs a person, and the limits','lock'],insights:['Insights','What the record suggests, and what is running','chart'],setup:['Setup','Safety, tools and updates','layers'],about:['About','How this workspace behaves','info']};
-var ORDER=['home','work','tasks','map','proof','rules','insights','setup'];
+var PAGES={home:['Today','What needs you, and what Jani is doing','home'],work:['Work','Ask Jani, watch it work, decide when it asks','chat'],tasks:['Tasks','Work in progress and work to pick back up','tasks'],map:['How it fits','Follow one piece of work from what it read to the proof it left','map'],proof:['Proof','A plain record of who did what','shield'],rules:['Rules','What Jani may do, what needs a person, and the limits','lock'],insights:['Insights','What the record suggests, and what is running','chart'],setup:['Setup','Safety, tools and updates','layers'],approvals:['Approvals','Actions people are waiting to take, for you to decide','shield'],org:['Organisation','Who this is for, what is in force, and the emergency stop','layers'],about:['About','How this workspace behaves','info']};
+function isApprover(){return !!(S.approver&&S.approver.approver)}
+function roleName(){return hosted()?(isApprover()?'Approver':'Member'):'Operator'}
+function navGroups(){
+  var g=[['Your work',['home','work','tasks']],['Understand',['map','proof']],['Govern',['rules']]];
+  if(hosted()?isApprover():true)g[2][1].push('approvals');
+  if(hosted()?isApprover():true)g[2][1].push('org');
+  if(!hosted()){g.push(['System',['insights','setup']])}
+  else if(isApprover()){g.push(['System',['insights']])}
+  return g;
+}
+function allowedPages(){var a=['about'];navGroups().forEach(function(g){a=a.concat(g[1])});return a}
 var view=$('#view');
 
 function canDecide(){return !!(S.ov&&S.ov.identity&&S.ov.identity.verified)}
@@ -466,13 +480,20 @@ function who(){var o=S.ov||{};return S.acct||(o.principal&&!/^(local-)?operator$
 
 /* ---------- shell ---------- */
 function renderRail(){
-  var n=needsCount(),h='<div class="brand"><span class="mark">'+ico('star')+'</span>Jani</div><div class="rail-group">Your space</div>';
-  ORDER.forEach(function(k){
-    var p=PAGES[k],badge=(k==='home'||k==='tasks')&&n?'<span class="n" aria-label="'+n+' need you">'+n+'</span>':'';
-    h+='<a class="nav" href="#'+k+'" '+(S.page===k?'aria-current="page"':'')+'>'+ico(p[2])+'<span>'+p[0]+'</span>'+badge+'</a>';
+  var n=needsCount(),o=S.ov||{},h='<div class="brand"><span class="mark">'+ico('star')+'</span>Jani</div>';
+  h+='<div class="orgbox" title="The organisation this workspace belongs to"><span class="faint">Organisation</span><b>'+esc(o.tenant||'local')+'</b><span class="st '+(hosted()?(isApprover()?'info':''):'')+'">'+esc(roleName())+'</span></div>';
+  navGroups().forEach(function(g){
+    h+='<div class="rail-group">'+g[0]+'</div>';
+    g[1].forEach(function(k){
+      var p=PAGES[k],cnt=0;
+      if(k==='home'||k==='tasks')cnt=n;
+      if(k==='approvals')cnt=hosted()?(S.approver&&S.approver.pending||0):pending().length;
+      var badge=cnt?'<span class="n" aria-label="'+cnt+' waiting">'+cnt+'</span>':'';
+      h+='<a class="nav" href="#'+k+'" '+(S.page===k?'aria-current="page"':'')+'>'+ico(p[2])+'<span>'+p[0]+'</span>'+badge+'</a>';
+    });
   });
   h+='<a class="nav" href="#about" '+(S.page==='about'?'aria-current="page"':'')+' data-gap>'+ico('info')+'<span>About</span></a>';
-  h+='<div class="rail-foot">Jani proposes. You decide.<br><span class="faint">v'+esc(S.ov?S.ov.version:'')+'</span></div>';
+  h+='<div class="rail-foot">Jani proposes. People decide.<br><span class="faint">v'+esc(S.ov?S.ov.version:'')+'</span></div>';
   $('#rail').innerHTML=h;
 }
 function theme(){var t=document.documentElement.getAttribute('data-theme');if(t)return t;return window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}
@@ -484,7 +505,7 @@ function renderTop(){
   $('#top').innerHTML='<div class="crumb"><b>'+esc(t[0])+'</b><span>'+esc(t[1])+'</span></div>'+
    (jr?(jr.ok?'<span class="st ok" title="Every recorded decision is chained so edits can be detected">Record verified</span>':'<span class="st bad">Record damaged at line '+esc(jr.failure_line)+'</span>'):'')+
    '<span class="where" title="'+esc(wt)+'">'+ico('file')+'<span id="wt">'+esc(o.proxied?'your workspace':clip(String(wt).split(/[\\/]/).filter(Boolean).pop()||wt,28))+'</span></span>'+
-   '<span class="acct" id="acct" hidden><span class="avatar" aria-hidden="true">'+esc((S.acct||'?').slice(0,1).toUpperCase())+'</span><b id="acctWho">'+esc(S.acct||'')+'</b><a class="btn sm quiet" id="apLink" href="/cloud/approver" hidden>Approvals <b id="apN"></b></a><button type="button" class="btn sm quiet" id="signout">Sign out</button><button type="button" class="btn sm quiet" id="signoutAll" title="Sign out of your ifinsta account everywhere">Sign out everywhere</button></span>'+
+   '<span class="acct" id="acct" hidden><span class="avatar" aria-hidden="true">'+esc((S.acct||'?').slice(0,1).toUpperCase())+'</span><b id="acctWho">'+esc(S.acct||'')+'</b><a class="btn sm quiet" id="apLink" href="#approvals" hidden>Approvals <b id="apN"></b></a><button type="button" class="btn sm quiet" id="signout">Sign out</button><button type="button" class="btn sm quiet" id="signoutAll" title="Sign out of your ifinsta account everywhere">Sign out everywhere</button></span>'+
    '<button class="iconbtn" id="themeBtn" aria-label="Switch light and dark" title="Switch light and dark">'+ico('moon')+'</button>';
   $('#themeBtn').onclick=toggleTheme;
   if(S.acct){$('#acct').hidden=false}
@@ -506,7 +527,7 @@ function initAccount(){
   function approverCount(){
     if(document.hidden)return;
     fetch('/cloud/me',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null}).then(function(m){
-      if(!m||!m.approver)return;S.approver=m;renderTop();
+      if(!m)return;var was=S.approver&&S.approver.pending;S.approver=m;renderTop();renderRail();if(m.pending!==was&&S.page==='approvals')renderPage(true);
     }).catch(function(){});
   }
   approverCount();setInterval(approverCount,15000);
@@ -921,6 +942,67 @@ function renderSetup(){
   });
 }
 
+/* ---------- approvals inbox ---------- */
+S.apQ='';S.apRisk='all';S.armed=null;S.apMsg='';
+function approvalsData(){
+  if(hosted())return fetch('/cloud/approvals',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Could not load approvals ('+r.status+')');return r.json()}).then(function(j){return j.pending||[]});
+  return api('/api/approvals').then(function(l){return l.filter(function(a){return a.status==='pending'&&a.expiresAt>Date.now()/1000}).map(function(a){return {local:true,user:'',own:false,requester:a.requester,approvalId:a.approvalId,capability:a.capability,resource:a.resource,resourcePreview:a.resource,risk:a.risk,expiresAt:a.expiresAt,taskId:a.taskId}})});
+}
+function riskRank(r){return {critical:0,high:1,medium:2,low:3}[r]==null?4:{critical:0,high:1,medium:2,low:3}[r]}
+function renderApprovals(soft,force){
+  var tk=(renderApprovals.tk=(renderApprovals.tk||0)+1);
+  if(!soft)view.innerHTML='<div class="faint" style="padding:8px 2px">Loading…</div>';
+  approvalsData().then(function(all){
+    if(tk!==renderApprovals.tk||S.page!=='approvals')return;
+    var q=S.apQ.trim().toLowerCase(),list=all.filter(function(a){
+      if(S.apRisk!=='all'&&String(a.risk).toLowerCase()!==S.apRisk)return false;
+      return !q||(String(a.requester)+' '+a.capability+' '+(a.resourcePreview||a.resource)+' '+((a.taskContext&&a.taskContext.purpose)||'')).toLowerCase().indexOf(q)>-1});
+    list.sort(function(a,b){return riskRank(String(a.risk).toLowerCase())-riskRank(String(b.risk).toLowerCase())||a.expiresAt-b.expiresAt});
+    var mine=all.filter(function(a){return !a.own}).length,soon=all.filter(function(a){return a.expiresAt-Date.now()/1000<900}).length;
+    var risks=['all','critical','high','medium','low'].filter(function(r){return r==='all'||all.some(function(a){return String(a.risk).toLowerCase()===r})});
+    var h=head('Approvals','Each approval lets one exact action run once. You see who asked, why, whether it was checked, and what it would touch. There is no bulk approve, because every decision is about one specific action.');
+    h+=statsStrip([['Waiting for you',String(mine),mine?'People are blocked':'All clear',mine?'warn':'ok'],['Expiring within 15 minutes',String(soon),soon?'Decide these first':'None',soon?'warn':'faint'],['Your own requests',String(all.length-mine),'Someone else decides these']]);
+    h+='<div class="row" style="margin:16px 0 12px"><input class="fld" id="apQ" type="search" placeholder="Search by person, action or what it touches" aria-label="Search approvals" value="'+esc(S.apQ)+'" style="min-width:260px;flex:1">'+'<div class="ask-row" role="group" aria-label="Risk">'+risks.map(function(r){return '<button class="chip" data-risk="'+r+'" aria-pressed="'+(S.apRisk===r)+'">'+(r==='all'?'All risks':esc(r))+'</button>'}).join('')+'</div></div>';
+    h+='<div data-testid="approvals">'+(list.length?'<div class="tw"><table><thead><tr><th>Requested by</th><th>What</th><th>Why, and was it checked</th><th>Risk</th><th>Expires</th><th>Decision</th></tr></thead><tbody>'+list.map(function(a){
+      var ver=a.verification?(a.verification.passed?st('Checked: passed','ok'):st('Checks failed','bad')):st('Not checked','warn'),purpose=(a.taskContext&&a.taskContext.purpose)||a.taskId||'';
+      var key=a.user+':'+a.approvalId,act='';
+      if(a.own)act='<span class="faint">Someone else must decide this</span>';
+      else if(a.local&&!canDecide())act='<span class="faint">Needs a verified identity</span>';
+      else act=[true,false].map(function(ap){var armed=S.armed&&S.armed.key===key&&S.armed.approve===ap;return '<button class="btn sm '+(ap?'primary':'')+'" data-testid="'+(ap?'approve-':'reject-')+esc(a.approvalId)+'" data-k="'+esc(key)+'" data-ap="'+(ap?1:0)+'">'+(armed?'Confirm '+(ap?'approve':'reject'):(ap?'Approve once':'Reject'))+'</button>'}).join(' ');
+      return '<tr><td>'+esc(a.requester)+(a.own?' (you)':'')+'</td><td><b>'+esc(wouldDo(a.capability))+'</b><div class="mono faint">'+esc(a.capability)+'</div><div class="mono" style="margin-top:4px;overflow-wrap:anywhere">'+esc(a.resourcePreview||a.resource)+(a.redactedTokens?' <span class="faint">('+a.redactedTokens+' secret'+(a.redactedTokens===1?'':'s')+' hidden)</span>':'')+'</div></td><td>'+esc(clip(purpose,70))+'<div style="margin-top:4px">'+ver+'</div></td><td>'+esc(a.risk)+'</td><td>'+esc(fmtDay(a.expiresAt))+'</td><td>'+act+'</td></tr>'}).join('')+'</tbody></table></div>':'<div class="hero-empty panel" style="padding:32px">'+(all.length?'Nothing matches.':'Nothing is waiting for you.<br><span class="faint">When someone\'s assistant needs a second person, it shows here.</span>')+'</div>')+'</div>';
+    h+='<p class="muted" id="status" role="status" aria-live="polite" style="margin-top:10px">'+esc(S.apMsg)+'</p>';
+    if(soft&&!force&&document.activeElement&&document.activeElement.id==='apQ')return;
+    view.innerHTML=h;
+    var qi=$('#apQ');qi.oninput=function(){S.apQ=qi.value;S.armed=null;var pos=qi.selectionStart;renderApprovals(true,true);var n=$('#apQ');if(n){n.focus();n.setSelectionRange(pos,pos)}};
+    $$('[data-risk]',view).forEach(function(b){b.onclick=function(){S.apRisk=b.getAttribute('data-risk');renderApprovals(true)}});
+    $$('[data-k]',view).forEach(function(b){b.onclick=function(){
+      var key=b.getAttribute('data-k'),ap=b.getAttribute('data-ap')==='1';
+      if(!(S.armed&&S.armed.key===key&&S.armed.approve===ap)){S.armed={key:key,approve:ap};S.apMsg='Press again to confirm. One stray click cannot decide anything.';renderApprovals(true);return}
+      S.armed=null;S.apMsg='Recording…';var id=key.slice(key.indexOf(':')+1),user=key.slice(0,key.indexOf(':'));
+      var req=hosted()?fetch('/cloud/approvals/decide',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-siwi':'1'},body:JSON.stringify({user:user,id:id,approve:ap})}).then(function(r){return r.json().catch(function(){return {}}).then(function(o){if(!r.ok)throw new Error(o.message||'Refused ('+r.status+')')})}):api('/api/approvals/decide',{id:id,approve:ap,role:'approver'});
+      req.then(function(){S.apMsg=ap?'Approved.':'Rejected.';toast(S.apMsg);return loadAll()}).catch(function(e){S.apMsg=e.message;toast(e.message,true)}).then(function(){renderApprovals(true)});
+    }});
+  }).catch(function(e){if(tk===renderApprovals.tk&&S.page==='approvals')view.innerHTML=failHtml(e)});
+}
+setInterval(function(){if(S.page==='approvals'&&!document.hidden&&!S.armed&&!(document.activeElement&&document.activeElement.id==='apQ'))renderApprovals(true)},10000);
+
+/* ---------- organisation ---------- */
+var NOT_BUILT=[['People and groups','Sign-in through your own identity provider (SAML or OIDC), and provisioning and removal of people from your directory (SCIM). Today sign-in is ifinsta only and approvers are a flat list.'],['Mission catalogue','Jobs defined once, with an owner, a review, sign-off and versions, then offered to the right people. Today the agent works on code and commands.'],['Policy per organisation and domain','Different rules, model providers and data handling for each organisation and domain. Today one policy applies to the whole deployment.'],['Usage and cost by team','Limits, spend and chargeback by person, department and organisation. Today limits are per task.'],['Fleet health and queueing','Capacity, waiting time and incidents across many machines. Today one gateway holds a fixed number of active workspaces and refuses more.'],['Central audit search and export','One searchable, exportable record across everyone, with retention and legal hold. Today each person has their own journal.'],['Data residency and retention','Where each organisation’s data lives and how long it is kept.']];
+function renderOrg(){
+  var o=S.ov||{},a=o.authority||{},id=o.identity||{};
+  var h=head('Organisation','Who this workspace is for, what is in force, and the emergency stop. Everything on this page is read from the running deployment.');
+  h+='<div class="grid g2"><section class="panel"><header><h2>This deployment</h2></header>'+kvRows([['Organisation',o.tenant||'local'],['Kind',hosted()?'Hosted, one private workspace per person':'Local, one person on one machine'],['You are',(S.acct||who())+' · '+roleName()],['Identity',id.verified?'Verified'+(id.issuer?' by '+id.issuer:''):hosted()?'Signed in through ifinsta':'Not verified'],['Policy',o.policy&&o.policy.revision?'Revision '+o.policy.revision:'Baseline'],['Model',(o.model&&o.model.name)||'Not set'+(S.tech&&o.model?' ('+o.model.endpointHost+')':'')],['Commands',a.execMode==='smart'?'Safe ones go ahead, others ask':a.allowExec?'Allowed list only':'Off'],['Internet',netOpen(a)?'Open':'Blocked except the model provider']])+'</section>';
+  h+='<section class="panel"><header><h2>Emergency stop</h2></header><div class="rows"><div class="muted">Stops every active workspace in this organisation at once and refuses new work until it is lifted. Use it if something is going wrong. Everything already done stays in the record.</div>'+(hosted()&&isApprover()?'<div class="row"><button class="btn danger" id="kill" data-testid="kill-switch">Pause everything</button></div><p class="muted" id="killMsg" role="status" aria-live="polite"></p>':'<div class="note">'+ico('lock')+' '+(hosted()?'Only an approver can use this.':'This applies to hosted deployments. On a local machine, stop Jani with Ctrl+C.')+'</div>')+'</div></section></div>';
+  h+='<section class="panel" style="margin-top:16px"><header><h2>Not built in this version</h2><span class="faint">What a large, multi-organisation rollout needs next</span></header><div class="rows">'+NOT_BUILT.map(function(x){return '<div><div class="row"><b style="flex:1">'+esc(x[0])+'</b>'+st('Not built','warn')+'</div><div class="muted" style="margin-top:2px;max-width:76ch">'+esc(x[1])+'</div></div>'}).join('')+'</div></section>';
+  h+='<div style="margin-top:12px">'+techToggle()+'</div>';
+  view.innerHTML=h;bindTech(renderOrg);
+  var k=$('#kill');if(k)k.onclick=function(){
+    if(!S.killArmed){S.killArmed=true;k.textContent='Confirm: stop everyone now';return}
+    S.killArmed=false;k.textContent='Pause everything';$('#killMsg').textContent='Stopping…';
+    fetch('/cloud/kill-switch',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-siwi':'1'},body:JSON.stringify({reason:'approver console trigger'})}).then(function(r){return r.json().catch(function(){return {}}).then(function(j){$('#killMsg').textContent=r.ok?'Stopped. '+(j.stopped||0)+' workspaces were paused.':(j.message||'Refused ('+r.status+').')})}).catch(function(e){$('#killMsg').textContent=e.message});
+  };
+}
+
 /* ---------- about ---------- */
 function renderAbout(){
   view.innerHTML=head('About this workspace','Built for people who are not engineers. It shows how one agent can serve many jobs without anyone needing to learn how it works.')+
@@ -933,13 +1015,13 @@ function renderPage(soft){
   if(p!=='work')view.classList.remove('fill');
   if(p==='home'){view.innerHTML=homeHtml();bindHome()}
   else if(p==='work'){if(soft&&$('#rs')){paintWork();return}renderWork()}
-  else if(p==='tasks')renderTasks();else if(p==='map')renderMap();else if(p==='proof')renderProof();else if(p==='rules')renderRules();
+  else if(p==='approvals')renderApprovals();else if(p==='org')renderOrg();else if(p==='tasks')renderTasks();else if(p==='map')renderMap();else if(p==='proof')renderProof();else if(p==='rules')renderRules();
   else if(p==='insights')renderInsights();else if(p==='setup')renderSetup();else renderAbout();
 }
 function route(){
-  var h=(location.hash||'#home').slice(1);if(!PAGES[h])h='home';
+  var h=(location.hash||'#home').slice(1);if(!PAGES[h]||allowedPages().indexOf(h)<0)h='home';
   S.page=h;renderRail();renderTop();
-  if(h==='home'||h==='tasks'||h==='map'||h==='rules'||h==='proof'){loadAll().then(function(){if(S.page===h){renderRail();renderPage()}})}
+  if(h==='home'||h==='tasks'||h==='map'||h==='rules'||h==='proof'||h==='approvals'||h==='org'){loadAll().then(function(){if(S.page===h){renderRail();renderPage()}})}
   else renderPage();
   if(h!=='work')view.scrollTop=0;
 }
