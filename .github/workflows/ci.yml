@@ -20,6 +20,8 @@ jobs:
         run: cargo test -p jani-native
       - name: Verify signed independent review clearance
         run: cargo test -p jani-mcp
+      - name: Verify work-contract receipts independently of the server
+        run: cargo test -p jani-verifier
       - run: python -m unittest discover -s synthetic/tests -v
       - run: python -m unittest discover -s tests -p 'test_release_catalog.py' -v
       - run: python -m unittest discover -s tools -p 'test_lab_runner.py' -v
@@ -52,6 +54,14 @@ jobs:
           git diff -- claims/index.json claims/OPEN.md
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
+      - name: Exercise cold state backup and restore with Jani
+        env:
+          JANI_RECOVERY_DRILL_BIN: target/debug/jani${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: python -m unittest tools.test_state_backup -v
+      - name: Execute local synthetic faults with Jani
+        env:
+          JANI_LOCAL_RUNTIME_BIN: target/debug/jani${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: python -m unittest synthetic.tests.test_runtime_runner -v
       - run: cargo build --release -p jani
   cloud-check:
     if: github.event_name != 'pull_request' || hashFiles('../siwi/crates/siwi/Cargo.toml') != ''

@@ -280,8 +280,23 @@ impl PolicyBundle {
         if bundle.spec.defaults.action != "deny" {
             return Err("policy defaults.action must remain deny".into());
         }
+        let now = now_unix();
+        if bundle
+            .metadata
+            .issued_at
+            .is_some_and(|issued| issued > now.saturating_add(300))
+        {
+            return Err("policy bundle was issued in the future".into());
+        }
         if let Some(expires) = bundle.metadata.expires_at {
-            if expires <= now_unix() {
+            if bundle
+                .metadata
+                .issued_at
+                .is_some_and(|issued| expires <= issued)
+            {
+                return Err("policy bundle expiry must be after issuance".into());
+            }
+            if expires <= now {
                 return Err("policy bundle has expired".into());
             }
         }
@@ -327,6 +342,19 @@ pub struct PolicyEngine {
 }
 
 impl PolicyEngine {
+    pub fn authority_window(
+        &self,
+        identity: Option<&VerifiedIdentity>,
+    ) -> crate::authority::AuthorityWindow {
+        crate::authority::AuthorityWindow::new(
+            identity.and_then(|identity| identity.expires_at),
+            self.effective
+                .bundle
+                .as_ref()
+                .and_then(|bundle| bundle.metadata.expires_at),
+        )
+    }
+
     pub fn load(cfg: &Config) -> Result<Self, String> {
         if let Some(path) = cfg.policy_path.as_ref() {
             let bundle =
@@ -436,6 +464,10 @@ impl PolicyEngine {
             policy_revision: revision.clone(),
             constraints,
         };
+
+        if let Err(expired) = self.authority_window(identity).require_current() {
+            return deny(expired.reason(), expired.message());
+        }
 
         // Operator flags are a ceiling. A policy can only narrow them.
         match request.effect {
@@ -814,6 +846,43 @@ mod tests {
         std::fs::write(&temp, serde_json::to_vec(&bundle).unwrap()).unwrap();
         assert!(PolicyBundle::load(&temp, &[format!("default:{public}")]).is_ok());
         let _ = std::fs::remove_file(temp);
+    }
+
+    #[test]
+    fn signed_policy_requires_consistent_dates_but_accepts_legacy_undated_policy() {
+        let secret = "55".repeat(32);
+        let roots = [crate::crypto::public_key_hex(&secret).unwrap()];
+        let path = std::env::temp_dir().join(format!(
+            "jani-policy-dates-{}.json",
+            crate::process::unique_id()
+        ));
+        let now = now_unix();
+        let mut bundle = test_bundle();
+        for (issued, expires, failure) in [
+            (None, None, None),
+            (
+                Some(now + 3600),
+                Some(now + 7200),
+                Some("issued in the future"),
+            ),
+            (
+                Some(now + 120),
+                Some(now + 60),
+                Some("expiry must be after issuance"),
+            ),
+        ] {
+            bundle.metadata.issued_at = issued;
+            bundle.metadata.expires_at = expires;
+            bundle.sign(&secret, "default").unwrap();
+            std::fs::write(&path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+            let loaded = PolicyBundle::load(&path, &roots);
+            if let Some(error) = failure {
+                assert!(loaded.unwrap_err().contains(error));
+            } else {
+                assert!(loaded.is_ok());
+            }
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

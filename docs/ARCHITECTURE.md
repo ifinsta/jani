@@ -118,11 +118,8 @@ See [WORKSPACE_ARCHITECTURE.md](WORKSPACE_ARCHITECTURE.md).
 - Jani uses the **OpenAI-compatible Chat Completions tool interface**, not a Python SDK or provider-specific agent framework.
 - A `SKILL.md` is advisory. Every permission claim the model is told about must also be enforced in Rust.
 - Coordination is deliberately out of scope. External workflows can invoke the same CLI without changing Jani's privilege model.
-- Signed `sidecar` plugins execute out-of-process under `SandboxManager` using
-  bounded JSON-RPC over stdin/stdout and a parent-owned `CredentialBroker` proxy
-  that injects configured secrets only on declared hosts and scrubs responses; native
-  dynamic loading remains refused. MCP operations are mediated by signed contracts,
-  delegated authorization and response receipts.
+- Sidecars use a Linux Bubblewrap sandbox with a read-only private workspace and direct network access disabled. The host stages the executable bytes covered by the signed manifest. A sidecar with declared origins sends scoped requests over a private Unix socket to the parent-owned credential broker. The broker supplies eligible credentials and scrubs responses. Sidecar launch requires filesystem and network confinement. [Sidecar manifest and protocol](schemas/README.md#12-plugin-manifest)
+- MCP operations are mediated by signed contracts, delegated authorization and response receipts.
 <!-- jani-claim: {"id":"ARCH-MCP-EXECUTOR","kind":"source_contains","path":"backend/server/src/main.rs","needle":"mod mcp;","statement":"MCP operations are mediated by signed contracts, delegated authorization and response receipts."} -->
 - Environment and file-system checks are defense in depth, not an OS-level
   sandbox. On Windows and macOS they are not confinement at all for isolation

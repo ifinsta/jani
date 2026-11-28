@@ -63,6 +63,19 @@ fn secure_output(path: &Path) -> JResult<File> {
     opts.open(path).map_err(|e| e.to_string())
 }
 
+fn secure_input(path: &Path, bytes: &[u8]) -> JResult<Stdio> {
+    use std::io::Write;
+
+    let mut writer = secure_output(path)?;
+    let reader = File::open(path).map_err(|e| e.to_string())?;
+    // The inherited descriptor stays valid after unlink. Put input bytes on disk
+    // only after removing the directory entry on Unix.
+    #[cfg(unix)]
+    fs::remove_file(path).map_err(|e| e.to_string())?;
+    writer.write_all(bytes).map_err(|e| e.to_string())?;
+    Ok(Stdio::from(reader))
+}
+
 pub fn execute(cmd: &mut Command, cwd: &Path, max_secs: u64) -> JResult<ProcessOutput> {
     execute_with(cmd, cwd, max_secs, ProcessIsolation::Direct)
 }
@@ -134,6 +147,47 @@ pub fn execute_with_stdin_cancel(
     stdin_bytes: Option<&[u8]>,
     cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> JResult<ProcessOutput> {
+    execute_with_admission(
+        cmd,
+        cwd,
+        max_secs,
+        isolation,
+        credential_env_names,
+        stdin_bytes,
+        ProcessGate {
+            cancelled,
+            ..Default::default()
+        },
+    )
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ProcessGate<'a> {
+    pub cancelled: Option<&'a std::sync::atomic::AtomicBool>,
+    pub authority: crate::authority::AuthorityWindow,
+}
+
+impl ProcessGate<'_> {
+    fn require_admission(self) -> JResult<()> {
+        if self
+            .cancelled
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            return Err("COMMAND_CANCELLED: operator cancelled before launch".into());
+        }
+        self.authority.require_current().map_err(|e| e.to_string())
+    }
+}
+
+pub fn execute_with_admission(
+    cmd: &mut Command,
+    cwd: &Path,
+    max_secs: u64,
+    isolation: ProcessIsolation,
+    credential_env_names: &[String],
+    stdin_bytes: Option<&[u8]>,
+    gate: ProcessGate<'_>,
+) -> JResult<ProcessOutput> {
     let key = unique_id();
     let in_path = stdin_bytes.map(|_| std::env::temp_dir().join(format!("jani-{key}-stdin")));
     let out_path = std::env::temp_dir().join(format!("jani-{key}-stdout"));
@@ -142,13 +196,7 @@ pub fn execute_with_stdin_cancel(
         let out = secure_output(&out_path)?;
         let err = secure_output(&err_path)?;
         let stdin_cfg = match (stdin_bytes, in_path.as_deref()) {
-            (Some(bytes), Some(p)) => {
-                use std::io::Write;
-                let mut f = secure_output(p)?;
-                f.write_all(bytes).map_err(|e| e.to_string())?;
-                drop(f);
-                Stdio::from(File::open(p).map_err(|e| e.to_string())?)
-            }
+            (Some(bytes), Some(p)) => secure_input(p, bytes)?,
             _ => Stdio::null(),
         };
         // Model credentials must never reach child processes, build scripts, or test code.
@@ -180,19 +228,23 @@ pub fn execute_with_stdin_cancel(
             cmd.creation_flags(CREATE_SUSPENDED);
         }
 
+        gate.require_admission()?;
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to launch command: {e}"))?;
         #[cfg(windows)]
         if let Some(guard) = job.as_ref() {
-            if let Err(error) = assign_to_job(guard.0, &child).and_then(|()| resume_child(&child)) {
+            if let Err(error) = assign_to_job(guard.0, &child)
+                .and_then(|()| gate.require_admission())
+                .and_then(|()| resume_child(&child))
+            {
                 terminate(&mut child, job_handle(&job));
                 return Err(error);
             }
         }
         let start = Instant::now();
         let (status, timed_out) = loop {
-            if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            if gate.cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
                 terminate(&mut child, job_handle(&job));
                 return Err("COMMAND_CANCELLED: terminated by operator cancellation".into());
             }
@@ -367,6 +419,25 @@ fn terminate(child: &mut Child, job: Option<JobHandle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expired_authority_is_refused_before_attempting_to_launch() {
+        let mut cmd = Command::new("jani-fixture-nonexistent-program");
+        let error = execute_with_admission(
+            &mut cmd,
+            &std::env::temp_dir(),
+            2,
+            ProcessIsolation::Direct,
+            &[],
+            None,
+            ProcessGate {
+                authority: crate::authority::AuthorityWindow::new(Some(0), None),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("identity assertion has expired"), "{error}");
+    }
 
     #[test]
     fn children_do_not_inherit_provider_credentials() {

@@ -14,6 +14,7 @@ source:
   - tools/release_signing.py
   - tools/serve_updates.py
   - backend/server/src/update.rs
+  - backend/server/src/update/self_replace.rs
 tests:
   - backend/server/tests/update_e2e.rs
   - tests/test_release_catalog.py
@@ -88,7 +89,7 @@ jani update install --source https://releases.example.com/ --update-key $trust -
 jani update watch --source https://releases.example.com/ --update-key $trust --interval 300
 ```
 
-`check` verifies the signed channel manifest and reports each target's status without downloading an artifact or executing an existing target. Known versions come from the running executable, byte-identical copies or an exact signed-artifact match; other existing files report `unknown-version` and require `--force`. `install` downloads once, verifies signature, size and SHA-256, runs the candidate's `--version` with built-in and configured provider credentials removed, then replaces each target and writes a receipt under `<state-dir>/updates/`. The default target is the running executable; repeat `--to` for additional local binaries. Windows cannot overwrite a running image, so the updater renames the old image aside, reports `restartRequired` when it replaced its own executable, and keeps a `.jani-old-<id>` backup if the old image stays locked. `watch` polls at the interval; `--cycles` bounds the loop and zero means forever.
+`check` verifies the signed channel manifest and reports each target's status without downloading an artifact or executing an existing target. Known versions come from the running executable, byte-identical copies or an exact signed-artifact match. Other existing files report `unknown-version` and require `--force`. `install` verifies the signature, size and SHA-256, and runs the candidate's `--version` with configured credentials removed before replacement. For additional targets it records the signed manifest in the state directory so future invocations can verify the installed version, including after restart. `install` also writes a diagnostic receipt under `<state-dir>/updates/`. The default target is the running executable. Repeat `--to` for additional local binaries. On Windows, a non-self target in use can fail with a sharing error. A Windows self-update reports `restartRequired` and retains a verified sibling backup for offline recovery if needed. `watch` polls at the interval and exits after a self-update or a recovery-required result. Set `--cycles` to limit the loop or zero to keep watching until one of those outcomes. [Updater state, trust, and recovery](CLI_REFERENCE.md)
 
 The origin must be HTTPS, or loopback HTTP for local development. Redirects are refused, metadata and artifacts are size-bounded, and a signature, size or digest mismatch is rejected before any target is touched. Trust roots come only from repeatable `--update-key` or comma-separated `JANI_UPDATE_KEYS`; the origin and worktree settings cannot supply them. Unsigned or unknown-key manifests are refused.
 

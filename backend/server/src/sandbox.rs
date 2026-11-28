@@ -100,17 +100,7 @@ impl<'a> SandboxManager<'a> {
                     let path = find_bwrap()
                         .ok_or("bubblewrap (bwrap) was requested but not found on PATH")?;
                     let version = bwrap_version(&path)?;
-                    Ok(SandboxPlan {
-                        backend: Backend::Bubblewrap(path),
-                        backend_version: version,
-                        profile,
-                        network,
-                        enforced: true,
-                        filesystem_confined: true,
-                        network_confined: network_is_confined(network),
-                        process_tree: true,
-                        attested: true,
-                    })
+                    Ok(bwrap_plan(path, version, profile, network))
                 }
                 #[cfg(not(unix))]
                 {
@@ -152,17 +142,7 @@ impl<'a> SandboxManager<'a> {
                 {
                     if let Some(path) = find_bwrap() {
                         let version = bwrap_version(&path)?;
-                        return Ok(SandboxPlan {
-                            backend: Backend::Bubblewrap(path),
-                            backend_version: version,
-                            profile,
-                            network,
-                            enforced: true,
-                            filesystem_confined: true,
-                            network_confined: network_is_confined(network),
-                            process_tree: true,
-                            attested: true,
-                        });
+                        return Ok(bwrap_plan(path, version, profile, network));
                     }
                     if isolation_required {
                         return Err(
@@ -203,6 +183,45 @@ impl<'a> SandboxManager<'a> {
         }
     }
 
+    pub(crate) fn prepare_sidecar(&self, profile: SandboxProfile) -> JResult<SandboxPlan> {
+        #[cfg(target_os = "linux")]
+        if matches!(
+            effective_mode(self.cfg),
+            SandboxMode::Auto | SandboxMode::Bwrap
+        ) {
+            let root = self
+                .cfg
+                .root
+                .canonicalize()
+                .map_err(|error| format!("invalid worktree root: {error}"))?;
+            if SIDECAR_RUNTIME_DIRS
+                .iter()
+                .chain(SYSTEM_LINKS.iter())
+                .filter_map(|path| Path::new(path).canonicalize().ok())
+                .any(|system| root.starts_with(&system) || system.starts_with(&root))
+            {
+                return Err("sidecar worktree overlaps a system runtime mount".into());
+            }
+            let path = find_trusted_bwrap(&root).ok_or("sidecar requires Bubblewrap in a trusted absolute PATH directory outside the worktree")?;
+            let mut probe = Command::new(&path);
+            probe.env_clear().arg("--version");
+            let output = crate::process::execute(&mut probe, Path::new("/"), 5)?;
+            if output.timed_out
+                || output.code != Some(0)
+                || !output.stdout.starts_with("bubblewrap ")
+            {
+                return Err("sidecar Bubblewrap version probe failed".into());
+            }
+            return Ok(bwrap_plan(
+                path,
+                output.stdout.trim().to_owned(),
+                profile,
+                NetworkPolicy::Deny,
+            ));
+        }
+        self.prepare(profile, NetworkPolicy::Deny)
+    }
+
     /// Build the command that executes `argv` under the selected plan. Write
     /// scopes are created if absent because the operator already approved them.
     /// Build the command that executes `argv` under the selected plan, with extra
@@ -214,18 +233,25 @@ impl<'a> SandboxManager<'a> {
         argv: &[String],
         extra_writable: &[PathBuf],
     ) -> JResult<(Command, ProcessIsolation)> {
-        self.command_with_readonly(plan, argv, extra_writable, &[])
+        self.build_command(plan, argv, extra_writable, true)
     }
 
-    pub fn command_with_readonly(
+    #[cfg(target_os = "linux")]
+    pub(crate) fn command_for_sidecar(
+        &self,
+        plan: &SandboxPlan,
+        argv: &[String],
+    ) -> JResult<(Command, ProcessIsolation)> {
+        self.build_command(plan, argv, &[], false)
+    }
+
+    fn build_command(
         &self,
         plan: &SandboxPlan,
         argv: &[String],
         extra_writable: &[PathBuf],
-        extra_readonly: &[PathBuf],
+        developer_mounts: bool,
     ) -> JResult<(Command, ProcessIsolation)> {
-        #[cfg(not(unix))]
-        let _ = extra_readonly;
         let (program, args) = argv.split_first().ok_or("empty executable")?;
         match &plan.backend {
             Backend::None => {
@@ -317,12 +343,17 @@ impl<'a> SandboxManager<'a> {
                     // bwrap cannot expose loopback alone; treating loopback as deny is stricter.
                     cmd.arg("--unshare-net");
                 }
-                for dir in ["/usr", "/etc"] {
+                let system_dirs: &[&str] = if developer_mounts {
+                    &["/usr", "/etc"]
+                } else {
+                    SIDECAR_RUNTIME_DIRS
+                };
+                for dir in system_dirs {
                     if Path::new(dir).is_dir() {
                         cmd.arg("--ro-bind-try").arg(dir).arg(dir);
                     }
                 }
-                for link in ["/bin", "/sbin", "/lib", "/lib64"] {
+                for &link in SYSTEM_LINKS {
                     let path = Path::new(link);
                     if let Ok(meta) = std::fs::symlink_metadata(path) {
                         if meta.file_type().is_symlink() {
@@ -334,9 +365,11 @@ impl<'a> SandboxManager<'a> {
                         }
                     }
                 }
-                for cache in toolchain_caches() {
-                    if cache.is_dir() {
-                        cmd.arg("--ro-bind-try").arg(&cache).arg(&cache);
+                if developer_mounts {
+                    for cache in toolchain_caches() {
+                        if cache.is_dir() {
+                            cmd.arg("--ro-bind-try").arg(&cache).arg(&cache);
+                        }
                     }
                 }
                 cmd.arg("--ro-bind").arg(root).arg(root);
@@ -380,16 +413,34 @@ impl<'a> SandboxManager<'a> {
                         cmd.arg("--bind").arg(&full).arg(&full);
                     }
                 }
-                for ro in extra_readonly {
-                    if ro.exists() {
-                        cmd.arg("--ro-bind").arg(ro).arg(ro);
-                    }
-                }
                 cmd.arg("--chdir").arg(root).arg("--");
                 cmd.arg(program).args(args);
                 Ok((cmd, ProcessIsolation::SandboxNamespace))
             }
         }
+    }
+}
+
+const SIDECAR_RUNTIME_DIRS: &[&str] = &["/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64"];
+const SYSTEM_LINKS: &[&str] = &["/bin", "/sbin", "/lib", "/lib64"];
+
+#[cfg(unix)]
+fn bwrap_plan(
+    path: PathBuf,
+    version: String,
+    profile: SandboxProfile,
+    network: NetworkPolicy,
+) -> SandboxPlan {
+    SandboxPlan {
+        backend: Backend::Bubblewrap(path),
+        backend_version: version,
+        profile,
+        network,
+        enforced: true,
+        filesystem_confined: true,
+        network_confined: network_is_confined(network),
+        process_tree: true,
+        attested: true,
     }
 }
 
@@ -432,6 +483,39 @@ fn find_bwrap() -> Option<PathBuf> {
             if candidate.is_file() {
                 return Some(candidate);
             }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn find_trusted_bwrap(worktree: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        if !dir.is_absolute() {
+            continue;
+        }
+        let Ok(candidate) = dir.join("bwrap").canonicalize() else {
+            continue;
+        };
+        if candidate.starts_with(worktree) {
+            continue;
+        }
+        let Ok(file) = candidate.metadata() else {
+            continue;
+        };
+        let owner = unsafe { libc::geteuid() };
+        if file.is_file()
+            && file.mode() & 0o111 != 0
+            && candidate.ancestors().all(|path| {
+                path.metadata().is_ok_and(|metadata| {
+                    (metadata.uid() == 0 || metadata.uid() == owner) && metadata.mode() & 0o022 == 0
+                })
+            })
+        {
+            return Some(candidate);
         }
     }
     None

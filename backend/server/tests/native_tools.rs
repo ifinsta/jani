@@ -8,14 +8,11 @@ mod support;
 
 fn workspace() -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "jani-native-cli-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        "jani-native-cli-{}",
+        jani_core::process::unique_id()
     ));
-    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(root.join("src")).unwrap();
     fs::write(root.join("src/hello.rs"), "pub fn hello() {}").unwrap();
     fs::write(root.join("plan.json"),json!({"nodes":[
         {"id":"inspect","deps":[],"status":"planned","acceptance":"source found","priority":3},

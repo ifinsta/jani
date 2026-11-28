@@ -1,6 +1,11 @@
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from synthetic.catalog import FAULTS, PROFILES, VARIANTS
 from synthetic.generate import case,generate,verify
 from synthetic.readiness import evaluate
@@ -36,3 +41,38 @@ class TestProbe(unittest.TestCase):
         from synthetic.runner import run_probe
         row=run_probe(Path('/bin/false'),1)
         self.assertEqual(row['status'],'SKIPPED')
+
+    def test_cli_probe_uses_the_correct_phase_and_a_fresh_settings_path(self):
+        from synthetic.runner import run_probe
+
+        index = 12533  # First baseline missing-argument fixture without compound faults.
+        with patch.dict(os.environ, {"PROBE_FAKE_CREDENTIAL": "ignored", "JANI_USER_SETTINGS": "outside.json"}), \
+                patch("synthetic.runner.subprocess.run") as process:
+            process.return_value = subprocess.CompletedProcess([], 1, b"", b"AUTH_CONTEXT_MISSING")
+            self.assertEqual(run_probe(Path("unused"), index)["status"], "FAILED")
+            args, kwargs = process.call_args
+            self.assertEqual(args[0][1:3], ["plugins", "inspect"])
+            self.assertEqual(Path(kwargs["env"]["JANI_USER_SETTINGS"]).parent, Path(kwargs["cwd"]))
+            self.assertNotIn("PROBE_FAKE_CREDENTIAL", kwargs["env"])
+
+            process.return_value = subprocess.CompletedProcess([], 1, b"", b"plugins inspect requires a plugin id")
+            seen = set()
+            result = run_probe(Path("unused"), index, seen=seen)
+            self.assertEqual((result["status"], result["execution"]), ("PASSED", "preflight"))
+            self.assertEqual(run_probe(Path("unused"), index, seen=seen)["reason"], "PREFLIGHT_ALREADY_RUN")
+            self.assertEqual(process.call_count, 2)
+
+    def test_failed_preflight_exits_nonzero_and_preserves_the_report(self):
+        with tempfile.TemporaryDirectory() as folder:
+            report = Path(folder) / "report.jsonl"
+            args = [sys.executable, "-m", "synthetic.runner", "--binary", sys.executable,
+                    "--limit", "1000", "--output", str(report)]
+            process = subprocess.run(args, capture_output=True, text=True, timeout=15)
+            self.assertEqual(process.returncode, 1, process.stderr)
+            summary = json.loads(process.stdout)
+            self.assertEqual(summary["execution"], "preflight")
+            self.assertGreater(summary["results"]["FAILED"], 0)
+            original = report.read_bytes()
+            duplicate = subprocess.run(args, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(duplicate.returncode, 0)
+            self.assertEqual(report.read_bytes(), original)

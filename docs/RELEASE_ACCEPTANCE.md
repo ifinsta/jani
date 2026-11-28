@@ -21,8 +21,10 @@ tests: []
 - Test each material fault hook through a real bounded Jani execution in a disposable environment; simulated expected outcomes are never pass evidence.
 ## Evidence receipt fields
 - Commit SHA, binary digest, test runner identity, platform, scenario ID, expected invariant, observed decision, stdout/stderr digest, artifact checksum, time and human reviewer.
+- Verify the signed gate artifacts and native oracle observations against an operator-approved release campaign. [Verification protocol](../synthetic/EVIDENCE_PROVENANCE.md)
 ## Operational release gates
 - Verified backup/restore, managed key rotation and revocation, incident response runbooks, resource limit soak tests, reproducible build provenance and safe rollout/rollback.
+- Exercise the [cold backup and restore drill](BACKUP_RESTORE.md) on the approved release and verify the retained audit cutoff and reconciliation results before activating restored workers.
 ## Release decision
 - Any missing critical evidence is a blocker. Reviewers may restrict an experimental release to supervised local read-only use; they may not label it enterprise production-ready.
 ## Current gaps

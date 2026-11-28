@@ -184,11 +184,16 @@ fn ensure_active(
             rec.actor, rec.reason
         ));
     }
+    if let Err(expired) = meta.authority.require_current() {
+        meta.record(journal, decision::FAILED, expired.reason())?;
+        return Err(expired.to_string());
+    }
     Ok(())
 }
 
 struct RunMeta<'a> {
     identity: &'a VerifiedIdentity,
+    authority: jani_core::authority::AuthorityWindow,
     task_id: &'a str,
     run_id: &'a str,
     prompt: &'a str,
@@ -217,36 +222,26 @@ impl RunMeta<'_> {
     }
 }
 
-impl Session {
-    /// What a checkpoint stores: the conversation with secrets redacted, the same view
-    /// the model is sent. A checkpoint is the user's conversation in a database in the
-    /// state directory, so it must not hold a pasted token in the clear. If redaction
-    /// is impossible the raw messages are kept (resume matters more than the edge case
-    /// where DLP is configured to refuse rather than redact).
-    fn checkpoint_messages(&self) -> Vec<Value> {
-        self.governance
-            .prepare_model_request(&self.messages)
-            .map(|(redacted, _)| redacted)
-            .unwrap_or_else(|_| self.messages.clone())
-    }
+#[derive(Clone, Copy)]
+enum SessionStart<'a> {
+    Fresh,
+    Dispatch(&'a str),
+    Resume(&'a str),
+    Recover,
+}
 
-    fn open(cfg: &Config, catalog: &Catalog) -> JResult<Self> {
-        Self::open_with_resume(cfg, catalog, None)
-    }
+pub(crate) struct SessionAuthority {
+    policy: PolicyEngine,
+    pub(crate) identity: identity::VerifiedIdentity,
+    assertion: Option<identity::IdentityAssertion>,
+    pub(crate) contract: Option<WorkContract>,
+    limits: crate::policy::EffectiveLimits,
+}
 
-    fn open_with_resume(
-        cfg: &Config,
-        catalog: &Catalog,
-        resume_task_id: Option<&str>,
-    ) -> JResult<Self> {
+impl SessionAuthority {
+    pub(crate) fn load(cfg: &Config) -> JResult<Self> {
         let policy = PolicyEngine::load(cfg)?;
-        let identity = identity::load(cfg)?;
-        if let Some(rec) = jani_core::kill::is_killed(&cfg.state_dir, &identity.tenant)? {
-            return Err(format!(
-                "KILL_SWITCH_ACTIVE: halted by {} ({})",
-                rec.actor, rec.reason
-            ));
-        }
+        let (identity, assertion) = identity::load_with_assertion(cfg)?;
         let contract = match cfg.contract_path.as_ref() {
             Some(path) => Some(WorkContract::load(path)?),
             None => None,
@@ -259,16 +254,64 @@ impl Session {
                     contract.spec.purpose, cfg.purpose
                 ));
             }
-            if let Some(tid) = resume_task_id {
-                if contract.metadata.task_id != tid {
-                    return Err(format!(
-                        "work contract taskId '{}' does not match resumed task '{tid}'",
-                        contract.metadata.task_id
-                    ));
-                }
-            }
         }
         let limits = effective_limits(&policy, contract.as_ref())?;
+        let authority = Self {
+            policy,
+            identity,
+            assertion,
+            contract,
+            limits,
+        };
+        authority.require_active(cfg)?;
+        Ok(authority)
+    }
+
+    fn require_active(&self, cfg: &Config) -> JResult<()> {
+        self.policy
+            .authority_window(Some(&self.identity))
+            .require_current()
+            .map_err(|e| e.to_string())?;
+        if let Some(rec) = jani_core::kill::is_killed(&cfg.state_dir, &self.identity.tenant)? {
+            return Err(format!(
+                "KILL_SWITCH_ACTIVE: halted by {} ({})",
+                rec.actor, rec.reason
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Session {
+    /// Store a scrubbed conversation even when policy rejects sending it to a model.
+    fn checkpoint_messages(&self) -> Vec<Value> {
+        crate::data::redact_checkpoint_messages(&self.messages)
+    }
+
+    fn open(
+        cfg: &Config,
+        catalog: &Catalog,
+        start: SessionStart<'_>,
+        authority: SessionAuthority,
+    ) -> JResult<Self> {
+        if matches!(start, SessionStart::Dispatch(_)) {
+            authority.require_active(cfg)?;
+        }
+        let SessionAuthority {
+            policy,
+            identity,
+            assertion,
+            contract,
+            limits,
+        } = authority;
+        if let (Some(contract), SessionStart::Resume(tid)) = (&contract, start) {
+            if contract.metadata.task_id != tid {
+                return Err(format!(
+                    "work contract taskId '{}' does not match resumed task '{tid}'",
+                    contract.metadata.task_id
+                ));
+            }
+        }
         let sandbox_profile = limits
             .sandbox_profile
             .unwrap_or_else(|| policy.default_sandbox_profile());
@@ -282,37 +325,36 @@ impl Session {
         let plugins = PluginRegistry::load(cfg)?;
 
         let mut tasks = TaskStore::open(&cfg.state_dir)?;
-        let mut loaded_checkpoint = None;
-        let (task_id, task_epoch) = match resume_task_id {
-            Some(tid) => {
-                let cp = tasks
-                    .load(&identity.tenant, tid)?
-                    .ok_or_else(|| format!("no saved checkpoint for task '{tid}'"))?;
-                if cp.status == "killed" {
-                    return Err(format!("task '{tid}' was killed and cannot be resumed"));
-                }
-                let epoch = tasks.claim_resume_epoch(&identity.tenant, tid)?;
-                loaded_checkpoint = Some(cp);
-                (tid.to_string(), epoch)
-            }
-            None => {
-                let tid = contract
-                    .as_ref()
-                    .map(|contract| contract.metadata.task_id.clone())
-                    .or_else(|| cfg.task_id.clone())
-                    .unwrap_or_else(|| new_id("task"));
-                if let Some(path) = cfg.identity_path.as_ref() {
-                    let assertion = identity::load_assertion(path)?;
-                    identity::consume_assertion_nonce(
-                        &cfg.state_dir,
-                        &assertion,
-                        Some(&tid),
-                        false,
-                    )?;
-                }
-                (tid, 1)
+        let task_id = match start {
+            SessionStart::Resume(task_id) => task_id.to_owned(),
+            _ => contract
+                .as_ref()
+                .map(|contract| contract.metadata.task_id.clone())
+                .or_else(|| cfg.task_id.clone())
+                .unwrap_or_else(|| new_id("task")),
+        };
+        let loaded_checkpoint = match start {
+            SessionStart::Fresh | SessionStart::Dispatch(_) => None,
+            SessionStart::Resume(_) | SessionStart::Recover => {
+                tasks.claim_checkpoint(&identity.tenant, &task_id)?
             }
         };
+        if loaded_checkpoint.is_none() {
+            if matches!(start, SessionStart::Resume(_)) {
+                return Err(format!("no saved checkpoint for task '{task_id}'"));
+            }
+            if let Some(assertion) = assertion.as_ref() {
+                identity::consume_assertion_nonce(
+                    &cfg.state_dir,
+                    assertion,
+                    Some(&task_id),
+                    false,
+                )?;
+            }
+        }
+        let task_epoch = loaded_checkpoint
+            .as_ref()
+            .map_or(1, |checkpoint| checkpoint.epoch);
         let journal = Journal::open_with_anchor(&cfg.state_dir, cfg.audit_anchor.as_deref())?;
         let approvals = ApprovalStore::open(&cfg.state_dir)?;
         let budget =
@@ -418,18 +460,28 @@ Discovered skill names: {skills}{memory}"#,
             }
             _ => {
                 let msgs = vec![system];
-                tasks.checkpoint(
-                    &identity.tenant,
-                    &task_id,
-                    task_epoch,
-                    "ready",
-                    None,
-                    None,
-                    &identity.principal,
-                    &cfg.purpose,
-                    &cfg.root.display().to_string(),
-                    &msgs,
-                )?;
+                let checkpoint = crate::data::redact_checkpoint_messages(&msgs);
+                if let SessionStart::Dispatch(delivery_key) = start {
+                    tasks.start_dispatch_session(
+                        &identity.tenant,
+                        &task_id,
+                        delivery_key,
+                        &checkpoint,
+                    )?;
+                } else {
+                    tasks.checkpoint(
+                        &identity.tenant,
+                        &task_id,
+                        task_epoch,
+                        "ready",
+                        None,
+                        None,
+                        &identity.principal,
+                        &cfg.purpose,
+                        &cfg.root.display().to_string(),
+                        &checkpoint,
+                    )?;
+                }
                 msgs
             }
         };
@@ -545,6 +597,7 @@ Discovered skill names: {skills}{memory}"#,
         let task_id = self.task_id.clone();
         let run_meta = RunMeta {
             identity: &self.identity,
+            authority: self.policy.authority_window(Some(&self.identity)),
             task_id: &task_id,
             run_id: &run_id,
             prompt,
@@ -580,7 +633,7 @@ Discovered skill names: {skills}{memory}"#,
             );
         }
 
-        let gateway = ModelGateway::new(cfg, &self.model, &self.governance)?;
+        let gateway = ModelGateway::new(cfg, &self.model, &self.governance, run_meta.authority)?;
         let tool_defs = specs();
 
         // The step allowance is a safety backstop, not the way a task is meant to
@@ -622,12 +675,10 @@ Discovered skill names: {skills}{memory}"#,
                 }
                 None => gateway.complete(&self.messages, &tool_defs, &mut self.budget, cancelled),
             };
+            ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
             let assistant = match assistant {
                 Ok(message) => message,
                 Err(error) => {
-                    if cancelled.is_some_and(|token| token.load(Ordering::SeqCst)) {
-                        return cancel_turn(&run_meta, &mut self.journal);
-                    }
                     let _ = run_meta.record(
                         &mut self.journal,
                         decision::FAILED,
@@ -636,7 +687,6 @@ Discovered skill names: {skills}{memory}"#,
                     return Err(error);
                 }
             };
-            ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
             let calls = assistant
                 .get("tool_calls")
                 .and_then(Value::as_array)
@@ -655,12 +705,11 @@ Discovered skill names: {skills}{memory}"#,
                     return Err("model ended without an answer or tool call".into());
                 }
                 let inspected = self.governance.inspect_model_output(body, "final-answer")?;
-                run_meta.record(&mut self.journal, decision::COMPLETED, reason::FINAL_ANSWER)?;
                 let (cp_status, cp_approval) = match pending_approval_id.as_deref() {
                     Some(aid) => ("waiting_approval", Some(aid)),
                     None => ("completed", None),
                 };
-                let _ = tasks.checkpoint(
+                tasks.checkpoint(
                     &self.identity.tenant,
                     &task_id,
                     self.task_epoch,
@@ -671,7 +720,9 @@ Discovered skill names: {skills}{memory}"#,
                     &cfg.purpose,
                     &cfg.root.display().to_string(),
                     &self.checkpoint_messages(),
-                );
+                )?;
+                run_meta.record(&mut self.journal, decision::COMPLETED, reason::FINAL_ANSWER)?;
+                ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
                 return Ok(inspected);
             }
             for call in calls {
@@ -750,6 +801,7 @@ Discovered skill names: {skills}{memory}"#,
                         format!("invalid tool arguments: {error}")
                     )),
                 };
+                ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
                 let seen = repeats
                     .entry(format!("{name}\u{0}{repeat_key}"))
                     .or_insert(0);
@@ -820,7 +872,7 @@ Discovered skill names: {skills}{memory}"#,
                 let inspected = self
                     .governance
                     .inspect_model_output(&text, "final-answer")?;
-                let _ = tasks.checkpoint(
+                tasks.checkpoint(
                     &self.identity.tenant,
                     &task_id,
                     self.task_epoch,
@@ -831,8 +883,9 @@ Discovered skill names: {skills}{memory}"#,
                     &cfg.purpose,
                     &cfg.root.display().to_string(),
                     &self.checkpoint_messages(),
-                );
+                )?;
                 run_meta.record(&mut self.journal, decision::COMPLETED, reason::NEEDS_INPUT)?;
+                ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
                 return Ok(inspected);
             }
             if stalled {
@@ -862,6 +915,7 @@ Discovered skill names: {skills}{memory}"#,
         ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
         let closing =
             gateway.complete_without_tools(&self.messages, &tool_defs, &mut self.budget, cancelled);
+        ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
         let body = match closing {
             Ok(message) => message
                 .get("content")
@@ -870,9 +924,6 @@ Discovered skill names: {skills}{memory}"#,
                 .trim()
                 .to_string(),
             Err(error) => {
-                if cancelled.is_some_and(|token| token.load(Ordering::SeqCst)) {
-                    return cancel_turn(&run_meta, &mut self.journal);
-                }
                 let _ = run_meta.record(&mut self.journal, decision::FAILED, reason::STEP_LIMIT);
                 return Err(format!(
                     "stopped after {} model turns and could not ask for a handoff: {error}",
@@ -892,12 +943,11 @@ Discovered skill names: {skills}{memory}"#,
         let inspected = self
             .governance
             .inspect_model_output(&body, "final-answer")?;
-        run_meta.record(&mut self.journal, decision::COMPLETED, code)?;
         let (cp_status, cp_approval) = match pending_approval_id.as_deref() {
             Some(aid) => ("waiting_approval", Some(aid)),
             None => ("paused", None),
         };
-        let _ = tasks.checkpoint(
+        tasks.checkpoint(
             &self.identity.tenant,
             &task_id,
             self.task_epoch,
@@ -908,18 +958,47 @@ Discovered skill names: {skills}{memory}"#,
             &cfg.purpose,
             &cfg.root.display().to_string(),
             &self.checkpoint_messages(),
-        );
+        )?;
+        run_meta.record(&mut self.journal, decision::COMPLETED, code)?;
+        ensure_active(cancelled, &cfg.state_dir, &run_meta, &mut self.journal)?;
         Ok(format!("{banner}\n\n{inspected}"))
     }
 }
 
 impl<'a> Agent<'a> {
     pub fn new(cfg: &'a Config, catalog: &'a Catalog) -> JResult<Self> {
-        let session = Session::open(cfg, catalog)?;
+        Self::open(
+            cfg,
+            catalog,
+            SessionStart::Fresh,
+            SessionAuthority::load(cfg)?,
+        )
+    }
+
+    pub(crate) fn new_for_dispatch(
+        cfg: &'a Config,
+        catalog: &'a Catalog,
+        authority: SessionAuthority,
+        delivery_key: &str,
+    ) -> JResult<Self> {
+        Self::open(
+            cfg,
+            catalog,
+            SessionStart::Dispatch(delivery_key),
+            authority,
+        )
+    }
+
+    fn open(
+        cfg: &'a Config,
+        catalog: &'a Catalog,
+        start: SessionStart<'_>,
+        authority: SessionAuthority,
+    ) -> JResult<Self> {
         Ok(Self {
             cfg,
             catalog,
-            session,
+            session: Session::open(cfg, catalog, start, authority)?,
         })
     }
 
@@ -935,11 +1014,21 @@ impl<'a> Agent<'a> {
     }
 
     pub fn resume(cfg: &'a Config, catalog: &'a Catalog, task_id: &str) -> JResult<Self> {
-        Ok(Self {
+        Self::open(
             cfg,
             catalog,
-            session: Session::open_with_resume(cfg, catalog, Some(task_id))?,
-        })
+            SessionStart::Resume(task_id),
+            SessionAuthority::load(cfg)?,
+        )
+    }
+
+    pub fn recover(cfg: &'a Config, catalog: &'a Catalog) -> JResult<Self> {
+        Self::open(
+            cfg,
+            catalog,
+            SessionStart::Recover,
+            SessionAuthority::load(cfg)?,
+        )
     }
 
     pub fn run(&mut self, prompt: &str) -> JResult<String> {
@@ -1024,7 +1113,7 @@ impl<'a> Agent<'a> {
                 &self.session.identity.principal,
                 &self.cfg.purpose,
                 &self.cfg.root.display().to_string(),
-                &self.session.messages,
+                &self.session.checkpoint_messages(),
             );
         }
     }
@@ -1186,11 +1275,8 @@ impl<'a> Agent<'a> {
             .map(str::to_owned)
             .or_else(|| self.session.last_run_id.clone())
             .ok_or("no run has been recorded in this session yet")?;
-        let integrity = journal::verify(&self.cfg.state_dir)?;
-        if integrity["ok"] != true {
-            return Err("audit journal integrity failed: refusing unverified inspection".into());
-        }
-        let events = journal::read_run(&self.cfg.state_dir.join(journal::JOURNAL_FILE), &run_id)?;
+        let events =
+            journal::read_verified_run(&self.cfg.state_dir.join(journal::JOURNAL_FILE), &run_id)?;
         if events.is_empty() {
             return Err(format!("no journal events for run '{run_id}'"));
         }
@@ -1623,6 +1709,45 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_storage_scrubs_secrets_when_model_egress_refuses_them() {
+        let root = workspace();
+        let mut cfg = Config::baseline();
+        cfg.root = root.clone();
+        cfg.state_dir = root.join("state");
+        let catalog = Catalog::default();
+        let mut agent = Agent::new(&cfg, &catalog).unwrap();
+        agent.session.governance.policy.redact_secrets = false;
+        let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        agent
+            .session
+            .messages
+            .push(message("user", &format!("Keep this note, scrub {secret}")));
+        assert!(agent
+            .session
+            .governance
+            .prepare_model_request(&agent.session.messages)
+            .is_err());
+        let checkpoint = agent.session.checkpoint_messages();
+        let stored = serde_json::to_string(&checkpoint).unwrap();
+        assert!(stored.contains("Keep this note"));
+        assert!(!stored.contains(secret));
+
+        agent.session.messages[0]["content"] = json!(format!("System note with {secret}"));
+        agent.reset_conversation();
+        let restored = TaskStore::open(&cfg.state_dir)
+            .unwrap()
+            .load(&agent.session.identity.tenant, agent.task_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.messages.len(), 1);
+        let saved = serde_json::to_string(&restored.messages).unwrap();
+        assert!(saved.contains("System note"));
+        assert!(!saved.contains(secret));
+        drop(agent);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn resume_restores_checkpoint_and_rejects_killed_tasks() {
         let root = workspace();
         let mut cfg = Config::baseline();
@@ -1670,6 +1795,12 @@ mod tests {
             Err(err) => err,
         };
         assert!(killed_err.contains("killed"), "{killed_err}");
+        cfg.task_id = Some(tid);
+        let recovery_err = match Agent::recover(&cfg, &catalog) {
+            Ok(_) => panic!("delivery recovery opened a killed task"),
+            Err(error) => error,
+        };
+        assert!(recovery_err.contains("killed"), "{recovery_err}");
 
         jani_core::kill::activate(&cfg.state_dir, Some(&cfg.tenant), "sec-admin", "incident")
             .unwrap();

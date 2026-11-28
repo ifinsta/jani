@@ -4,11 +4,13 @@ title: "Delivery: work that someone other than the model checked"
 status: implemented-partial
 owner: backend/server
 version: 1.0.0
-last-reviewed: 2026-11-25
+last-reviewed: 2026-11-28
 source:
   - backend/server/src/deliver.rs
+  - backend/server/src/deliver/worktree.rs
 tests:
   - backend/server/tests/deliver.rs
+  - backend/server/tests/work.rs
 ---
 
 # Delivery
@@ -26,7 +28,7 @@ jani deliver "make add() correct" \
 2. **Work.** The agent runs as it always does: same policy, sandbox, execution modes, consent prompts and journal. The prompt tells it the acceptance checks, to run them itself, and not to change the tests.
 3. **Verify, independently.** After the agent finishes, the **host** runs every `--accept` command (argv, no shell; in the same sandbox profile as the session). The model cannot run, skip, edit or report them: they are not a tool. Each is journaled as `acceptance.run` (`acceptance_passed` / `acceptance_failed`).
 4. **Repair.** If a check fails, its command, exit status and output tail go back to the agent as a new turn of the **same conversation**, up to `--repair-rounds` (default 3).
-5. **Commit.** Changes inside the operator's `--write-path` scope are committed on the branch with the outcome in the message. Only the write scope is staged, so build output and stray files are never committed. Repository hooks and fsmonitor are disabled for the host's git calls, because they would run repository code unconfined. `--no-commit` leaves the changes uncommitted.
+5. **Commit.** Git commits the changed paths selected by the operator's `--write-path` scope, including deletions. Unrelated staged entries stay staged. An addition that would implicitly remove a file outside the selected scope stops the delivery before staging. Repository hooks and fsmonitor are disabled for host Git calls. `--no-commit` leaves the changes uncommitted.
 6. **Publish (optional).** `--push REMOTE` pushes the branch; `--pr` then opens a pull request with `gh pr create`. Neither happens unless you ask.
 7. **Report.** `<state-dir>/deliveries/<id>/report.md` and `report.json`.
 
@@ -43,7 +45,7 @@ A model that says "all tests pass" without fixing anything is `failed`: the clai
 ## What the report flags
 
 - Every check on every round, with its result and time.
-- The diff against the base commit.
+- The diff against the recorded base commit when it is available. JSON reports expose it in `baseCommit`. Recovery of an older checkout without metadata records an unknown base.
 - **Files that look like tests that the agent changed.** The cheapest way to pass a check is to weaken it. A `verified` delivery that edited tests says so, in bold, and `testFilesChanged` is in the JSON. The strong defense is to keep the tests out of `--write-path`; the flag is the backstop.
 - Tokens, the number of rounds, and whether the audit chain verifies.
 

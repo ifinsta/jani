@@ -421,6 +421,7 @@ impl<'a> Broker<'a> {
             } else {
                 Vec::new()
             },
+            ..Default::default()
         };
         match verdict {
             Verdict::Allow(basis) => {
@@ -457,11 +458,19 @@ impl<'a> Broker<'a> {
                         ),
                     ));
                 };
-                match consent.ask(&ConsentRequest {
+                let answer = consent.ask(&ConsentRequest {
                     argv: argv.clone(),
                     reason: reason.clone(),
                     suggest: suggest.clone(),
-                }) {
+                });
+                if let Err(expired) = self
+                    .policy
+                    .authority_window(Some(self.identity))
+                    .require_current()
+                {
+                    return Err(refuse(self, expired.reason(), expired.to_string()));
+                }
+                match answer {
                     ConsentAnswer::Deny => {
                         if self
                             .cancelled
@@ -626,6 +635,7 @@ impl<'a> Broker<'a> {
     }
 
     pub fn invoke(&mut self, invocation_id: &str, tool: &str, args: &Value) -> ToolResult {
+        let authority = self.policy.authority_window(Some(self.identity));
         let Some(tool) = Tool::from_name(tool) else {
             return self.reject(
                 invocation_id,
@@ -658,6 +668,15 @@ impl<'a> Broker<'a> {
                 );
             }
         };
+        if let Err(expired) = authority.require_current() {
+            return self.reject(
+                invocation_id,
+                &call.action,
+                call.resource,
+                expired.reason(),
+                expired.to_string(),
+            );
+        }
         let payload_digest = json_digest(args);
         if self
             .cancelled
@@ -882,6 +901,15 @@ impl<'a> Broker<'a> {
         }
 
         let approval_id = approved_id;
+        if let Err(expired) = authority.require_current() {
+            return self.reject(
+                invocation_id,
+                &call.action,
+                call.resource,
+                expired.reason(),
+                expired.to_string(),
+            );
+        }
 
         if let Err(error) = self.budget.reserve_tool_call() {
             let audit = self.audit(
@@ -934,6 +962,15 @@ impl<'a> Broker<'a> {
             ) {
                 Ok(EffectGate::Proceed) => {}
                 Ok(EffectGate::AlreadyApplied(cached)) => {
+                    if let Err(expired) = authority.require_current() {
+                        return self.reject(
+                            invocation_id,
+                            &call.action,
+                            call.resource,
+                            expired.reason(),
+                            expired.to_string(),
+                        );
+                    }
                     let data = cached.unwrap_or_else(|| json!({"idempotent_replay": true}));
                     let _ = self.audit(
                         invocation_id,
@@ -976,13 +1013,41 @@ impl<'a> Broker<'a> {
             }
         }
 
+        if let Err(expired) = authority.require_current() {
+            let mut error = expired.to_string();
+            if let (Some(key), Some(tasks)) =
+                (idempotency_key.as_deref(), self.tasks.as_deref_mut())
+            {
+                if let Err(failure) = tasks.finish_effect(
+                    &self.identity.tenant,
+                    &self.task_id,
+                    key,
+                    false,
+                    Some(&json!({"reason": expired.reason()})),
+                ) {
+                    error.push_str(&format!(
+                        "; unstarted claim requires reconciliation: {failure}"
+                    ));
+                }
+            }
+            return self.reject(
+                invocation_id,
+                &call.action,
+                call.resource,
+                expired.reason(),
+                error,
+            );
+        }
+
         let execution = self.execute(tool, args, &decision, exec_grant.unwrap_or_default());
         let (data, receipt, error) = match execution {
             Ok(output) => output,
             Err(error) => {
-                if let (Some(key), Some(tasks)) =
-                    (idempotency_key.as_deref(), self.tasks.as_deref_mut())
-                {
+                let expired = authority.require_current().err();
+                if let (Some(key), Some(tasks)) = (
+                    idempotency_key.as_deref(),
+                    self.tasks.as_deref_mut().filter(|_| expired.is_none()),
+                ) {
                     let _ = tasks.finish_effect(
                         &self.identity.tenant,
                         &self.task_id,
@@ -1005,7 +1070,9 @@ impl<'a> Broker<'a> {
                     status: crate::types::tool_status::ERROR.into(),
                     effect: call.effect,
                     data: None,
-                    error: Some(error),
+                    error: Some(expired.map_or(error, |expiry| {
+                        format!("{expiry}; an admitted action may require reconciliation")
+                    })),
                     decision_id: decision.decision_id,
                     classification: Classification::Internal,
                     sandbox: None,
@@ -1040,9 +1107,12 @@ impl<'a> Broker<'a> {
             .and_then(|contract| contract.spec.data_classification)
         {
             if classified.effective > max {
-                if let (Some(key), Some(tasks)) =
-                    (idempotency_key.as_deref(), self.tasks.as_deref_mut())
-                {
+                if let (Some(key), Some(tasks)) = (
+                    idempotency_key.as_deref(),
+                    self.tasks
+                        .as_deref_mut()
+                        .filter(|_| authority.require_current().is_ok()),
+                ) {
                     let _ = tasks.finish_effect(
                         &self.identity.tenant,
                         &self.task_id,
@@ -1078,13 +1148,20 @@ impl<'a> Broker<'a> {
             }
         }
 
-        if let (Some(key), Some(tasks)) = (idempotency_key.as_deref(), self.tasks.as_deref_mut()) {
+        // A late failure can follow an effect that already happened. Keep its claim unfinished.
+        let current = authority.require_current().is_ok();
+        let completed = error.is_none()
+            && (!matches!(tool, Tool::Command) || data["command_succeeded"] == true);
+        if let (Some(key), Some(tasks)) = (
+            idempotency_key.as_deref(),
+            self.tasks.as_deref_mut().filter(|_| current || completed),
+        ) {
             let _ = tasks.finish_effect(
                 &self.identity.tenant,
                 &self.task_id,
                 key,
                 error.is_none(),
-                Some(&data),
+                current.then_some(&data),
             );
         }
 
@@ -1108,6 +1185,23 @@ impl<'a> Broker<'a> {
                 receipt_id.as_deref(),
             )
             .err();
+
+        if let Err(expired) = authority.require_current() {
+            return ToolResult {
+                invocation_id: invocation_id.into(),
+                status: crate::types::tool_status::ERROR.into(),
+                effect: call.effect,
+                data: None,
+                error: Some(format!(
+                    "{expired}; the action started before expiry and may have effects"
+                )),
+                decision_id: decision.decision_id,
+                classification: classified.effective,
+                sandbox: None,
+                approval_id,
+                retryable: false,
+            };
+        }
 
         ToolResult {
             invocation_id: invocation_id.into(),
@@ -1263,7 +1357,10 @@ impl<'a> Broker<'a> {
                     timeout,
                     profile,
                     network,
-                    &grant,
+                    &exec::ExecGrant {
+                        authority: self.policy.authority_window(Some(self.identity)),
+                        ..grant
+                    },
                     self.cancelled,
                 )?;
                 Ok((value, Some(receipt), None))
@@ -1279,7 +1376,10 @@ impl<'a> Broker<'a> {
                     cap_name,
                     &inner,
                     self.governance,
-                    self.cancelled,
+                    crate::process::ProcessGate {
+                        cancelled: self.cancelled,
+                        authority: self.policy.authority_window(Some(self.identity)),
+                    },
                 )?;
                 Ok((value, Some(receipt), None))
             }
@@ -1952,6 +2052,75 @@ mod tests {
         assert!(permit_reasons(&env.dir)
             .iter()
             .any(|r| r == "deny:exec_consent_required"));
+        cleanup(env);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn consent_returned_after_expiry_neither_persists_a_rule_nor_runs_the_command() {
+        struct LateConsent(u64);
+        impl Consent for LateConsent {
+            fn ask(&self, _: &ConsentRequest) -> ConsentAnswer {
+                while crate::types::now_unix() < self.0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                ConsentAnswer::Always
+            }
+        }
+        let (mut env, _) = smart_env(&[]);
+        let expires = crate::types::now_unix() + 2;
+        env.identity.expires_at = Some(expires);
+        env.consent = Some(Box::new(LateConsent(expires)));
+        let result = command(
+            &mut env.broker(),
+            "late-consent",
+            &["touch", "src/late.txt"],
+        );
+        assert_eq!(result.status, "denied");
+        assert!(result
+            .error
+            .unwrap()
+            .contains("identity assertion has expired"));
+        assert!(!env.dir.join("src/late.txt").exists());
+        assert!(!env.dir.join("exec-rules.json").exists());
+        assert!(permit_reasons(&env.dir).contains(&"deny:identity_expired".into()));
+        cleanup(env);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_timeout_after_expiry_keeps_the_effect_unresolved() {
+        let (mut env, _) = smart_env(&[ConsentAnswer::Once]);
+        env.identity.expires_at = Some(crate::types::now_unix() + 2);
+        let mut tasks = TaskStore::open(&env.dir).unwrap();
+        let args =
+            json!({"argv": ["sleep", "5"], "timeout_secs": 3, "idempotency_key": "late-command"});
+        let result = {
+            let mut broker = env.broker();
+            broker.tasks = Some(&mut tasks);
+            broker.invoke("late-command", "command", &args)
+        };
+        assert_eq!(result.status, "error", "{:?}", result.error);
+        assert!(result
+            .error
+            .unwrap()
+            .contains("action started before expiry"));
+        assert!(result.data.is_none());
+        assert_eq!(
+            tasks
+                .begin_effect(
+                    "t1",
+                    "task-1",
+                    1,
+                    "late-command",
+                    "command",
+                    "fixture",
+                    &json_digest(&args)
+                )
+                .unwrap(),
+            EffectGate::InFlight
+        );
+        drop(tasks);
         cleanup(env);
     }
 

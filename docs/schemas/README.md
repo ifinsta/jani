@@ -77,8 +77,15 @@ Minimal shape:
 `integrity` is mandatory for registry load. The digest is SHA-256 over the
 compact JSON serialization of the manifest with `integrity` removed. Only
 `builtin`, `wasm` and `sidecar` runtime labels are accepted; native dynamic
-loading is refused. Manifests are verified, catalogued and reported as
-`invocable: false`; this build has no plugin executor.
+loading is refused.
+
+To invoke a Linux sidecar, put the lowercase SHA-256 of its executable in `spec.runtime.artifactSha256` before signing the manifest. The executor verifies and stages a single regular file of at most 64 MiB. It gives the sidecar a private workspace and accepts an omitted `fsAccess` or `fsAccess: "none"`. Sidecars can receive inputs as JSON parameters. This build supports sidecar launch on Linux with Bubblewrap. The `invocable` catalog field describes platform and manifest eligibility. The executor checks artifact bytes and sandbox availability at invocation.
+
+Each invocation sends one JSON-RPC request on stdin with `id`, `method`, `pluginId`, `entrypoint`, and `params`. The sidecar returns one JSON-RPC response on stdout with the same `id`. For connected sidecars, the request includes `janiBroker` with `transport: "http+unix"`, `socket`, and `lease`. Clients using the previous TCP proxy environment variables need to read the request metadata and connect to the Unix socket.
+
+The broker accepts HTTP/1.1 requests to `/proxy` with `X-Jani-Lease` and `X-Jani-Target-Url`. A declared `networkServices` entry names an origin with a host and optional scheme and port. The broker accepts HTTPS and literal loopback HTTP with an explicit nondefault port. A capability without an external-write or irreversible effect is limited to GET and HEAD. `X-Jani-Secret-Name` selects a declared connector credential. Select the name when more than one credential is available. Each declared connector credential is eligible for each declared origin. The optional `X-Jani-Auth-Header` accepts `Authorization`, `X-API-Key`, `X-Auth-Token`, or `Private-Token`. The broker keeps model credentials unavailable to connectors.
+
+On a Linux runner with a working Bubblewrap backend, run the end-to-end fixture with `FIXTURE_CONNECTOR_KEY=mock-connector-key cargo test --locked -p jani --bin jani sidecar_bwrap_brokers_requests_inside_the_network_boundary -- --ignored`. It verifies brokered access to a local test server, confinement, and credential redaction.
 
 ### 1.3 Organization policy
 

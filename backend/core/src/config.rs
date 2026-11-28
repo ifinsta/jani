@@ -170,6 +170,7 @@ pub struct Config {
     /// `jani deliver`: acceptance checks the host runs after the agent finishes.
     pub accept: Vec<String>,
     pub repair_rounds: usize,
+    pub repair_rounds_explicit: bool,
     pub branch: Option<String>,
     pub no_worktree: bool,
     pub no_commit: bool,
@@ -278,6 +279,7 @@ USAGE:
   jani resume --task TASK_ID [OPTIONS]
   jani verify --contract FILE [OPTIONS]
   jani dispatch --event FILE --contract FILE [OPTIONS]
+  jani dispatch dry-run --event FILE --contract FILE [OPTIONS]
   jani --print "TASK" [OPTIONS]
   jani deliver "TASK" [--accept CMD]... [OPTIONS]
   jani work add "TASK" [--accept CMD]... | list | show ID | run [--once|--watch] | answer ID TEXT | cancel ID | retry ID
@@ -310,6 +312,7 @@ USAGE:
   jani mcp verify|authorize|call|validate-response OP RESOURCE [OPTIONS]
   jani native TOOL OPERATION [ARGUMENTS] [--task TASK] [OPTIONS]
   jani update check|install|watch [OPTIONS]   Verified release-channel delivery
+  jani update recover --to ORIGINAL          Restore the verified Windows self-update backup
   jani ui [--port N | --unix-socket PATH] [OPTIONS]  Local web workspace (loopback or owner-only socket, token required)
 
 Jani has no embedded coordination engine. It works directly in a Git
@@ -325,7 +328,7 @@ OPTIONS:
   --policy FILE           Signed organization policy bundle (required in enterprise)
   --policy-key KEY        Trusted policy/manifest key, ID:HEX or HEX; repeatable
   --identity-key KEY      Trusted identity assertion key, ID:HEX or HEX; repeatable
-  --revoked-key KEY_ID    Revoked signer key ID (refused even if in trust roots); repeatable
+  --revoked-key ID        Revoke a signer ID or sha256:HEX public key fingerprint; repeatable
   --verifier-key KEY      Trusted verification receipt key, ID:HEX or HEX; repeatable
   --signing-key FILE      Ed25519 secret key hex file for signing verification receipts
   --key-id ID             Key identifier embedded in signed verification receipts
@@ -586,6 +589,7 @@ impl Config {
             exec_mode: ExecMode::Off,
             accept: Vec::new(),
             repair_rounds: defaults::REPAIR_ROUNDS,
+            repair_rounds_explicit: false,
             branch: None,
             no_worktree: false,
             no_commit: false,
@@ -754,6 +758,20 @@ impl Config {
         Self::parse_args(&mut cfg, args)?;
         cfg.settings_path = loaded.as_ref().map(|(path, _)| path.clone());
         Self::finalize(&mut cfg)?;
+        if !cfg.revoked_keys.is_empty() {
+            let roots = [
+                &cfg.identity_keys,
+                &cfg.policy_keys,
+                &cfg.plugin_keys,
+                &cfg.verifier_keys,
+                &cfg.update_keys,
+            ];
+            let fingerprints = crate::crypto::revoked_fingerprints(
+                &cfg.revoked_keys,
+                roots.into_iter().flatten(),
+            )?;
+            cfg.revoked_keys.extend(fingerprints);
+        }
         if let Some((_, settings)) = &loaded {
             cfg.model_choices = Self::model_choices(&cfg, settings);
         }
@@ -1169,6 +1187,7 @@ impl Config {
                     if cfg.repair_rounds > 10 {
                         return Err("--repair-rounds must be 0..10".into());
                     }
+                    cfg.repair_rounds_explicit = true;
                 }
                 "--branch" => cfg.branch = Some(take_value(args, &mut i, a)?),
                 "--no-worktree" => cfg.no_worktree = true,

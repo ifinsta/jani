@@ -108,6 +108,191 @@ fn journal(dir: &Path) -> Vec<Value> {
 }
 
 #[test]
+fn delivery_preserves_staged_changes_outside_the_write_scope() {
+    let dir = fixture();
+    std::fs::write(dir.join("operator-note.txt"), "separate work").unwrap();
+    run(&dir, "git", &["add", "operator-note.txt"]);
+    let model = start(vec![write(0, "calc.py", FIXED), say("Fixed.")]);
+    let output = deliver(&dir, &model.base, &["--no-worktree"], None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        run(
+            &dir,
+            "git",
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]
+        )
+        .trim(),
+        "calc.py"
+    );
+    assert_eq!(
+        run(&dir, "git", &["diff", "--cached", "--name-only"]).trim(),
+        "operator-note.txt"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn delivery_commits_a_scoped_deletion() {
+    let dir = fixture();
+    std::fs::remove_file(dir.join("calc.py")).unwrap();
+    let model = start(vec![say("Reviewed the deletion.")]);
+    let output = deliver(&dir, &model.base, &["--no-worktree"], None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        run(
+            &dir,
+            "git",
+            &["diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD"]
+        )
+        .trim(),
+        "D\tcalc.py"
+    );
+    let summary = summary(&output);
+    let report_path = Path::new(summary["report"].as_str().unwrap()).with_extension("json");
+    let report: Value = serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["changedFiles"], json!(["calc.py"]));
+    assert!(report["commit"].is_string());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn delivery_rejects_additions_that_would_remove_an_out_of_scope_ancestor() {
+    for committed in [false, true] {
+        let dir = fixture();
+        let parent = dir.join("component");
+        std::fs::write(&parent, "operator's file").unwrap();
+        run(&dir, "git", &["add", "component"]);
+        if committed {
+            run(
+                &dir,
+                "git",
+                &[
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "commit",
+                    "-qm",
+                    "save the operator file",
+                ],
+            );
+        }
+        let before = run(&dir, "git", &["rev-parse", "HEAD"]);
+        std::fs::remove_file(&parent).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::write(parent.join("approved.txt"), "implementation").unwrap();
+        let model = start(vec![say("Reviewed the file layout.")]);
+        let output = deliver(
+            &dir,
+            &model.base,
+            &["--no-worktree", "--write-path", "component/approved.txt"],
+            None,
+        );
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("implicitly remove a file outside its write scope: component"),
+            "{error}"
+        );
+        assert_eq!(run(&dir, "git", &["rev-parse", "HEAD"]), before);
+        assert_eq!(run(&dir, "git", &["show", ":component"]), "operator's file");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn a_staged_addition_missing_from_the_workspace_does_not_abort_delivery() {
+    let dir = fixture();
+    std::fs::write(dir.join("draft.txt"), "staged draft").unwrap();
+    run(&dir, "git", &["add", "draft.txt"]);
+    std::fs::remove_file(dir.join("draft.txt")).unwrap();
+    let before = run(&dir, "git", &["rev-parse", "HEAD"]);
+    let model = start(vec![say("No net change.")]);
+    let output = deliver(
+        &dir,
+        &model.base,
+        &["--no-worktree", "--write-path", "draft.txt"],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(summary(&output)["commit"].is_null());
+    assert_eq!(run(&dir, "git", &["rev-parse", "HEAD"]), before);
+    assert_eq!(
+        run(&dir, "git", &["diff", "--cached", "--name-only"]).trim(),
+        "draft.txt"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn delivery_commits_scoped_paths_from_a_nested_checkout_directory() {
+    let dir = fixture();
+    let nested = dir.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    for file in ["calc.py", "test_calc.py"] {
+        std::fs::rename(dir.join(file), nested.join(file)).unwrap();
+    }
+    run(&dir, "git", &["add", "-A"]);
+    run(
+        &dir,
+        "git",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "move the package",
+        ],
+    );
+    let model = start(vec![
+        write(0, "calc.py", FIXED),
+        say("Fixed the nested package."),
+    ]);
+    let output = deliver(
+        &dir,
+        &model.base,
+        &[
+            "--repo",
+            nested.to_str().unwrap(),
+            "--accept",
+            "python3 -m unittest -q",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = summary(&output);
+    assert_eq!(result["outcome"], "verified");
+    let branch = result["branch"].as_str().unwrap();
+    assert_eq!(
+        run(&dir, "git", &["show", &format!("{branch}:nested/calc.py")]),
+        FIXED
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested.join("calc.py")).unwrap(),
+        BUGGY
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_failing_check_is_fed_back_and_the_second_attempt_is_verified_and_committed_on_a_branch() {
     let dir = fixture();
     let model = start(vec![

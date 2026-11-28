@@ -10,9 +10,11 @@ source:
   - backend/server/src/repl.rs
   - backend/server/src/tui.rs
   - backend/server/src/agent.rs
+  - backend/server/src/dispatch.rs
   - backend/server/src/update.rs
 tests:
   - backend/server/tests/cli.rs
+  - backend/server/tests/dispatch.rs
   - backend/server/tests/update_e2e.rs
   - backend/server/tests/e2e.rs
 ---
@@ -28,9 +30,10 @@ Use this page to find the command family or safety switch you need. It is an ent
 | `run` / `--print` | Execute a model-driven task subject to operator scope, policy and budgets |
 | `resume --task TASK_ID` | Resume a checkpointed task (`TaskStore` SQLite state) with fenced epoch increment and idempotent side-effect tracking |
 | `verify --contract FILE` | Run model-free `acceptanceChecks` and write-scope checks via `jani-verifier` and optionally sign a `VerificationReceipt` |
-| `dispatch --event FILE --contract FILE` | Deduplicate and scrub incoming webhook/schedule events via `TaskStore` before launching a bounded task |
+| `dispatch --event FILE --contract FILE` | Claim an incoming webhook or schedule delivery once in the local task store, then launch the bounded task |
+| `dispatch dry-run --event FILE --contract FILE` | Validate the event and work contract and show a redacted preview without claiming the delivery or calling a model |
 | `repl`, bare `jani` | Open an interactive session that keeps conversation across turns under one task; bare `jani` does this only when stdin is a terminal, otherwise it prints help |
-| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `evidence RUN_ID`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect configuration, unfinished runs, audited evidence and safety state; `plugins invoke` runs signed `sidecar` connectors through the zero-secret proxy |
+| `doctor`, `skills`, `sandbox`, `plugins`, `policy`, `audit`, `recovery status`, `evidence RUN_ID`, `inspect`, `approvals`, `budget`, `identity`, `contract` | Inspect configuration, unfinished runs, audited evidence and safety state. `plugins invoke` runs eligible sidecars on Linux with Bubblewrap. |
 | `agent`, `alerts`, `wake` | Operate local attention state and org kill switch (`agent kill-switch enable\|clear\|status`); neither alerts nor wake automatically invokes a model |
 | `ui` | Serve the local web workspace on loopback: run graph, approvals, journal, budgets and an interactive terminal; see [Web workspace](WEB_WORKSPACE.md) |
 | `mirror` | Produce deterministic critique and evidence-linked proposals from recorded runs |
@@ -130,6 +133,14 @@ Approvals stay external. A denied or approval-gated tool call reports the reques
 ## Self-update delivery
 
 `jani update check|install|watch` reads the typed channel (`releases/<type>/<platform>/latest.json`) from `--source` or `JANI_UPDATE_SOURCE` and delivers the referenced `jani.release/v2` artifact to local binaries.
+
+For each configured non-self target, `install` and `watch` retain the original signed manifest under the operator-owned state directory. A later `check`, `install` or `watch` uses the recorded version only when the currently trusted signature and the installed file’s size and SHA-256 all match. Keep the same state directory, configured source URL and target across restarts. Unsigned diagnostic receipts carry no version authority.
+
+The updater records the incumbent and verified candidate manifests before replacing a non-self target. `install` and `watch` require writable state and serialize with other updaters sharing that directory. `check` uses the existing state lock in shared mode and writes no proof records. A malformed bounded proof blocks that target unless the operator supplies `--force` to authorize a verified replacement. Windows non-self replacement requires a single rename. A target in use can cause a sharing error.
+
+`watch` exits after a successful self-update so a supervisor or operator can start the new executable. A Windows self-update records the incumbent and candidate fingerprints before replacing the running image. It retains a sibling `.jani-self-backup-<original filename>` and reports its path. If the replacement outcome needs reconciliation, `watch` reports `recovery-required` and exits with an error.
+
+On Windows, `update recover --to ORIGINAL --state-dir STATE` uses the prepared record offline. Run the command from a separately trusted Jani or a backup whose executable provenance you already trust. Supply the same state directory and the exact original path, including its filename spelling when the original is absent. Recovery checks the recorded backup’s exact size and digest before a no-overwrite move. It accepts a recognized executable already in place and refuses unexpected bytes. Recovery spawns no child process and respects the restored-state hold. Older `.jani-old-*` backups lack this recovery record and require operator review.
 
 - `check` verifies the channel and an Ed25519-signed `jani.release/v2` manifest before inspecting each target; it never downloads or executes the artifact or an existing target. It refuses an origin that is not HTTPS or loopback HTTP, an unsupported platform/target, a dirty build, an unknown schema, an unsafe file name, a missing trust root, an unsigned manifest or an invalid signature.
 - Existing targets are identified without execution: the running executable uses its built-in version, byte-identical copies use that same version, and an exact signed-artifact match uses the manifest version. Any other existing file reports `unknown-version` and is left alone unless `--force` is supplied.

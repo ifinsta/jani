@@ -1,6 +1,7 @@
 use crate::config::{JResult, ModelChoice};
 use crate::tools::Tool;
 use crate::types::ModelProtocol;
+use jani_core::authority::AuthorityWindow;
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, BufReader, Read};
@@ -26,15 +27,21 @@ fn ensure_active(cancelled: Option<&AtomicBool>) -> JResult<()> {
     Ok(())
 }
 
-fn pause_before_retry(attempt: u64, cancelled: Option<&AtomicBool>) -> JResult<()> {
+fn pause_before_retry(
+    attempt: u64,
+    cancelled: Option<&AtomicBool>,
+    authority: AuthorityWindow,
+) -> JResult<()> {
     let base = crate::net::retry_base(crate::env::MODEL_RETRY_BASE_MS, RETRY_BASE);
     let delay = crate::net::retry_delay(base, attempt, crate::net::RETRY_CAP);
     let deadline = Instant::now() + delay;
     while Instant::now() < deadline {
         ensure_active(cancelled)?;
+        authority.require_current().map_err(|e| e.to_string())?;
         std::thread::sleep(Duration::from_millis(50).min(delay));
     }
-    ensure_active(cancelled)
+    ensure_active(cancelled)?;
+    authority.require_current().map_err(|e| e.to_string())
 }
 
 struct CancelledReader<'a, R> {
@@ -130,10 +137,11 @@ pub struct ChatModel {
     key: String,
     protocol: ModelProtocol,
     max_output_tokens: usize,
+    authority: AuthorityWindow,
 }
 
 impl ChatModel {
-    pub fn new(choice: &ModelChoice) -> JResult<Self> {
+    pub fn new(choice: &ModelChoice, authority: AuthorityWindow) -> JResult<Self> {
         let key = choice.api_key().map(str::to_string).ok_or_else(|| {
             format!(
                 "set JANI_API_KEY, OPENAI_API_KEY, or a settings apiKey/apiKeyEnv to call model '{}'",
@@ -141,6 +149,7 @@ impl ChatModel {
             )
         })?;
         let client = crate::http::client_builder()
+            .retry(reqwest::retry::never())
             .timeout(crate::http::REQUEST_TIMEOUT)
             .build()
             .map_err(|e| e.to_string())?;
@@ -162,6 +171,7 @@ impl ChatModel {
             key,
             protocol: choice.protocol,
             max_output_tokens: choice.max_output_tokens,
+            authority,
         })
     }
 
@@ -173,8 +183,12 @@ impl ChatModel {
                 .header("x-api-key", &self.key)
                 .header("anthropic-version", ANTHROPIC_VERSION),
         };
-        http.json(request)
-            .send()
+        let request = http.json(request).build().map_err(|e| e.to_string())?;
+        self.authority
+            .require_current()
+            .map_err(|e| e.to_string())?;
+        self.client
+            .execute(request)
             .map_err(|e| format!("model request failed: {e}"))
     }
 
@@ -208,11 +222,14 @@ impl ChatModel {
         let mut attempt = 0u64;
         loop {
             ensure_active(cancelled)?;
+            self.authority
+                .require_current()
+                .map_err(|e| e.to_string())?;
             attempt += 1;
             let resp = match self.send(&request) {
                 Ok(resp) => resp,
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt, cancelled)?;
+                    pause_before_retry(attempt, cancelled, self.authority)?;
                     continue;
                 }
                 Err(error) => {
@@ -225,7 +242,7 @@ impl ChatModel {
                 Ok(body) => body,
                 Err(_error) if is_cancelled(cancelled) => return Err("MODEL_CANCELLED".into()),
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt, cancelled)?;
+                    pause_before_retry(attempt, cancelled, self.authority)?;
                     continue;
                 }
                 Err(error) => {
@@ -250,7 +267,7 @@ impl ChatModel {
                         return Ok(reply);
                     }
                     Err(_) if attempt < MAX_ATTEMPTS => {
-                        pause_before_retry(attempt, cancelled)?;
+                        pause_before_retry(attempt, cancelled, self.authority)?;
                         continue;
                     }
                     Err(error) => {
@@ -261,7 +278,7 @@ impl ChatModel {
             }
             let retryable = matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504);
             if retryable && attempt < MAX_ATTEMPTS {
-                pause_before_retry(attempt, cancelled)?;
+                pause_before_retry(attempt, cancelled, self.authority)?;
                 continue;
             }
             let excerpt = crate::process::truncate(&body, 900);
@@ -303,11 +320,14 @@ impl ChatModel {
         let mut attempt = 0u64;
         loop {
             ensure_active(cancelled)?;
+            self.authority
+                .require_current()
+                .map_err(|e| e.to_string())?;
             attempt += 1;
             let resp = match self.send(&request) {
                 Ok(resp) => resp,
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt, cancelled)?;
+                    pause_before_retry(attempt, cancelled, self.authority)?;
                     continue;
                 }
                 Err(error) => {
@@ -339,7 +359,7 @@ impl ChatModel {
                         return Err("MODEL_CANCELLED".into());
                     }
                     Err(_) if !emitted && attempt < MAX_ATTEMPTS => {
-                        pause_before_retry(attempt, cancelled)?;
+                        pause_before_retry(attempt, cancelled, self.authority)?;
                         continue;
                     }
                     Err(error) if emitted => {
@@ -356,7 +376,7 @@ impl ChatModel {
                 Ok(body) => body,
                 Err(_error) if is_cancelled(cancelled) => return Err("MODEL_CANCELLED".into()),
                 Err(_) if attempt < MAX_ATTEMPTS => {
-                    pause_before_retry(attempt, cancelled)?;
+                    pause_before_retry(attempt, cancelled, self.authority)?;
                     continue;
                 }
                 Err(error) => {
@@ -368,7 +388,7 @@ impl ChatModel {
             ensure_active(cancelled)?;
             let retryable = matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504);
             if retryable && attempt < MAX_ATTEMPTS {
-                pause_before_retry(attempt, cancelled)?;
+                pause_before_retry(attempt, cancelled, self.authority)?;
                 continue;
             }
             let excerpt = crate::process::truncate(&body, 900);
@@ -1320,7 +1340,8 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
                 token.store(true, Ordering::SeqCst);
             });
-            let error = pause_before_retry(1, Some(&cancelled)).unwrap_err();
+            let error = pause_before_retry(1, Some(&cancelled), AuthorityWindow::new(None, None))
+                .unwrap_err();
             assert_eq!(error, "MODEL_CANCELLED");
         });
     }
@@ -1351,6 +1372,7 @@ mod tests {
                 .unwrap();
         });
         let model = ChatModel {
+            authority: AuthorityWindow::default(),
             client: reqwest::blocking::Client::builder()
                 .no_proxy()
                 .build()

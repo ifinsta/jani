@@ -104,6 +104,7 @@ pub struct ModelGateway<'a> {
     model: ChatModel,
     governance: &'a Governance,
     sink: ModelSink,
+    authority: jani_core::authority::AuthorityWindow,
 }
 
 fn provider_from_base(base: &str) -> String {
@@ -116,8 +117,13 @@ fn provider_from_base(base: &str) -> String {
 }
 
 impl<'a> ModelGateway<'a> {
-    pub fn new(cfg: &Config, choice: &ModelChoice, governance: &'a Governance) -> JResult<Self> {
-        let model = ChatModel::new(choice)?;
+    pub fn new(
+        cfg: &Config,
+        choice: &ModelChoice,
+        governance: &'a Governance,
+        authority: jani_core::authority::AuthorityWindow,
+    ) -> JResult<Self> {
+        let model = ChatModel::new(choice, authority)?;
         let sink = ModelSink {
             provider: provider_from_base(&choice.api_base),
             model: choice.model.clone(),
@@ -128,6 +134,7 @@ impl<'a> ModelGateway<'a> {
             model,
             governance,
             sink,
+            authority,
         })
     }
 
@@ -209,8 +216,14 @@ impl<'a> ModelGateway<'a> {
             .model
             .complete_with(&redacted, tools, tool_choice, cancelled)?;
         budget.record_usage(reply.prompt_tokens, reply.completion_tokens)?;
+        self.authority
+            .require_current()
+            .map_err(|e| e.to_string())?;
         let mut message = reply.message;
         self.inspect_reply_message(&mut message)?;
+        self.authority
+            .require_current()
+            .map_err(|e| e.to_string())?;
         Ok(message)
     }
 
@@ -234,10 +247,20 @@ impl<'a> ModelGateway<'a> {
             .authorize_model_egress(&envelopes, &self.sink)?;
         let mut text = Preview::default();
         let mut reasoning = Preview::default();
+        let mut publish = |delta| -> JResult<()> {
+            if self.authority.require_current().is_ok() {
+                on_delta(delta)?;
+            }
+            Ok(())
+        };
         let reply = self.model.complete_streaming(
             &redacted,
             tools,
             &mut |delta| {
+                // Wait for the provider's usage trailer while withholding late output.
+                if self.authority.require_current().is_err() {
+                    return Ok(());
+                }
                 match delta {
                     ModelDelta::Text(chunk) => {
                         text.push(&chunk);
@@ -245,7 +268,7 @@ impl<'a> ModelGateway<'a> {
                             |raw| self.governance.inspect_model_output(raw, PREVIEW_TEXT),
                             false,
                         )? {
-                            on_delta(ModelDelta::Text(released))?;
+                            publish(ModelDelta::Text(released))?;
                         }
                     }
                     ModelDelta::Reasoning(chunk) => {
@@ -254,7 +277,7 @@ impl<'a> ModelGateway<'a> {
                             |raw| self.governance.inspect_model_output(raw, PREVIEW_REASONING),
                             false,
                         )? {
-                            on_delta(ModelDelta::Reasoning(released))?;
+                            publish(ModelDelta::Reasoning(released))?;
                         }
                     }
                 }
@@ -262,21 +285,27 @@ impl<'a> ModelGateway<'a> {
             },
             cancelled,
         )?;
+        budget.record_usage(reply.prompt_tokens, reply.completion_tokens)?;
+        self.authority
+            .require_current()
+            .map_err(|e| e.to_string())?;
         if let Some(released) = text.release(
             |raw| self.governance.inspect_model_output(raw, PREVIEW_TEXT),
             true,
         )? {
-            on_delta(ModelDelta::Text(released))?;
+            publish(ModelDelta::Text(released))?;
         }
         if let Some(released) = reasoning.release(
             |raw| self.governance.inspect_model_output(raw, PREVIEW_REASONING),
             true,
         )? {
-            on_delta(ModelDelta::Reasoning(released))?;
+            publish(ModelDelta::Reasoning(released))?;
         }
-        budget.record_usage(reply.prompt_tokens, reply.completion_tokens)?;
         let mut message = reply.message;
         self.inspect_reply_message(&mut message)?;
+        self.authority
+            .require_current()
+            .map_err(|e| e.to_string())?;
         Ok(message)
     }
 }
@@ -322,6 +351,84 @@ mod tests {
         assert_eq!(preview.release(plain, false).unwrap(), Some("one\n".into()));
         assert_eq!(preview.release(plain, true).unwrap(), Some("two".into()));
         assert_eq!(preview.release(plain, true).unwrap(), None);
+    }
+
+    #[test]
+    fn expired_stream_hides_late_chunks_and_accounts_for_the_usage_trailer() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut cfg = Config::baseline();
+        cfg.api_base = format!("http://{}/v1", listener.local_addr().unwrap());
+        cfg.api_key = Some("fixture-key".into());
+        let expires = crate::types::now_unix() + 4;
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut size = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        size = value.trim().parse().unwrap();
+                    }
+                }
+            }
+            reader.read_exact(&mut vec![0; size]).unwrap();
+            let early = "data: {\"choices\":[{\"delta\":{\"content\":\"early line\\nheld fragment\"}}]}\n\n";
+            let late = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"late line\\n\",\"reasoning_content\":\"late reasoning\\n\"}}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7}}\n\n",
+                "data: [DONE]\n\n",
+            );
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{early}", early.len() + late.len()).unwrap();
+            while crate::types::now_unix() < expires {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stream.write_all(late.as_bytes()).unwrap();
+        });
+        let dir = std::env::temp_dir().join(crate::types::new_id("jani-expiring-preview"));
+        let mut ledger = BudgetLedger::new(&dir, "stream", &Default::default()).unwrap();
+        let policy = crate::policy::PolicyEngine::load(&cfg).unwrap();
+        let governance = Governance::new(policy.data_policy(), "org", "worker", "SOFTWARE_DEV");
+        let gateway = ModelGateway::new(
+            &cfg,
+            &ModelChoice::from_config(&cfg),
+            &governance,
+            jani_core::authority::AuthorityWindow::new(Some(expires), None),
+        )
+        .unwrap();
+        let mut previews = Vec::new();
+        let error = gateway
+            .complete_streaming(
+                &[],
+                &[],
+                &mut ledger,
+                &mut |delta| {
+                    previews.push(delta);
+                    Ok(())
+                },
+                None,
+            )
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("identity assertion has expired"));
+        assert!(matches!(previews.as_slice(), [ModelDelta::Text(line)] if line == "early line\n"));
+        let used: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("budgets/stream.json")).unwrap())
+                .unwrap();
+        assert_eq!(used["inputTokens"], 11);
+        assert_eq!(used["outputTokens"], 7);
+        drop(ledger);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

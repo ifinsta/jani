@@ -61,6 +61,9 @@ fn run() -> JResult<()> {
         println!("{}", config::help());
         return Ok(());
     }
+    if recovery::restore_held(&cfg.state_dir)? {
+        return inspect_restored(&cfg);
+    }
     // Mirror works on recorded evidence without model credentials or skill discovery.
     if cfg.command == "mirror" {
         return print_json(&mirror::command(&cfg)?);
@@ -76,23 +79,10 @@ fn run() -> JResult<()> {
     }
     // Crash triage must not depend on available skills, model credentials or providers.
     if cfg.command == "recovery" {
-        return match cfg.sub.as_deref() {
-            None | Some("status") => print_json(&recovery::status(&cfg.state_dir)?),
-            Some(other) => Err(format!("unknown recovery subcommand '{other}'")),
-        };
+        return recovery_command(&cfg);
     }
     if cfg.command == "evidence" {
-        let run_id = cfg
-            .run_id
-            .as_ref()
-            .or_else(|| cfg.positional.first())
-            .ok_or("evidence requires a run ID")?;
-        return print_json(&evidence::receipt_with_verifier_keys(
-            &cfg.state_dir,
-            run_id,
-            &cfg.verifier_keys,
-            &cfg.revoked_keys,
-        )?);
+        return evidence_command(&cfg);
     }
     if cfg.command == "verify" {
         let contract_path = cfg
@@ -119,6 +109,9 @@ fn run() -> JResult<()> {
     // agent session, so it must not require model credentials or skill discovery.
     if cfg.command == "update" {
         return update::command(&cfg);
+    }
+    if cfg.command == "dispatch" {
+        return dispatch::run(&cfg);
     }
     let catalog = Catalog::load(&cfg)?;
     match cfg.command.as_str() {
@@ -182,10 +175,44 @@ fn run() -> JResult<()> {
         "budget" => budget_command(&cfg),
         "identity" => identity_command(&cfg),
         "contract" => contract_command(&cfg),
-        "dispatch" => dispatch::run(&cfg, &catalog),
         "agent" | "alerts" | "wake" => print_json(&attention::command(&cfg)?),
         _ => Err("unrecognized command".into()),
     }
+}
+
+fn inspect_restored(cfg: &Config) -> JResult<()> {
+    match (cfg.command.as_str(), cfg.sub.as_deref()) {
+        ("audit", None | Some("verify")) => audit_command(cfg),
+        ("recovery", None | Some("status")) => recovery_command(cfg),
+        ("evidence", None) => evidence_command(cfg),
+        ("inspect", None) => inspect_command(cfg),
+        ("agent", Some("kill-switch")) if cfg.positional == ["status"] => {
+            let record = jani_core::kill::is_killed(&cfg.state_dir, &cfg.tenant)?;
+            print_json(&json!({"active": record.is_some(), "record": record}))
+        }
+        _ => Err("RESTORE_HOLD_ACTIVE: restored state is restricted to read-only inspection pending reconciliation".into()),
+    }
+}
+
+fn recovery_command(cfg: &Config) -> JResult<()> {
+    match cfg.sub.as_deref() {
+        None | Some("status") => print_json(&recovery::status(&cfg.state_dir)?),
+        Some(other) => Err(format!("unknown recovery subcommand '{other}'")),
+    }
+}
+
+fn evidence_command(cfg: &Config) -> JResult<()> {
+    let run_id = cfg
+        .run_id
+        .as_ref()
+        .or_else(|| cfg.positional.first())
+        .ok_or("evidence requires a run ID")?;
+    print_json(&evidence::receipt_with_verifier_keys(
+        &cfg.state_dir,
+        run_id,
+        &cfg.verifier_keys,
+        &cfg.revoked_keys,
+    )?)
 }
 
 fn doctor(cfg: &Config, catalog: &Catalog) -> JResult<()> {
@@ -620,12 +647,8 @@ fn inspect_command(cfg: &Config) -> JResult<()> {
         .clone()
         .or_else(|| cfg.positional.first().cloned())
         .ok_or("inspect requires a run id (--run or positional)")?;
-    let integrity = journal::verify(&cfg.state_dir)?;
-    if integrity["ok"] != true {
-        return Err("audit journal integrity failed: refusing unverified inspection".into());
-    }
     let path = cfg.state_dir.join(journal::JOURNAL_FILE);
-    let events = journal::read_run(&path, &run_id)?;
+    let events = journal::read_verified_run(&path, &run_id)?;
     if events.is_empty() {
         return Err(format!("no journal events for run '{run_id}'"));
     }

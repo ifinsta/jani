@@ -47,14 +47,22 @@ class RegistryTests(unittest.TestCase):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
+            config = p / "openssl.cnf"
+            config.write_text("[req]\ndistinguished_name = dn\n[dn]\n", encoding="utf-8")
+
             def openssl(*args):
-                subprocess.run(["openssl", *map(str,args)], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                result = subprocess.run(
+                    ["openssl", *map(str, args)], capture_output=True, timeout=20
+                )
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
             openssl("req","-x509","-newkey","rsa:2048","-nodes","-sha256",
+                    "-config",config,
                     "-keyout",p/"ca.key","-out",p/"ca.crt","-days","1",
                     "-subj","/CN=JaniTestCA","-addext","basicConstraints=critical,CA:TRUE",
                     "-addext","keyUsage=critical,keyCertSign,cRLSign")
             openssl("req","-new","-newkey","rsa:2048","-nodes",
+                    "-config",config,
                     "-keyout",p/"device.key","-out",p/"device.csr",
                     "-subj","/CN=device","-addext","extendedKeyUsage=clientAuth")
             openssl("x509","-req","-in",p/"device.csr","-CA",p/"ca.crt",

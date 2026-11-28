@@ -128,6 +128,522 @@ fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+fn install_acceptance_barrier(dir: &Path) {
+    std::fs::write(
+        dir.join("hold_acceptance.py"),
+        r#"from pathlib import Path
+import time
+
+Path("check-started").touch()
+deadline = time.monotonic() + 60
+while not Path("release-check").exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError("test did not release the acceptance check")
+    time.sleep(0.05)
+"#,
+    )
+    .unwrap();
+    sh(dir, "git", &["add", "hold_acceptance.py"]);
+    sh(
+        dir,
+        "git",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "add acceptance barrier",
+        ],
+    );
+}
+
+fn restore_expired_claim(dir: &Path, id: &str, finished: &Value) {
+    let mut task = finished.clone();
+    task["status"] = json!("running");
+    task["owner"] = json!("interrupted-worker");
+    task["leaseUntilMillis"] = json!(0);
+    task["outcome"] = Value::Null;
+    task["report"] = Value::Null;
+    task["branch"] = Value::Null;
+    task["commit"] = Value::Null;
+    std::fs::write(
+        dir.join(".jani/work/tasks").join(format!("{id}.json")),
+        serde_json::to_vec(&task).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_queue_with_damaged_records_still_runs_healthy_tasks_in_order() {
+    let dir = fixture();
+    let broken = add(&dir, "unreadable", &[]);
+    let invalid_check = add(&dir, "bad acceptance", &[]);
+    let first = add(&dir, "first healthy task", &[]);
+    let second = add(&dir, "second healthy task", &[]);
+    let records = dir.join(".jani/work/tasks");
+    let broken_path = records.join(format!("{broken}.json"));
+    std::fs::write(&broken_path, "{invalid JSON").unwrap();
+    let invalid_path = records.join(format!("{invalid_check}.json"));
+    let mut invalid = show(&dir, &invalid_check);
+    invalid["accept"] = json!(["python 'unfinished"]);
+    std::fs::write(invalid_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+
+    let provider = start(vec![
+        write(0, "calc.py", FIXED),
+        say("First complete."),
+        write(0, "calc.py", FIXED),
+        say("Second complete."),
+    ]);
+    let result = jani(&dir, Some(&provider), &["work", "run"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    let diagnostics = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(diagnostics.matches(&broken).count(), 1, "{diagnostics}");
+    assert_eq!(
+        std::fs::read_to_string(broken_path).unwrap(),
+        "{invalid JSON"
+    );
+    let summaries: Vec<Value> = String::from_utf8(result.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(summaries.len() >= 2, "{diagnostics}");
+    assert_eq!(summaries[summaries.len() - 2]["id"], first);
+    assert_eq!(summaries[summaries.len() - 1]["id"], second);
+    assert_eq!(show(&dir, &first)["outcome"], "verified");
+    assert_eq!(show(&dir, &second)["outcome"], "verified");
+    assert_eq!(show(&dir, &invalid_check)["status"], "failed");
+    assert_eq!(provider.requests.lock().unwrap().len(), 4);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_bad_saved_acceptance_check_does_not_consume_the_once_slot() {
+    let dir = fixture();
+    let bad = add(&dir, "invalid check", &[]);
+    let healthy = add(&dir, "make add() correct", &[]);
+    let path = dir.join(".jani/work/tasks").join(format!("{bad}.json"));
+    let mut invalid = show(&dir, &bad);
+    invalid["accept"] = json!(["\"\""]);
+    std::fs::write(path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+
+    let provider = start(vec![write(0, "calc.py", FIXED), say("Fixed.")]);
+    let output = jani(&dir, Some(&provider), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(json_out(&output)["id"], healthy);
+    let rejected = show(&dir, &bad);
+    assert_eq!(rejected["status"], "failed");
+    assert_eq!(rejected["error"], "invalid acceptance check 1");
+    assert_eq!(rejected["attempts"], 0);
+    assert_eq!(show(&dir, &healthy)["outcome"], "verified");
+    assert_eq!(provider.requests.lock().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_completion_write_failure_cannot_stop_later_tasks() {
+    let dir = fixture();
+    install_acceptance_barrier(&dir);
+    let first = add(
+        &dir,
+        "first task",
+        &["--accept", "python3 hold_acceptance.py"],
+    );
+    let second = add(&dir, "second task", &[]);
+    let suffix = first.strip_prefix("wrk-").unwrap();
+    let delivery = dir.join(".jani/deliveries").join(format!("dlv-{suffix}"));
+    let tree = delivery.join("tree");
+    let provider = start(vec![
+        write(0, "calc.py", FIXED),
+        say("First complete."),
+        write(0, "calc.py", FIXED),
+        say("Second complete."),
+    ]);
+    let worker = jani(&dir, Some(&provider), &["work", "run"])
+        .args(SCOPE)
+        .args(["--sandbox", "off"])
+        .env("JANI_WORK_LEASE_SECS", "120")
+        .spawn()
+        .unwrap();
+    wait_until("first task to reach acceptance", 60, || {
+        tree.join("check-started").is_file()
+    });
+    let staging = dir
+        .join(".jani/work/tasks")
+        .join(format!("{first}.json.tmp"));
+    std::fs::create_dir(&staging).unwrap();
+    std::fs::write(tree.join("release-check"), "").unwrap();
+    let output = worker.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostics.contains(&format!("cannot write task {first}")),
+        "{diagnostics}"
+    );
+    assert_eq!(json_out(&output)["id"], second);
+    assert_eq!(show(&dir, &second)["outcome"], "verified");
+    let unfinished = show(&dir, &first);
+    assert_eq!(unfinished["status"], "running");
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(delivery.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["outcome"], "verified");
+    assert_eq!(provider.requests.lock().unwrap().len(), 4);
+
+    std::fs::remove_dir(staging).unwrap();
+    restore_expired_claim(&dir, &first, &unfinished);
+    let replacement = start(vec![]);
+    let output = jani(&dir, Some(&replacement), &["work", "run", "--once"])
+        .args(SCOPE)
+        .args(["--sandbox", "off"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let recovered = show(&dir, &first);
+    assert_eq!(recovered["outcome"], "verified", "{recovered}");
+    assert_eq!(recovered["commit"], report["commit"]);
+    assert!(replacement.requests.lock().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_watch_worker_keeps_polling_after_a_stable_record_fault() {
+    let dir = fixture();
+    let broken = add(&dir, "damaged task", &[]);
+    std::fs::write(
+        dir.join(".jani/work/tasks").join(format!("{broken}.json")),
+        "{unreadable",
+    )
+    .unwrap();
+    let provider = start(vec![
+        write(0, "calc.py", FIXED),
+        say("First complete."),
+        write(0, "calc.py", FIXED),
+        say("Second complete."),
+    ]);
+    let mut worker = jani(&dir, Some(&provider), &["work", "run", "--watch"])
+        .args(SCOPE)
+        .spawn()
+        .unwrap();
+    for prompt in ["first healthy task", "second healthy task"] {
+        let id = add(&dir, prompt, &[]);
+        wait_until(prompt, 60, || {
+            assert!(
+                worker.try_wait().unwrap().is_none(),
+                "watch worker stopped early"
+            );
+            show(&dir, &id)["outcome"] == "verified"
+        });
+    }
+    worker.kill().unwrap();
+    let output = worker.wait_with_output().unwrap();
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(diagnostics.matches(&broken).count(), 1, "{diagnostics}");
+    assert_eq!(provider.requests.lock().unwrap().len(), 4);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_expired_worker_recovers_its_commit_and_reports_without_repeating_acceptance() {
+    let dir = fixture();
+    let id = add(&dir, "make add() correct", &[]);
+    let original = start(vec![write(0, "calc.py", FIXED), say("Fixed add.")]);
+    let output = jani(&dir, Some(&original), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let finished = show(&dir, &id);
+    assert_eq!(finished["outcome"], "verified", "{finished}");
+    let report = Path::new(finished["report"].as_str().unwrap());
+    let original_report = std::fs::read(report.with_extension("json")).unwrap();
+    std::fs::remove_file(report).unwrap();
+    std::fs::remove_file(report.with_extension("json")).unwrap();
+    restore_expired_claim(&dir, &id, &finished);
+    let journal_path = dir.join(".jani/journal.jsonl");
+    let before = std::fs::read_to_string(&journal_path).unwrap();
+    let terminal = before
+        .lines()
+        .position(|line| line.contains("\"action\":\"delivery.run\""))
+        .unwrap();
+    let prefix = before.lines().take(terminal).collect::<Vec<_>>().join("\n") + "\n";
+    std::fs::write(&journal_path, &prefix).unwrap();
+
+    let retry = start(vec![say("There should be no new turn.")]);
+    let output = jani(&dir, Some(&retry), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(retry.requests.lock().unwrap().is_empty());
+    let recovered = show(&dir, &id);
+    assert_eq!(recovered["outcome"], finished["outcome"], "{recovered}");
+    assert_eq!(recovered["commit"], finished["commit"]);
+    assert_eq!(
+        std::fs::read(report.with_extension("json")).unwrap(),
+        original_report
+    );
+    let after = std::fs::read_to_string(journal_path).unwrap();
+    assert_eq!(after.matches("\"action\":\"acceptance.run\"").count(), 1);
+    assert_eq!(after.matches("\"action\":\"delivery.run\"").count(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_prepared_delivery_advances_once_after_lease_budget_exhaustion() {
+    let dir = fixture();
+    let id = add(&dir, "make add() correct", &[]);
+    let original = start(vec![write(0, "calc.py", FIXED), say("Fixed add.")]);
+    assert!(jani(&dir, Some(&original), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let mut finished = show(&dir, &id);
+    let oid = finished["commit"].as_str().unwrap().to_string();
+    let branch = finished["branch"].as_str().unwrap();
+    let parent = sh(&dir, "git", &["rev-parse", &format!("{oid}^")]);
+    let tree = Path::new(finished["report"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .join("tree");
+    sh(&tree, "git", &["reset", "--mixed", parent.trim()]);
+    assert_eq!(sh(&tree, "git", &["rev-parse", "HEAD"]), parent);
+    std::fs::write(tree.join("operator-note.txt"), "Keep this staged.").unwrap();
+    sh(&tree, "git", &["add", "operator-note.txt"]);
+    let journal = dir.join(".jani/journal.jsonl");
+    let before = std::fs::read_to_string(&journal).unwrap();
+    let terminal = before
+        .lines()
+        .position(|line| line.contains("\"action\":\"delivery.run\""))
+        .unwrap();
+    let prefix = before.lines().take(terminal).collect::<Vec<_>>().join("\n") + "\n";
+    std::fs::write(&journal, prefix).unwrap();
+    assert_eq!(sh(&dir, "git", &["rev-parse", branch]), parent);
+
+    finished["interruptions"] = json!(2);
+    restore_expired_claim(&dir, &id, &finished);
+    let restricted = start(vec![]);
+    let output = jani(&dir, Some(&restricted), &["work", "run", "--once"])
+        .args(["--allow-write", "--write-path", "test_calc.py"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(restricted.requests.lock().unwrap().is_empty());
+    let refused = show(&dir, &id);
+    assert_eq!(refused["status"], "failed");
+    assert_eq!(refused["interruptions"], 3);
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("worker authority"),
+        "{refused}"
+    );
+    assert_eq!(sh(&tree, "git", &["rev-parse", "HEAD"]), parent);
+    assert!(jani(&dir, None, &["work", "retry", &id])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let replacement = start(vec![]);
+    let output = jani(&dir, Some(&replacement), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(replacement.requests.lock().unwrap().is_empty());
+    let result = show(&dir, &id);
+    assert_eq!(result["outcome"], "verified", "{result}");
+    assert_eq!(result["commit"], oid);
+    assert_eq!(result["deliveryGeneration"], finished["deliveryGeneration"]);
+    assert_eq!(
+        sh(&tree, "git", &["diff", "--cached", "--name-only"]).trim(),
+        "operator-note.txt"
+    );
+    let journal = std::fs::read_to_string(journal).unwrap();
+    assert_eq!(journal.matches("\"action\":\"acceptance.run\"").count(), 1);
+    assert_eq!(journal.matches("\"action\":\"delivery.run\"").count(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn retry_repairs_failed_report_publication_without_repeating_a_completed_delivery() {
+    let dir = fixture();
+    let id = add(&dir, "make add() correct", &[]);
+    let suffix = id.strip_prefix("wrk-").unwrap();
+    let report = dir
+        .join(".jani/deliveries")
+        .join(format!("dlv-{suffix}"))
+        .join("report.md");
+    std::fs::create_dir_all(&report).unwrap();
+    let original = start(vec![write(0, "calc.py", FIXED), say("Fixed add.")]);
+    assert!(jani(&dir, Some(&original), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let interrupted = show(&dir, &id);
+    assert_eq!(interrupted["status"], "failed", "{interrupted}");
+    assert!(
+        interrupted["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot publish"),
+        "{interrupted}"
+    );
+    let oid = sh(&dir, "git", &["rev-parse", &format!("jani/{suffix}")]);
+    std::fs::remove_dir(&report).unwrap();
+    assert!(jani(&dir, None, &["work", "retry", &id])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let replacement = start(vec![]);
+    assert!(jani(&dir, Some(&replacement), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(replacement.requests.lock().unwrap().is_empty());
+    let result = show(&dir, &id);
+    assert_eq!(result["outcome"], "verified", "{result}");
+    assert_eq!(result["commit"], oid.trim());
+    assert_eq!(
+        result["deliveryGeneration"],
+        interrupted["deliveryGeneration"]
+    );
+    assert!(report.is_file());
+    let journal = std::fs::read_to_string(dir.join(".jani/journal.jsonl")).unwrap();
+    assert_eq!(journal.matches("\"action\":\"delivery.run\"").count(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn retry_after_cancellation_recovers_an_already_published_commit() {
+    let dir = fixture();
+    let id = add(&dir, "make add() correct", &[]);
+    let original = start(vec![write(0, "calc.py", FIXED), say("Fixed add.")]);
+    assert!(jani(&dir, Some(&original), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let finished = show(&dir, &id);
+    assert_eq!(finished["outcome"], "verified", "{finished}");
+    let report = Path::new(finished["report"].as_str().unwrap());
+    std::fs::remove_file(report).unwrap();
+    restore_expired_claim(&dir, &id, &finished);
+    let cancelled = jani(&dir, None, &["work", "cancel", &id]).output().unwrap();
+    assert!(cancelled.status.success());
+    assert_eq!(json_out(&cancelled)["status"], "cancelled");
+    let queued = jani(&dir, None, &["work", "retry", &id]).output().unwrap();
+    assert!(queued.status.success());
+    assert_eq!(
+        json_out(&queued)["deliveryGeneration"],
+        finished["deliveryGeneration"]
+    );
+    let replacement = start(vec![]);
+    assert!(jani(&dir, Some(&replacement), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(replacement.requests.lock().unwrap().is_empty());
+    let recovered = show(&dir, &id);
+    assert_eq!(recovered["outcome"], "verified", "{recovered}");
+    assert_eq!(recovered["commit"], finished["commit"]);
+    assert!(report.is_file());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_worker_does_not_reexecute_a_delivery_with_missing_or_conflicting_evidence() {
+    for missing in [false, true] {
+        let dir = fixture();
+        let id = add(&dir, "make add() correct", &[]);
+        let original = start(vec![write(0, "calc.py", FIXED), say("Fixed add.")]);
+        assert!(jani(&dir, Some(&original), &["work", "run", "--once"])
+            .args(SCOPE)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let mut finished = show(&dir, &id);
+        assert_eq!(finished["outcome"], "verified", "{finished}");
+        let report = PathBuf::from(finished["report"].as_str().unwrap());
+        let original_report = std::fs::read(report.with_extension("json")).unwrap();
+        let receipt = report.parent().unwrap().join("completion-0.json");
+        if missing {
+            std::fs::remove_file(receipt).unwrap();
+            finished["interruptions"] = json!(2);
+        } else {
+            let mut prepared: Value =
+                serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+            prepared["delivery"]["answer"] =
+                json!("Update that did not come from the recorded run");
+            std::fs::write(receipt, serde_json::to_vec(&prepared).unwrap()).unwrap();
+        }
+        restore_expired_claim(&dir, &id, &finished);
+        let replacement = start(vec![]);
+        assert!(jani(&dir, Some(&replacement), &["work", "run", "--once"])
+            .args(SCOPE)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(replacement.requests.lock().unwrap().is_empty());
+        let result = show(&dir, &id);
+        assert_eq!(result["status"], "failed", "{result}");
+        let expected = if missing {
+            assert_eq!(result["interruptions"], 3);
+            "finalization file is missing"
+        } else {
+            "audit evidence conflicts"
+        };
+        assert!(
+            result["error"].as_str().unwrap().contains(expected),
+            "{result}"
+        );
+        assert_eq!(
+            std::fs::read(report.with_extension("json")).unwrap(),
+            original_report
+        );
+        if missing {
+            assert!(jani(&dir, None, &["work", "retry", &id])
+                .output()
+                .unwrap()
+                .status
+                .success());
+            assert_eq!(
+                show(&dir, &id)["deliveryGeneration"],
+                finished["deliveryGeneration"]
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 #[test]
 fn a_worker_runs_queued_tasks_in_order_and_records_each_outcome() {
     let dir = fixture();
@@ -185,6 +701,349 @@ fn a_worker_runs_queued_tasks_in_order_and_records_each_outcome() {
         .unwrap()
         .iter()
         .any(|h| h["event"].as_str().unwrap().starts_with("claimed by")));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn work_add_preserves_an_explicit_repair_limit_equal_to_the_default() {
+    let dir = fixture();
+    let default = jani_core::config::defaults::REPAIR_ROUNDS;
+    let inherited = add(&dir, "use the worker limit", &[]);
+    let fixed = add(
+        &dir,
+        "use the task limit",
+        &["--repair-rounds", &default.to_string()],
+    );
+    assert!(show(&dir, &inherited)["repairRounds"].is_null());
+    assert_eq!(show(&dir, &fixed)["repairRounds"], default);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_operator_retry_resumes_the_existing_worktree_and_resets_the_attempt_budget() {
+    let dir = fixture();
+    let id = add(&dir, "fix add", &["--repair-rounds", "0"]);
+    let first = start(vec![say("No change.")]);
+    let out = jani(&dir, Some(&first), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let failed = show(&dir, &id);
+    assert_eq!(failed["status"], "failed", "{failed}");
+    let branch = failed["branch"].as_str().unwrap();
+
+    let out = jani(&dir, None, &["work", "retry", &id]).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(json_out(&out)["attempts"], 0);
+    let retry = start(vec![write(0, "calc.py", FIXED), say("Fixed.")]);
+    let out = jani(&dir, Some(&retry), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let finished = show(&dir, &id);
+    assert_eq!(finished["outcome"], "verified", "{finished}");
+    assert_eq!(finished["attempts"], 1);
+    assert_eq!(finished["branch"], branch);
+    assert_eq!(
+        sh(&dir, "git", &["show", &format!("{branch}:calc.py")]),
+        FIXED
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_retry_recovers_a_registered_worktree_without_workspace_metadata() {
+    let dir = fixture();
+    let id = add(
+        &dir,
+        "finish the existing checkout",
+        &["--repair-rounds", "0"],
+    );
+    let suffix = id.strip_prefix("wrk-").unwrap();
+    let branch = format!("jani/{suffix}");
+    let delivery = dir.join(".jani/deliveries").join(format!("dlv-{suffix}"));
+    let tree = delivery.join("tree");
+    sh(
+        &dir,
+        "git",
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            tree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let initial = start(vec![]);
+    let out = jani(&dir, Some(&initial), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(show(&dir, &id)["status"], "failed");
+    assert!(initial.requests.lock().unwrap().is_empty());
+    assert!(!delivery.join("workspace.json").exists());
+
+    assert!(jani(&dir, None, &["work", "retry", &id])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let retry = start(vec![
+        write(0, "calc.py", FIXED),
+        say("Fixed in the recovered checkout."),
+    ]);
+    let out = jani(&dir, Some(&retry), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let finished = show(&dir, &id);
+    assert_eq!(finished["outcome"], "verified", "{finished}");
+    assert_eq!(finished["branch"], branch);
+    assert_eq!(
+        sh(&dir, "git", &["show", &format!("{branch}:calc.py")]),
+        FIXED
+    );
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(delivery.join("workspace.json")).unwrap()).unwrap();
+    assert!(metadata["base"].is_null());
+    assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), BUGGY);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_retry_preserves_the_starting_commit_recorded_before_checkout() {
+    let dir = fixture();
+    let id = add(&dir, "fix add", &["--repair-rounds", "0"]);
+    let suffix = id.strip_prefix("wrk-").unwrap();
+    let branch = format!("jani/{suffix}");
+    let base = sh(&dir, "git", &["rev-parse", "HEAD"]);
+    sh(&dir, "git", &["branch", &branch]);
+    let initial = start(vec![]);
+    let out = jani(&dir, Some(&initial), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(show(&dir, &id)["status"], "failed");
+    let delivery = dir.join(".jani/deliveries").join(format!("dlv-{suffix}"));
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(delivery.join("workspace.json")).unwrap()).unwrap();
+    assert_eq!(metadata["base"], base.trim());
+    assert_eq!(metadata["pending"], true);
+    assert!(!delivery.join("tree").exists());
+
+    sh(&dir, "git", &["branch", "-d", &branch]);
+    sh(
+        &dir,
+        "git",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "advance main during interruption",
+        ],
+    );
+    assert_ne!(sh(&dir, "git", &["rev-parse", "HEAD"]), base);
+    assert!(jani(&dir, None, &["work", "retry", &id])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let retry = start(vec![write(0, "calc.py", FIXED), say("Fixed.")]);
+    let out = jani(&dir, Some(&retry), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let finished = show(&dir, &id);
+    assert_eq!(finished["outcome"], "verified", "{finished}");
+    assert_eq!(sh(&dir, "git", &["rev-parse", &format!("{branch}^")]), base);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_retry_refuses_a_checkout_registered_for_a_different_branch() {
+    let dir = fixture();
+    let id = add(&dir, "fix add", &["--repair-rounds", "0"]);
+    let suffix = id.strip_prefix("wrk-").unwrap();
+    let tree = dir
+        .join(".jani/deliveries")
+        .join(format!("dlv-{suffix}"))
+        .join("tree");
+    sh(
+        &dir,
+        "git",
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "operator-review",
+            tree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let model = start(vec![]);
+    assert!(jani(&dir, Some(&model), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(jani(&dir, None, &["work", "retry", &id])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(jani(&dir, Some(&model), &["work", "run", "--once"])
+        .args(SCOPE)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let failed = show(&dir, &id);
+    assert_eq!(failed["status"], "failed");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("not the registered worktree"),
+        "{failed}"
+    );
+    assert!(model.requests.lock().unwrap().is_empty());
+    assert_eq!(
+        sh(&tree, "git", &["branch", "--show-current"]).trim(),
+        "operator-review"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_retry_checks_git_identity_at_the_actual_nested_working_directory() {
+    let dir = fixture();
+    let scope = dir.join("nested");
+    std::fs::create_dir(&scope).unwrap();
+    for file in ["calc.py", "test_calc.py"] {
+        std::fs::rename(dir.join(file), scope.join(file)).unwrap();
+    }
+    sh(&dir, "git", &["add", "-A"]);
+    sh(
+        &dir,
+        "git",
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "move the package",
+        ],
+    );
+    let id = add(&dir, "fix add", &["--repair-rounds", "0"]);
+    let suffix = id.strip_prefix("wrk-").unwrap();
+    let run = |model: &Scripted| {
+        jani(&dir, Some(model), &["work", "run", "--once"])
+            .arg("--repo")
+            .arg(&scope)
+            .args(SCOPE)
+            .output()
+            .unwrap()
+    };
+
+    assert!(run(&start(vec![say("No fix yet.")])).status.success());
+    let first = show(&dir, &id);
+    assert_eq!(first["outcome"], "failed", "{first}");
+    let nested_tree = dir
+        .join(".jani/deliveries")
+        .join(format!("dlv-{suffix}"))
+        .join("tree/nested");
+    sh(&nested_tree, "git", &["init", "-q", "-b", "independent"]);
+
+    assert!(jani(&dir, None, &["work", "retry", &id])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let model = start(vec![]);
+    assert!(run(&model).status.success());
+    let failed = show(&dir, &id);
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("no longer belongs"),
+        "{failed}"
+    );
+    assert!(model.requests.lock().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cancelling_during_acceptance_stops_later_checks_and_leaves_the_branch_uncommitted() {
+    let dir = fixture();
+    install_acceptance_barrier(&dir);
+    let out = jani(
+        &dir,
+        None,
+        &[
+            "work",
+            "add",
+            "fix add",
+            "--accept",
+            "python3 hold_acceptance.py",
+            "--accept",
+            "python3 -c \"from pathlib import Path; Path('second-check').touch()\"",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert!(out.status.success());
+    let task = json_out(&out);
+    let id = task["id"].as_str().unwrap();
+    let suffix = id.strip_prefix("wrk-").unwrap();
+    let delivery = dir.join(".jani/deliveries").join(format!("dlv-{suffix}"));
+    let tree = delivery.join("tree");
+    let model = start(vec![write(0, "calc.py", FIXED), say("Fixed.")]);
+    let worker = jani(&dir, Some(&model), &["work", "run", "--once"])
+        .args(SCOPE)
+        .args(["--sandbox", "off"])
+        .env("JANI_WORK_LEASE_SECS", "2")
+        .spawn()
+        .unwrap();
+    wait_until("acceptance check to start", 60, || {
+        tree.join("check-started").is_file()
+    });
+    assert_eq!(
+        std::fs::read_to_string(tree.join("calc.py")).unwrap(),
+        FIXED
+    );
+    let out = jani(&dir, None, &["work", "cancel", id]).output().unwrap();
+    assert!(out.status.success());
+    // Allow multiple heartbeat intervals before releasing the in-flight check.
+    std::thread::sleep(Duration::from_millis(1600));
+    std::fs::write(tree.join("release-check"), "").unwrap();
+    let out = worker.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(show(&dir, id)["status"], "cancelled");
+    assert!(!tree.join("second-check").exists());
+    assert!(!delivery.join("report.json").exists());
+    assert_eq!(
+        sh(&dir, "git", &["show", &format!("jani/{suffix}:calc.py")]),
+        BUGGY
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 

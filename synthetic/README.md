@@ -6,7 +6,7 @@ This **testing input** exercises 23 mapped Jani subsystem domains, 371 distinct 
 
 ## Usage
 
-From repository root (Python 3.10+, standard library only):
+From the repository root with Python 3.11 or later. Fixture generation uses the standard library. Verification of signed release receipts also requires trusted OpenSSL 3.
 
 ```bash
 python -m unittest discover -s synthetic/tests -v
@@ -33,7 +33,7 @@ The separate `synthetic/readiness.py` evaluator **always fails closed** absent e
 
 ## Readiness evidence requirements
 
-A readiness receipt JSON must include `executed_cases`, `oracle_passed` and entries for all mandatory gates with `passed: true`, `source_commit` and `artifact_sha256`. Those fields must originate from trusted test infrastructure, not an LLM or the synthetic corpus; independent cryptographic verification and signoff remain an external requirement. The receipt schema is intentionally minimal and must be upgraded before regulated deployments.
+Select the release commit and campaign ID and supply an independently configured trust file and a signed evidence bundle. The evaluator verifies both signatures for each mandatory gate and checks native runner signatures and exact case coverage for the oracle. The release requires at least 5,000,000 qualifying observations. See the [evidence format and verification command](EVIDENCE_PROVENANCE.md#verify-a-release-campaign).
 
 See `docs/TESTING.md` for existing Jani testing. On host platforms without the required isolation backend, high-risk scenarios must be rejected—not downgraded to weaker confinement.
 
@@ -45,6 +45,10 @@ hooks are explicitly SKIPPED. The 371 named fault hooks are a campaign backlog,
 **not 371 implemented runtime injectors**. To qualify for release, integrate every
 high/critical relevant hook with an isolated executable adapter and collect
 independently reproducible pass/fail evidence.
+
+`synthetic.runtime_runner` implements eight audit, broker and budget adapters and executes eligible cold-start rows. It consumes exact pinned corpus bytes and retains observed traces from the native binary and the loopback fixture. [Runtime adapter scopes and commands](EXECUTION_ADAPTERS.md)
+
+Preflight reports label their results `execution: "preflight"`. The runner isolates user settings, checks the intended diagnostic and exit code, and runs each supported baseline probe once. It skips compound faults and other mutations. The default sample of 20,000 fixture labels reaches all four checks. Failed probes exit nonzero. Provide a new output path to preserve earlier reports.
 
 See [Readiness gates](READINESS_GATES.md) for the release campaign matrix.
 

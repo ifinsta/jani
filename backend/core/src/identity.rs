@@ -85,6 +85,9 @@ impl IdentityAssertion {
             return Err("identity requires principal and tenant".into());
         }
         let now = now_unix();
+        if self.expires_at <= self.issued_at {
+            return Err("identity assertion expiry must be after issuance".into());
+        }
         if self.expires_at <= now {
             return Err("identity assertion has expired".into());
         }
@@ -232,7 +235,10 @@ pub fn consume_assertion_nonce(
         "id:{}\0{}\0{}\0{}",
         assertion.issuer, assertion.tenant, assertion.principal, assertion.nonce
     );
-    update_nonces(state_dir, |cache, _now| {
+    update_nonces(state_dir, |cache, now| {
+        if assertion.expires_at <= now {
+            return Err("identity assertion expired before nonce consumption".into());
+        }
         if let Some(existing) = cache.entries.get(&key) {
             if strict_single_use || existing.task_id.as_deref() != task_id || task_id.is_none() {
                 return Err("identity assertion nonce replay rejected".into());
@@ -251,11 +257,17 @@ pub fn consume_assertion_nonce(
 }
 
 pub fn load(cfg: &Config) -> Result<VerifiedIdentity, String> {
+    load_with_assertion(cfg).map(|(identity, _)| identity)
+}
+
+pub fn load_with_assertion(
+    cfg: &Config,
+) -> Result<(VerifiedIdentity, Option<IdentityAssertion>), String> {
     let Some(path) = cfg.identity_path.as_ref() else {
         if cfg.mode == RuntimeMode::Enterprise {
             return Err("enterprise mode requires a signed identity assertion".into());
         }
-        return Ok(VerifiedIdentity::local(cfg));
+        return Ok((VerifiedIdentity::local(cfg), None));
     };
     if cfg.identity_keys.is_empty() {
         return Err(
@@ -277,17 +289,18 @@ pub fn load(cfg: &Config) -> Result<VerifiedIdentity, String> {
             assertion.principal, cfg.principal
         ));
     }
-    Ok(VerifiedIdentity {
-        principal: assertion.principal,
-        tenant: assertion.tenant,
-        subject_type: assertion.subject_type,
-        issuer: assertion.issuer,
-        roles: assertion.roles,
-        groups: assertion.groups,
-        approval_scopes: assertion.approval_scopes,
+    let identity = VerifiedIdentity {
+        principal: assertion.principal.clone(),
+        tenant: assertion.tenant.clone(),
+        subject_type: assertion.subject_type.clone(),
+        issuer: assertion.issuer.clone(),
+        roles: assertion.roles.clone(),
+        groups: assertion.groups.clone(),
+        approval_scopes: assertion.approval_scopes.clone(),
         verified: true,
         expires_at: Some(assertion.expires_at),
-    })
+    };
+    Ok((identity, Some(assertion)))
 }
 
 pub fn load_assertion(path: &Path) -> Result<IdentityAssertion, String> {

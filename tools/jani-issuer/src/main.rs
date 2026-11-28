@@ -267,6 +267,7 @@ mod tests {
                 runtime: PluginRuntime {
                     runtime_type: "sidecar".into(),
                     artifact: "connector.py".into(),
+                    artifact_sha256: None,
                     entrypoint: "serve".into(),
                 },
                 capabilities: vec![],

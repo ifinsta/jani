@@ -3,7 +3,19 @@
 use crate::journal;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
+
+/// Written by the operator snapshot tool before publishing a recovered state directory.
+pub const RESTORE_HOLD_FILE: &str = "restore-hold.json";
+
+pub fn restore_held(state_dir: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(state_dir.join(RESTORE_HOLD_FILE)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("cannot inspect restore hold: {error}")),
+    }
+}
 
 #[derive(Default)]
 struct RunSnapshot {

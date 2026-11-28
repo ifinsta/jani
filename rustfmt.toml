@@ -1,0 +1,2 @@
+# Keep the workspace format consistent when checked out under another project.
+max_width = 100

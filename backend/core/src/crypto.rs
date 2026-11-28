@@ -1,6 +1,7 @@
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 #[cfg(any(test, feature = "test-keys"))]
 use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
 
 fn decode_32(value: &str, what: &str) -> Result<[u8; 32], String> {
     let bytes = hex::decode(value.trim()).map_err(|_| format!("{what} is not valid hex"))?;
@@ -20,6 +21,9 @@ pub fn parse_key_spec(spec: &str) -> Result<(String, VerifyingKey), String> {
     }
     let bytes = decode_32(hex_value, "public key")?;
     let key = VerifyingKey::from_bytes(&bytes).map_err(|e| format!("invalid public key: {e}"))?;
+    if key.is_weak() || key.to_edwards().compress().to_bytes() != bytes {
+        return Err("public key must be a canonical Ed25519 key of non-small order".into());
+    }
     Ok((id, key))
 }
 
@@ -57,22 +61,63 @@ pub fn verify_signature_with_revoked(
     {
         return Err(format!("signing key '{wanted}' has been revoked"));
     }
-    let mut matched = false;
+    let mut keys = std::collections::BTreeMap::new();
     for spec in trusted_keys {
         let (id, key) = parse_key_spec(spec)?;
-        if id != wanted {
-            continue;
-        }
-        matched = true;
-        if key.verify(message, &signature).is_ok() {
-            return Ok(());
+        if keys
+            .insert(id.clone(), key)
+            .is_some_and(|previous| previous != key)
+        {
+            return Err(format!("trusted key id '{id}' has conflicting public keys"));
         }
     }
-    if matched {
-        Err("signature verification failed".into())
-    } else {
-        Err(format!("no trusted key with id '{wanted}'"))
+    let key = keys
+        .get(wanted)
+        .ok_or_else(|| format!("no trusted key with id '{wanted}'"))?;
+    if revoked_key_ids
+        .iter()
+        .any(|id| keys.get(id.trim()) == Some(key))
+    {
+        return Err(format!(
+            "signing key '{wanted}' has been revoked under another trusted key id"
+        ));
     }
+    for revoked in revoked_key_ids
+        .iter()
+        .filter_map(|entry| entry.trim().strip_prefix("sha256:"))
+    {
+        let fingerprint = decode_32(revoked, "revoked key fingerprint")?;
+        if <[u8; 32]>::from(Sha256::digest(key.as_bytes())) == fingerprint {
+            return Err(format!(
+                "signing key '{wanted}' has been revoked by public key fingerprint"
+            ));
+        }
+    }
+    key.verify_strict(message, &signature)
+        .map_err(|_| "signature verification failed".into())
+}
+
+/// Expand known revoked IDs into deny-only fingerprints without merging trust domains.
+pub(crate) fn revoked_fingerprints<'a>(
+    revoked: &[String],
+    roots: impl Iterator<Item = &'a String>,
+) -> Result<Vec<String>, String> {
+    let ids: std::collections::BTreeSet<&str> = revoked.iter().map(|value| value.trim()).collect();
+    for fingerprint in ids.iter().filter_map(|entry| entry.strip_prefix("sha256:")) {
+        decode_32(fingerprint, "revoked key fingerprint")?;
+    }
+    let mut fingerprints = std::collections::BTreeSet::new();
+    for spec in roots {
+        let id = spec.split_once(':').map_or("default", |(id, _)| id.trim());
+        if ids.contains(id) {
+            let (_, key) = parse_key_spec(spec)?;
+            let fingerprint = format!("sha256:{}", hex::encode(Sha256::digest(key.as_bytes())));
+            if !ids.contains(fingerprint.as_str()) {
+                fingerprints.insert(fingerprint);
+            }
+        }
+    }
+    Ok(fingerprints.into_iter().collect())
 }
 
 /// Serialize a JSON value following RFC 8785 (JSON Canonicalization Scheme):
@@ -301,6 +346,82 @@ mod tests {
             &signature
         )
         .is_err());
+    }
+
+    #[test]
+    fn rotation_requires_unambiguous_key_ids() {
+        let first = "11".repeat(32);
+        let second = "22".repeat(32);
+        let first_public = public_key_hex(&first).unwrap();
+        let second_public = public_key_hex(&second).unwrap();
+        let message = b"rotation fixture";
+        let signature = sign_hex(&first, message).unwrap();
+        let first_key = format!("current:{first_public}");
+        let conflicting = format!("current:{second_public}");
+        for roots in [
+            [first_key.clone(), conflicting.clone()],
+            [conflicting, first_key.clone()],
+        ] {
+            assert!(verify_signature(&roots, "current", message, &signature)
+                .unwrap_err()
+                .contains("conflicting"));
+        }
+        assert!(verify_signature(
+            &[first_key, format!("next:{second_public}")],
+            "current",
+            message,
+            &signature
+        )
+        .is_ok());
+        assert!(verify_signature(
+            &[
+                first_public.clone(),
+                format!(" default :{}", first_public.to_uppercase())
+            ],
+            "default",
+            message,
+            &signature
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn revocations_follow_key_material_and_survive_removed_ids() {
+        let secret = "33".repeat(32);
+        let message = b"retirement fixture";
+        let public = public_key_hex(&secret).unwrap();
+        let roots = [format!("old:{public}"), format!("alias:{public}")];
+        let revoked = ["old".to_string()];
+        let signature = sign_hex(&secret, message).unwrap();
+        assert!(
+            verify_signature_with_revoked(&roots, &revoked, "alias", message, &signature)
+                .unwrap_err()
+                .contains("another trusted key id")
+        );
+        let fingerprints = revoked_fingerprints(&revoked, roots.iter()).unwrap();
+        assert_eq!(fingerprints.len(), 1);
+        assert!(verify_signature_with_revoked(
+            &roots[1..],
+            &fingerprints,
+            "alias",
+            message,
+            &signature
+        )
+        .unwrap_err()
+        .contains("fingerprint"));
+        assert!(verify_signature_with_revoked(
+            &roots[1..],
+            &["sha256:invalid".into()],
+            "alias",
+            message,
+            &signature
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn identity_point_is_not_an_accepted_trust_root() {
+        assert!(parse_key_spec(&format!("fixture:01{}", "00".repeat(31))).is_err());
     }
 
     #[test]

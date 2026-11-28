@@ -34,15 +34,45 @@ use crate::process::execute;
 use crate::skills::Catalog;
 use crate::tools::action;
 use crate::types::{sha256_hex, Classification};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+mod completion;
+mod queued_commit;
+mod worktree;
 
 const CHECK_TIMEOUT_SECS: u64 = 300;
 const FEEDBACK_TAIL_BYTES: usize = 4000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) fn saved_queue_finalization(
+    state: &Path,
+    delivery_id: &str,
+    generation: u64,
+) -> JResult<bool> {
+    let path = completion::path(&state.join("deliveries").join(delivery_id), generation);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "cannot inspect finalization for {delivery_id}: {error}"
+        )),
+    }
+}
+
+pub(crate) fn queue_finalization_intent(
+    state: &Path,
+    delivery_id: &str,
+    generation: u64,
+) -> JResult<bool> {
+    completion::intent_exists(state, delivery_id, generation)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Verified,
     Unverified,
@@ -87,6 +117,8 @@ pub struct Spec {
     pub id: Option<String>,
     /// Continue an interrupted delivery: reuse its worktree and saved conversation.
     pub resume: bool,
+    /// A queue generation survives lease loss and changes on a new attempt requested by the operator.
+    pub queue_generation: Option<u64>,
     /// Extra context for the agent, such as the operator's answers to its questions.
     pub context: Option<String>,
     /// Set from elsewhere (the work queue's heartbeat) to stop at the next safe point.
@@ -117,13 +149,14 @@ impl Spec {
             open_pr: cfg.open_pr,
             id: None,
             resume: false,
+            queue_generation: None,
             context: None,
             cancel: None,
         })
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Check {
     pub round: usize,
     pub command: String,
@@ -131,11 +164,12 @@ pub struct Check {
     pub timed_out: bool,
     pub passed: bool,
     pub millis: u128,
+    #[serde(skip)]
     pub output_tail: String,
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Delivery {
     pub id: String,
     pub outcome: Outcome,
@@ -197,19 +231,43 @@ pub fn split_command(line: &str) -> JResult<Vec<String>> {
     Ok(args)
 }
 
-fn git(cwd: &Path, hooks_off: &Path, args: &[&str]) -> JResult<crate::process::ProcessOutput> {
+fn git_command(hooks_off: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
+    for variable in [
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_LITERAL_PATHSPECS",
+        "GIT_GLOB_PATHSPECS",
+        "GIT_NOGLOB_PATHSPECS",
+        "GIT_ICASE_PATHSPECS",
+    ] {
+        cmd.env_remove(variable);
+    }
     // Hooks and fsmonitor run arbitrary repository-supplied programs on the host.
     cmd.arg("-c")
         .arg(format!("core.hooksPath={}", hooks_off.display()))
         .arg("-c")
         .arg("core.fsmonitor=false")
         .args(args);
-    execute(&mut cmd, cwd, 120)
+    cmd
+}
+
+fn git(cwd: &Path, hooks_off: &Path, args: &[&str]) -> JResult<crate::process::ProcessOutput> {
+    execute(&mut git_command(hooks_off, args), cwd, 120)
 }
 
 fn git_ok(cwd: &Path, hooks_off: &Path, args: &[&str]) -> JResult<String> {
-    let out = git(cwd, hooks_off, args)?;
+    git_result(git(cwd, hooks_off, args)?, args)
+}
+
+fn git_result(out: crate::process::ProcessOutput, args: &[&str]) -> JResult<String> {
     if out.timed_out || out.code != Some(0) {
         return Err(format!(
             "git {} failed: {}",
@@ -236,109 +294,6 @@ fn looks_like_test(path: &str) -> bool {
     lower
         .split(['/', '\\'])
         .any(|part| part.contains("test") || part.contains("spec") || part == "tests")
-}
-
-struct Workspace {
-    root: PathBuf,
-    branch: Option<String>,
-    base: Option<String>,
-    in_git: bool,
-}
-
-/// A worktree on a fresh branch when the checkout is a git repository with a
-/// commit to branch from; otherwise the checkout itself.
-fn prepare_workspace(
-    cfg: &Config,
-    spec: &Spec,
-    id: &str,
-    report_dir: &Path,
-    hooks_off: &Path,
-) -> JResult<Workspace> {
-    let in_place = |in_git: bool, base: Option<String>| Workspace {
-        root: cfg.root.clone(),
-        branch: None,
-        base,
-        in_git,
-    };
-    let inside = git(
-        &cfg.root,
-        hooks_off,
-        &["rev-parse", "--is-inside-work-tree"],
-    )
-    .map(|o| o.code == Some(0) && o.stdout.trim() == "true")
-    .unwrap_or(false);
-    if !inside {
-        return Ok(in_place(false, None));
-    }
-    let head = git(&cfg.root, hooks_off, &["rev-parse", "HEAD"]).ok();
-    let base = head
-        .filter(|o| o.code == Some(0))
-        .map(|o| o.stdout.trim().to_string());
-    if !spec.use_worktree || base.is_none() {
-        return Ok(in_place(true, base));
-    }
-    let branch = spec
-        .branch
-        .clone()
-        .unwrap_or_else(|| format!("jani/{}", id.trim_start_matches("dlv-")));
-    let valid = git(
-        &cfg.root,
-        hooks_off,
-        &["check-ref-format", "--branch", &branch],
-    )
-    .map(|o| o.code == Some(0))
-    .unwrap_or(false);
-    if !valid {
-        return Err(format!("'{branch}' is not a valid branch name"));
-    }
-    let top = git_ok(&cfg.root, hooks_off, &["rev-parse", "--show-toplevel"])?
-        .trim()
-        .to_string();
-    let prefix = git_ok(&cfg.root, hooks_off, &["rev-parse", "--show-prefix"])?
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    let tree = report_dir.join("tree");
-    // An interrupted delivery comes back to the worktree it left, not a fresh one.
-    if spec.resume && tree.is_dir() {
-        if let Some(saved) = std::fs::read_to_string(report_dir.join("workspace.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        {
-            let prefix = saved["prefix"].as_str().unwrap_or("");
-            return Ok(Workspace {
-                root: if prefix.is_empty() {
-                    tree
-                } else {
-                    tree.join(prefix)
-                },
-                branch: saved["branch"].as_str().map(str::to_string),
-                base: saved["base"].as_str().map(str::to_string),
-                in_git: true,
-            });
-        }
-    }
-    std::fs::create_dir_all(report_dir).map_err(|e| e.to_string())?;
-    let tree_str = tree.to_str().ok_or("worktree path is not valid UTF-8")?;
-    git_ok(
-        Path::new(&top),
-        hooks_off,
-        &["worktree", "add", "-b", &branch, tree_str, "HEAD"],
-    )?;
-    let _ = std::fs::write(
-        report_dir.join("workspace.json"),
-        json!({"branch": branch, "base": base, "prefix": prefix}).to_string(),
-    );
-    Ok(Workspace {
-        root: if prefix.is_empty() {
-            tree
-        } else {
-            tree.join(prefix)
-        },
-        branch: Some(branch),
-        base,
-        in_git: true,
-    })
 }
 
 /// One journal line about a delivery, described once so call sites stay readable.
@@ -394,6 +349,7 @@ pub(crate) fn run_check(cfg: &Config, round: usize, argv: &[String]) -> Check {
     let grant = ExecGrant {
         preauthorized: true,
         extra_writable: execpolicy::build_outputs(argv, &cfg.root),
+        ..Default::default()
     };
     match exec::run_confined(
         &host,
@@ -488,22 +444,88 @@ fn repair_prompt(failed: &[&Check]) -> String {
     text
 }
 
+fn ensure_active(cancel: &AtomicBool) -> JResult<()> {
+    if cancel.load(Ordering::SeqCst) {
+        Err("delivery cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn deliver(
     cfg: &Config,
     catalog: &Catalog,
     spec: &Spec,
     consent: Option<SharedConsent>,
 ) -> JResult<Delivery> {
+    deliver_with_guard(cfg, catalog, spec, consent, &|| Ok(()))
+}
+
+pub(crate) fn deliver_with_guard(
+    cfg: &Config,
+    catalog: &Catalog,
+    spec: &Spec,
+    consent: Option<SharedConsent>,
+    check_claim: &dyn Fn() -> JResult<()>,
+) -> JResult<Delivery> {
+    let never_cancelled = AtomicBool::new(false);
+    let cancel = spec.cancel.as_deref().unwrap_or(&never_cancelled);
+    let check_finalization = || {
+        ensure_active(cancel)?;
+        check_claim()
+    };
+    ensure_active(cancel)?;
     let id = spec
         .id
         .clone()
         .unwrap_or_else(|| format!("dlv-{}", crate::types::new_id("d").trim_start_matches("d-")));
     let report_dir = cfg.state_dir.join("deliveries").join(&id);
+    let saved = spec
+        .queue_generation
+        .map(|generation| completion::load(cfg, &report_dir, &id, generation, spec.resume))
+        .transpose()?
+        .flatten();
+    if saved.as_ref().is_some_and(completion::Saved::linked)
+        && (!report_dir.join("tree").is_dir() || !report_dir.join("workspace.json").is_file())
+    {
+        return Err(
+            "saved delivery has lost its original worktree; reconcile it before retrying".into(),
+        );
+    }
     std::fs::create_dir_all(&report_dir)
         .map_err(|e| format!("cannot create {}: {e}", report_dir.display()))?;
+    ensure_active(cancel)?;
     let hooks_off = report_dir.join("no-hooks");
     std::fs::create_dir_all(&hooks_off).map_err(|e| e.to_string())?;
-    let workspace = prepare_workspace(cfg, spec, &id, &report_dir, &hooks_off)?;
+    let branch = spec
+        .branch
+        .clone()
+        .unwrap_or_else(|| format!("jani/{}", id.trim_start_matches("dlv-")));
+    let workspace = worktree::prepare(
+        &cfg.root,
+        &report_dir,
+        &hooks_off,
+        branch,
+        saved
+            .as_ref()
+            .map_or(spec.use_worktree, completion::Saved::linked),
+        spec.resume || saved.is_some(),
+    )?;
+    if let Some(saved) = saved {
+        return completion::finish(
+            cfg,
+            spec,
+            &workspace,
+            &report_dir,
+            &hooks_off,
+            saved,
+            &check_finalization,
+        );
+    }
+    let binding = spec
+        .queue_generation
+        .map(|_| completion::worker_binding(cfg, spec).map(|(_, digest)| digest))
+        .transpose()?;
 
     let mut run_cfg = cfg.clone();
     run_cfg.root = workspace.root.clone();
@@ -511,8 +533,7 @@ pub fn deliver(
     // An interrupted delivery comes back to its saved conversation (the task store's
     // checkpoint, fenced by epoch). If it never got as far as a checkpoint, start over.
     let mut agent = if spec.resume {
-        let task = run_cfg.task_id.clone().unwrap_or_default();
-        Agent::resume(&run_cfg, catalog, &task).or_else(|_| Agent::new(&run_cfg, catalog))?
+        Agent::recover(&run_cfg, catalog)?
     } else {
         Agent::new(&run_cfg, catalog)?
     };
@@ -533,14 +554,9 @@ pub fn deliver(
     };
     let mut passed = false;
     let mut question: Option<(String, Vec<String>)> = None;
-    let never = std::sync::atomic::AtomicBool::new(false);
-    let cancel: &std::sync::atomic::AtomicBool = spec.cancel.as_deref().unwrap_or(&never);
     for round in 0..=spec.repair_rounds {
         rounds = round + 1;
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-            error = Some("cancelled".into());
-            break;
-        }
+        ensure_active(cancel)?;
         match agent.run_turn_cancellable(&prompt, cancel) {
             Ok(text) => answer = text,
             Err(e) => {
@@ -555,12 +571,10 @@ pub fn deliver(
         if spec.accept.is_empty() {
             break;
         }
-        let results: Vec<Check> = spec
-            .accept
-            .iter()
-            .map(|argv| run_check(&run_cfg, round + 1, argv))
-            .collect();
-        for check in &results {
+        let mut results = Vec::with_capacity(spec.accept.len());
+        for argv in &spec.accept {
+            ensure_active(cancel)?;
+            let check = run_check(&run_cfg, round + 1, argv);
             record(
                 &mut journal,
                 cfg,
@@ -581,6 +595,7 @@ pub fn deliver(
                     },
                 },
             )?;
+            results.push(check);
         }
         let failed: Vec<&Check> = results.iter().filter(|c| !c.passed).collect();
         passed = failed.is_empty();
@@ -593,6 +608,7 @@ pub fn deliver(
         }
     }
 
+    ensure_active(cancel)?;
     let outcome = if question.is_some() && error.is_none() {
         Outcome::Blocked
     } else if error.is_some() {
@@ -607,59 +623,118 @@ pub fn deliver(
 
     // What changed, and whether the change touches anything that checks it.
     let hooks = &hooks_off;
-    let (changed_files, commit) = if workspace.in_git {
-        let scope: Vec<String> = run_cfg
-            .write_paths
+    let changes = if workspace.in_git {
+        workspace.verify_scope(hooks)?;
+        worktree::scoped_changes(&run_cfg.root, hooks, &run_cfg.write_paths)?
+    } else {
+        Vec::new()
+    };
+    let should_commit =
+        workspace.in_git && spec.commit && !changes.is_empty() && outcome != Outcome::Blocked;
+    let first_line = spec.prompt.lines().next().unwrap_or("task");
+    let subject: String = first_line.chars().take(72).collect();
+    let message = format!(
+        "jani: {subject}\n\nOutcome: {} ({} acceptance check(s), {} round(s))\nDelivery: {id}\nAcceptance was run by the host, not by the model.",
+        outcome.as_str().to_uppercase(), spec.accept.len(), rounds,
+    );
+    if let Some(binding) = binding.filter(|_| workspace.branch.is_some() || !should_commit) {
+        let commit = if should_commit {
+            ensure_active(cancel)?;
+            worktree::check_implicit_deletions(&run_cfg.root, hooks, &changes)?;
+            let root = workspace
+                .linked_root()
+                .ok_or("queued commit requires a linked worktree")?;
+            queued_commit::prepare(root, hooks, &report_dir, &changes, &message, cancel)?
+        } else {
+            None
+        };
+        let changed_files: Vec<_> = if should_commit && commit.is_none() {
+            Vec::new()
+        } else {
+            changes.into_iter().map(|change| change.path).collect()
+        };
+        let test_files_changed = changed_files
             .iter()
-            .filter(|p| run_cfg.root.join(p).exists())
-            .map(|p| p.display().to_string())
+            .filter(|path| looks_like_test(path))
+            .cloned()
             .collect();
-        let mut changed = Vec::new();
-        if !scope.is_empty() {
-            let mut status_args = vec!["status", "--porcelain", "-z", "--"];
-            status_args.extend(scope.iter().map(String::as_str));
-            if let Ok(out) = git(&run_cfg.root, hooks, &status_args) {
-                changed = out
-                    .stdout
-                    .split('\0')
-                    .filter(|e| e.len() > 3)
-                    .map(|e| e[3..].to_string())
-                    .collect();
-            }
-        }
+        let budget = agent.budget().unwrap_or(Value::Null);
+        let delivery = Delivery {
+            id,
+            outcome,
+            rounds,
+            checks,
+            answer,
+            error,
+            commit: None,
+            branch: workspace.branch.clone(),
+            workdir: workspace.root.clone(),
+            report_dir: report_dir.clone(),
+            changed_files,
+            test_files_changed,
+            pushed: false,
+            pr: None,
+            question,
+            agent_task_id: agent_task,
+            tokens: (
+                budget["inputTokens"].as_u64().unwrap_or(0),
+                budget["outputTokens"].as_u64().unwrap_or(0),
+            ),
+        };
+        check_finalization()?;
+        let saved = completion::seal(cfg, spec, &workspace, hooks, delivery, commit, &binding)?;
+        return completion::finish(
+            cfg,
+            spec,
+            &workspace,
+            &report_dir,
+            hooks,
+            saved,
+            &check_finalization,
+        );
+    }
+    let (changed_files, commit) = if workspace.in_git {
         let mut commit_id = None;
-        if spec.commit && !changed.is_empty() && outcome != Outcome::Blocked {
-            let mut add = vec!["add", "--"];
-            add.extend(scope.iter().map(String::as_str));
-            git_ok(&run_cfg.root, hooks, &add)?;
-            let first_line = spec.prompt.lines().next().unwrap_or("task");
-            let subject: String = first_line.chars().take(72).collect();
-            let message = format!(
-                "jani: {subject}\n\nOutcome: {} ({} acceptance check(s), {} round(s))\nDelivery: {id}\nAcceptance was run by the host, not by the model.",
-                outcome.as_str().to_uppercase(),
-                spec.accept.len(),
-                rounds,
+        if should_commit {
+            ensure_active(cancel)?;
+            worktree::check_implicit_deletions(&run_cfg.root, hooks, &changes)?;
+            let untracked: Vec<String> = changes
+                .iter()
+                .filter(|change| change.untracked)
+                .map(worktree::Change::pathspec)
+                .collect();
+            if !untracked.is_empty() {
+                let mut add = vec!["add", "--"];
+                add.extend(untracked.iter().map(String::as_str));
+                git_ok(&run_cfg.root, hooks, &add)?;
+            }
+            ensure_active(cancel)?;
+            let paths: Vec<String> = changes.iter().map(worktree::Change::pathspec).collect();
+            let mut commit_args = vec![
+                "-c",
+                "user.name=Jani",
+                "-c",
+                "user.email=jani@localhost",
+                "commit",
+                "--only",
+                "--no-verify",
+                "--no-gpg-sign",
+                "-m",
+                &message,
+                "--",
+            ];
+            commit_args.extend(paths.iter().map(String::as_str));
+            git_ok(&run_cfg.root, hooks, &commit_args)?;
+            commit_id = Some(
+                git_ok(&run_cfg.root, hooks, &["rev-parse", "HEAD"])?
+                    .trim()
+                    .to_string(),
             );
-            git_ok(
-                &run_cfg.root,
-                hooks,
-                &[
-                    "-c",
-                    "user.name=Jani",
-                    "-c",
-                    "user.email=jani@localhost",
-                    "commit",
-                    "--no-verify",
-                    "--no-gpg-sign",
-                    "-m",
-                    &message,
-                ],
-            )?;
-            commit_id = git_ok(&run_cfg.root, hooks, &["rev-parse", "HEAD"])
-                .ok()
-                .map(|s| s.trim().to_string());
         }
-        (changed, commit_id)
+        (
+            changes.into_iter().map(|change| change.path).collect(),
+            commit_id,
+        )
     } else {
         (Vec::new(), None)
     };
@@ -672,9 +747,11 @@ pub fn deliver(
     let mut pushed = false;
     let mut pr = None;
     if let (Some(remote), Some(branch), Some(_)) = (&spec.push_remote, &workspace.branch, &commit) {
+        ensure_active(cancel)?;
         git_ok(&run_cfg.root, hooks, &["push", "-u", remote, branch])?;
         pushed = true;
         if spec.open_pr {
+            ensure_active(cancel)?;
             let title = format!("jani: {}", spec.prompt.lines().next().unwrap_or("task"));
             let body = format!(
                 "Outcome: **{}**. Acceptance was run by the host, not the model. See the delivery report in the state directory (`deliveries/{id}/report.md`).",
@@ -703,6 +780,7 @@ pub fn deliver(
         .map(|v| v["ok"] == true)
         .unwrap_or(false);
 
+    ensure_active(cancel)?;
     record(
         &mut journal,
         cfg,
@@ -739,14 +817,8 @@ pub fn deliver(
         agent_task_id: agent_task,
         tokens,
     };
-    write_report(
-        &delivery,
-        spec,
-        workspace.base.as_deref(),
-        chain_ok,
-        &run_cfg,
-        hooks,
-    )?;
+    ensure_active(cancel)?;
+    write_report(&delivery, spec, workspace.base.as_deref(), chain_ok, hooks)?;
     Ok(delivery)
 }
 
@@ -755,11 +827,10 @@ fn write_report(
     spec: &Spec,
     base: Option<&str>,
     chain_ok: bool,
-    cfg: &Config,
     hooks: &Path,
 ) -> JResult<()> {
     let diff_stat = match (base, d.commit.as_ref()) {
-        (Some(base), Some(_)) => git(&cfg.root, hooks, &["diff", "--stat", base, "HEAD"])
+        (Some(base), Some(commit)) => git(&d.workdir, hooks, &["diff", "--stat", base, commit])
             .map(|o| o.stdout)
             .unwrap_or_default(),
         _ => String::new(),
@@ -772,6 +843,9 @@ fn write_report(
     };
     let mut md = format!("# Delivery {}\n\n**{headline}**\n\n", d.id);
     md.push_str(&format!("Task: {}\n\n", spec.prompt));
+    if d.branch.is_some() && base.is_none() {
+        md.push_str("The original comparison commit is unknown.\n\n");
+    }
     if let Some(error) = &d.error {
         md.push_str(&format!("Problem: {error}\n\n"));
     }
@@ -839,12 +913,13 @@ fn write_report(
         if chain_ok { "verified" } else { "NOT VERIFIED" },
         d.agent_task_id,
     ));
-    std::fs::write(d.report_dir.join("report.md"), md).map_err(|e| e.to_string())?;
+    completion::atomic_write(&d.report_dir.join("report.md"), md.as_bytes())?;
     let json_report = json!({
         "id": d.id,
         "outcome": d.outcome.as_str(),
         "rounds": d.rounds,
         "branch": d.branch,
+        "baseCommit": base,
         "commit": d.commit,
         "worktree": d.workdir,
         "changedFiles": d.changed_files,
@@ -862,11 +937,10 @@ fn write_report(
             "error": c.error,
         })).collect::<Vec<_>>(),
     });
-    std::fs::write(
-        d.report_dir.join("report.json"),
-        serde_json::to_vec_pretty(&json_report).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    completion::atomic_write(
+        &d.report_dir.join("report.json"),
+        &serde_json::to_vec_pretty(&json_report).map_err(|e| e.to_string())?,
+    )?;
     Ok(())
 }
 

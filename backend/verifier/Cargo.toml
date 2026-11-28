@@ -12,3 +12,6 @@ ed25519-dalek.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+jani-core = { workspace = true, features = ["test-keys"] }

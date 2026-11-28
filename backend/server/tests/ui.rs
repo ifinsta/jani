@@ -370,7 +370,10 @@ fn the_plugin_page_reports_an_unconfigured_registry_and_refuses_unknown_plugins(
     assert_eq!(body["configured"], false);
     assert_eq!(body["trustRoots"], 0);
     assert_eq!(body["plugins"].as_array().map(Vec::len), Some(0));
-    assert!(body.get("error").is_none(), "an unset registry is not an error");
+    assert!(
+        body.get("error").is_none(),
+        "an unset registry is not an error"
+    );
     assert_eq!(get(&ui, "/api/plugin").status, 400, "an id is required");
     let unknown = get(&ui, "/api/plugin?id=com.example.nothing");
     assert_eq!(unknown.status, 422, "{}", unknown.body);

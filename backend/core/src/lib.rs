@@ -4,6 +4,7 @@
 
 pub mod approvals;
 pub mod assignment;
+pub mod authority;
 pub mod budget;
 pub mod config;
 pub mod contract;

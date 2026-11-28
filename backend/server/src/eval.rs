@@ -384,6 +384,7 @@ pub fn run_case(
             open_pr: false,
             id: None,
             resume: false,
+            queue_generation: None,
             context: None,
             cancel: None,
         };

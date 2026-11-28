@@ -60,9 +60,9 @@ For metrics such as p99 latency, CPU utilization and recovery-point/recovery-tim
 objectives, define application workload-specific acceptance thresholds **before**
 running the campaign. Do not backfill targets after seeing the result.
 
-Every case needs an actual adapter: the current runner supports four safe CLI
-preflight hooks only. Unsupported cases must remain SKIPPED; never count skipped
-scenarios as successes. The full corpus currently reports
+Every case needs an actual adapter. The four CLI preflight hooks and the eight
+local audit, broker and budget adapters cover a small subset of the campaign.
+Unsupported cases remain skipped. The full corpus currently reports
 \`replay.executed=false\` for all 5M rows.
 
 ## Release blockers and receipts
@@ -78,6 +78,7 @@ customer accounts, live OAuth tokens or production secrets are permitted in
 the generated corpus.
 
 **The readiness evaluator fails with exit code 2 when evidence is missing.**
-It currently checks receipt metadata, not cryptographic attestation; independent
-CI integrity controls and reviewer signoff are also required before a
-regulated enterprise release can be accepted.
+It checks pinned release identity, independent runner and reviewer signatures,
+artifact bytes, and exact coverage signed by the native oracle runners. The
+independent CI and reviewer must establish actual runtime and operational results.
+[Evidence format and trust settings](EVIDENCE_PROVENANCE.md)

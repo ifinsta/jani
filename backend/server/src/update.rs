@@ -1,21 +1,28 @@
 use crate::config::{Config, JResult};
-use crate::{process, types};
+use crate::process;
 use jani_core::contract::{
     RELEASE_CHANNEL_SCHEMA as CHANNEL_SCHEMA, RELEASE_COMPONENT,
     RELEASE_MANIFEST_SCHEMA as MANIFEST_SCHEMA, RELEASE_PACKAGE, RELEASE_TARGETS,
     RELEASE_UPDATE_SCHEMA as UPDATE_SCHEMA,
 };
 use jani_core::crypto;
+use ring::digest::{self, Context, SHA256};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+use std::cell::OnceCell;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
+
+mod evidence;
+#[cfg(windows)]
+mod self_replace;
 
 const MAX_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
@@ -29,6 +36,8 @@ pub fn command(cfg: &Config) -> JResult<()> {
         None | Some("check") => check(cfg),
         Some("install") => install(cfg),
         Some("watch") => watch(cfg),
+        #[cfg(windows)]
+        Some("recover") => self_replace::recover(cfg),
         Some(other) => Err(format!("unknown update subcommand '{other}'")),
     }
 }
@@ -37,40 +46,15 @@ fn check(cfg: &Config) -> JResult<()> {
     print_json(&check_report(cfg)?)
 }
 
-fn sweep_stale_backups_in(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with('.') && name.contains(".jani-old-") {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
-}
-
-fn sweep_stale_backups(cfg: &Config, current: Option<&Path>) {
-    if !cfg!(windows) {
-        return;
-    }
-    if let Some(dir) = current.and_then(|p| p.parent()) {
-        sweep_stale_backups_in(dir);
-    }
-    for target in &cfg.update_targets {
-        if let Some(dir) = target.parent() {
-            sweep_stale_backups_in(dir);
-        }
-    }
-}
-
 /// The same report `jani update check` prints, returned for other front ends.
 pub fn check_report(cfg: &Config) -> JResult<serde_json::Value> {
     let current_exe = current_exe();
-    sweep_stale_backups(cfg, current_exe.as_deref());
     let source = source(cfg)?;
-    let release = fetch_release(&source, &cfg.update_keys)?;
-    let states = inspect_targets(cfg, &release, current_exe.as_deref())?;
+    let release = fetch_release(&source, cfg)?;
+    let latest = KnownRelease::from(&release);
+    let store = evidence::Store::new(cfg, &source);
+    let _lock = store.read_lock()?;
+    let states = inspect_targets(cfg, &latest, current_exe.as_deref(), &store)?;
     let update_available = states.iter().any(|state| state.update_available);
     let report = json!({
         "schemaVersion": UPDATE_SCHEMA,
@@ -91,8 +75,6 @@ pub fn check_report(cfg: &Config) -> JResult<serde_json::Value> {
 }
 
 fn install(cfg: &Config) -> JResult<()> {
-    let current = current_exe();
-    sweep_stale_backups(cfg, current.as_deref());
     let source = source(cfg)?;
     let outcome = install_once(cfg, &source)?;
     print_json(&outcome.report)?;
@@ -117,6 +99,14 @@ fn watch(cfg: &Config) -> JResult<()> {
                     map.insert("cycle".into(), json!(cycle));
                 }
                 print_json(&report)?;
+                if outcome.recovery_required {
+                    return Err(outcome
+                        .failure
+                        .unwrap_or_else(|| "self-update recovery is required".into()));
+                }
+                if outcome.restart_required {
+                    return Ok(());
+                }
             }
             Err(error) => print_json(&json!({
                 "schemaVersion": UPDATE_SCHEMA,
@@ -240,18 +230,37 @@ impl Manifest {
         Ok(bytes)
     }
 
-    fn verify(&self, trusted_keys: &[String], url: &str) -> JResult<()> {
+    fn verify(&self, trusted_keys: &[String], revoked_keys: &[String], url: &str) -> JResult<()> {
         let signature = self
             .signature
             .as_ref()
             .ok_or_else(|| format!("release manifest at {url} is unsigned"))?;
-        crypto::verify_signature(
+        crypto::verify_signature_with_revoked(
             trusted_keys,
+            revoked_keys,
             &signature.key_id,
             &self.signing_bytes()?,
             &signature.value,
         )
         .map_err(|error| format!("release manifest signature at {url} is invalid: {error}"))
+    }
+
+    fn trusted_artifact(&self, cfg: &Config, tag: &str, context: &str) -> JResult<Artifact> {
+        let (platform, target) = host_platform()?;
+        validate_manifest(self, platform, target, tag, context)?;
+        self.verify(&cfg.update_keys, &cfg.revoked_keys, context)?;
+        let mut matching = self
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.target == target);
+        let artifact = matching
+            .next()
+            .ok_or("release has no artifact for this host")?;
+        if matching.next().is_some() {
+            return Err("release has multiple artifacts for this host".into());
+        }
+        validate_artifact(artifact, target)?;
+        Ok(artifact.clone())
     }
 }
 
@@ -276,6 +285,7 @@ struct Release {
     built_at: String,
     signature_key_id: String,
     artifact: Artifact,
+    manifest: Arc<Manifest>,
 }
 
 struct Origin {
@@ -376,14 +386,14 @@ fn retry_delay(attempt: u64) -> Duration {
     crate::net::retry_delay(base, attempt, crate::net::RETRY_CAP)
 }
 
-fn fetch_release(source: &str, trusted_keys: &[String]) -> JResult<Release> {
-    if trusted_keys.is_empty() {
+fn fetch_release(source: &str, cfg: &Config) -> JResult<Release> {
+    if cfg.update_keys.is_empty() {
         return Err(
             "update trust root is required: pass --update-key ID:HEX or set JANI_UPDATE_KEYS"
                 .into(),
         );
     }
-    for key in trusted_keys {
+    for key in &cfg.update_keys {
         crypto::parse_key_spec(key)
             .map_err(|error| format!("invalid update trust root: {error}"))?;
     }
@@ -411,15 +421,7 @@ fn fetch_release(source: &str, trusted_keys: &[String]) -> JResult<Release> {
         channel.latest
     );
     let manifest: Manifest = origin.get_json(&manifest_url)?;
-    validate_manifest(&manifest, platform, target, &channel.latest, &manifest_url)?;
-    manifest.verify(trusted_keys, &manifest_url)?;
-    let artifact = manifest
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.target == target)
-        .cloned()
-        .ok_or_else(|| format!("release {} has no artifact for {target}", manifest.version))?;
-    validate_artifact(&artifact, target)?;
+    let artifact = manifest.trusted_artifact(cfg, &channel.latest, &manifest_url)?;
     Ok(Release {
         platform: platform.to_string(),
         target: target.to_string(),
@@ -433,6 +435,7 @@ fn fetch_release(source: &str, trusted_keys: &[String]) -> JResult<Release> {
             .map(|signature| signature.key_id.clone())
             .unwrap_or_default(),
         artifact,
+        manifest: Arc::new(manifest),
     })
 }
 
@@ -654,6 +657,9 @@ struct TargetState {
     update_available: bool,
     status: &'static str,
     restart_required: bool,
+    recovery_required: bool,
+    matched_latest: bool,
+    retained: Option<Arc<Manifest>>,
 }
 
 impl TargetState {
@@ -664,6 +670,7 @@ impl TargetState {
             "status": self.status,
             "updateAvailable": self.update_available,
             "restartRequired": self.restart_required,
+            "recoveryRequired": self.recovery_required,
             "error": self.error,
         })
     }
@@ -706,54 +713,115 @@ fn resolve_targets(cfg: &Config) -> JResult<Vec<PathBuf>> {
             true_targets.push(path);
         }
     }
-    let mut unique: Vec<PathBuf> = Vec::new();
+    let mut unique = Vec::new();
+    let mut resolved = BTreeSet::new();
     for target in true_targets {
-        let duplicate = unique.iter().any(|existing| {
-            if cfg!(windows) {
-                existing
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&target.to_string_lossy())
-            } else {
-                existing == &target
-            }
-        });
-        if !duplicate {
+        #[cfg(windows)]
+        if self_replace::reserved(&target) {
+            return Err("self-update backup and lock paths are reserved. Use update recover with the original target path".into());
+        }
+        let identity = evidence::canonical_target(&target).unwrap_or_else(|_| target.clone());
+        if resolved.insert(identity) {
             unique.push(target);
         }
     }
     Ok(unique)
 }
 
+struct CurrentExecutable<'a> {
+    path: &'a Path,
+    size: Option<u64>,
+    digest: OnceCell<Option<String>>,
+}
+
+impl<'a> CurrentExecutable<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self {
+            path,
+            size: fs::symlink_metadata(path)
+                .ok()
+                .filter(|metadata| {
+                    evidence::regular(metadata) && metadata.len() <= MAX_ARTIFACT_BYTES
+                })
+                .map(|metadata| metadata.len()),
+            digest: OnceCell::new(),
+        }
+    }
+
+    fn matches(&self, size: u64, digest: &str) -> bool {
+        self.size == Some(size)
+            && self
+                .digest
+                .get_or_init(|| {
+                    let file = open_sized_target(self.path, size).ok()?;
+                    file_digest(&file, size).ok()
+                })
+                .as_deref()
+                == Some(digest)
+    }
+}
+
+#[derive(Clone)]
+struct KnownRelease {
+    size: u64,
+    digest: String,
+    version: String,
+}
+
+impl From<&Release> for KnownRelease {
+    fn from(release: &Release) -> Self {
+        Self::new(&release.version, &release.artifact)
+    }
+}
+
+impl KnownRelease {
+    fn new(version: &str, artifact: &Artifact) -> Self {
+        Self {
+            size: artifact.size_bytes,
+            digest: artifact.sha256.clone(),
+            version: version.into(),
+        }
+    }
+
+    fn matches(&self, size: u64, digest: &str) -> bool {
+        self.size == size && self.digest.eq_ignore_ascii_case(digest)
+    }
+}
+
 fn inspect_targets(
     cfg: &Config,
-    release: &Release,
+    latest: &KnownRelease,
     current_exe: Option<&Path>,
+    store: &evidence::Store<'_>,
 ) -> JResult<Vec<TargetState>> {
-    let current_fingerprint = current_exe.and_then(|path| file_fingerprint(path).ok());
+    let current = current_exe.map(CurrentExecutable::new);
     Ok(resolve_targets(cfg)?
         .into_iter()
-        .map(|path| {
-            inspect_target(
-                path,
-                release,
-                current_exe,
-                current_fingerprint.as_ref(),
-                cfg.update_force,
-            )
-        })
+        .map(|path| inspect_target(path, latest, current.as_ref(), store, cfg.update_force))
         .collect())
 }
 
-fn file_fingerprint(path: &Path) -> JResult<(u64, String)> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("target is not a regular file".into());
-    }
-    if metadata.len() > MAX_ARTIFACT_BYTES {
+fn open_sized_target(path: &Path, size: u64) -> JResult<fs::File> {
+    if size > MAX_ARTIFACT_BYTES {
         return Err("target exceeds the supported release size".into());
     }
-    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
+    let file = evidence::file_options()
+        .read(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !evidence::regular(&metadata) {
+        return Err("target is not a regular file".into());
+    }
+    if metadata.len() != size {
+        return Err("target size changed before inspection".into());
+    }
+    Ok(file)
+}
+
+fn file_digest(input: impl Read, size: u64) -> JResult<String> {
+    let mut file = input.take(size + 1);
+    let mut hasher = Context::new(&SHA256);
     let mut buffer = [0u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
@@ -762,79 +830,131 @@ fn file_fingerprint(path: &Path) -> JResult<(u64, String)> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok((metadata.len(), hex::encode(hasher.finalize())))
+    if file.limit() != 1 {
+        return Err("target size changed during inspection".into());
+    }
+    Ok(hex::encode(hasher.finish()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum VersionMatch {
+    Unknown,
+    Running,
+    Retained(usize),
+    Latest,
+}
+
+fn inspected_version(
+    path: &Path,
+    size: u64,
+    latest: &KnownRelease,
+    running: Option<&CurrentExecutable<'_>>,
+    previous: [Option<&KnownRelease>; 2],
+) -> JResult<VersionMatch> {
+    // Opening even an unrecognized target preserves unreadable-file errors.
+    let file = open_sized_target(path, size)?;
+    if size != latest.size
+        && previous.iter().flatten().all(|known| size != known.size)
+        && running.and_then(|exe| exe.size) != Some(size)
+    {
+        return Ok(VersionMatch::Unknown);
+    }
+    let digest = file_digest(&file, size)?;
+    // Incumbent evidence wins over a relabel of the same bytes. A running
+    // executable's path can refer to a replacement after a self-update.
+    if let Some(index) = previous
+        .iter()
+        .position(|known| known.is_some_and(|known| known.matches(size, &digest)))
+    {
+        Ok(VersionMatch::Retained(index))
+    } else if running.is_some_and(|exe| exe.matches(size, &digest)) {
+        if latest.version == env!("CARGO_PKG_VERSION") && latest.matches(size, &digest) {
+            Ok(VersionMatch::Latest)
+        } else {
+            Ok(VersionMatch::Running)
+        }
+    } else if latest.matches(size, &digest) {
+        Ok(VersionMatch::Latest)
+    } else {
+        Ok(VersionMatch::Unknown)
+    }
 }
 
 fn inspect_target(
     path: PathBuf,
-    release: &Release,
-    current_exe: Option<&Path>,
-    current_fingerprint: Option<&(u64, String)>,
+    latest: &KnownRelease,
+    running: Option<&CurrentExecutable<'_>>,
+    store: &evidence::Store<'_>,
     force: bool,
 ) -> TargetState {
-    let restart_required = current_exe
-        .and_then(|exe| fs::canonicalize(&path).ok().map(|path| path == exe))
+    let restart_required = running
+        .and_then(|exe| fs::canonicalize(&path).ok().map(|path| path == exe.path))
         .unwrap_or(false);
-    let exists = match fs::symlink_metadata(&path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return TargetState {
-                    path,
-                    current: None,
-                    error: Some("target exists but is not a regular file".into()),
-                    update_available: false,
-                    status: "error",
-                    restart_required,
-                };
-            }
-            true
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
-            return TargetState {
-                path,
-                current: None,
-                error: Some(error.to_string()),
-                update_available: false,
-                status: "error",
-                restart_required,
-            };
-        }
+    let unavailable = |error: String| TargetState {
+        path: path.clone(),
+        current: None,
+        error: Some(error),
+        update_available: false,
+        status: "error",
+        restart_required,
+        recovery_required: false,
+        matched_latest: false,
+        retained: None,
     };
-    let current = if exists {
+    let file_size = match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !evidence::regular(&metadata) {
+                return unavailable("target exists but is not a regular file".into());
+            }
+            Some(metadata.len())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return unavailable(error.to_string()),
+    };
+    #[cfg(windows)]
+    {
+        match self_replace::recovery_required(store, &path, file_size.is_some()) {
+            Ok(Some(error)) | Err(error) => {
+                let mut state = unavailable(error);
+                state.recovery_required = true;
+                return state;
+            }
+            Ok(None) => (),
+        }
+    }
+    let (current, matched_latest, retained) = if let Some(size) = file_size {
         if restart_required {
-            Some(env!("CARGO_PKG_VERSION").to_string())
+            (Some(env!("CARGO_PKG_VERSION").to_owned()), false, None)
         } else {
-            match file_fingerprint(&path) {
-                Ok(fingerprint) => {
-                    if current_fingerprint == Some(&fingerprint) {
-                        Some(env!("CARGO_PKG_VERSION").to_string())
-                    } else if fingerprint.0 == release.artifact.size_bytes
-                        && fingerprint.1.eq_ignore_ascii_case(&release.artifact.sha256)
-                    {
-                        Some(release.version.clone())
-                    } else {
-                        None
-                    }
+            let mut proofs = match store.read(&path) {
+                Ok(proofs) => proofs,
+                Err(error) => return unavailable(error),
+            };
+            let previous = proofs
+                .each_ref()
+                .map(|proof| proof.as_ref().map(|proof| &proof.known));
+            match inspected_version(&path, size, latest, running, previous) {
+                Ok(VersionMatch::Unknown) => (None, false, None),
+                Ok(VersionMatch::Running) => {
+                    (Some(env!("CARGO_PKG_VERSION").to_owned()), false, None)
                 }
-                Err(error) => {
-                    return TargetState {
-                        path,
-                        current: None,
-                        error: Some(error),
-                        update_available: false,
-                        status: "error",
-                        restart_required,
-                    };
+                Ok(VersionMatch::Latest) => (Some(latest.version.clone()), true, None),
+                Ok(VersionMatch::Retained(index)) => {
+                    let proof = proofs[index]
+                        .take()
+                        .expect("matched a verified release proof");
+                    (Some(proof.known.version), false, Some(proof.manifest))
                 }
+                Err(error) => return unavailable(error),
             }
         }
     } else {
-        None
+        (None, false, None)
     };
+    let exists = file_size.is_some();
     let comparison = current
         .as_deref()
-        .and_then(|current| compare_versions(&release.version, current));
+        .and_then(|current| compare_versions(&latest.version, current));
     let update_available = force || !exists || comparison == Some(Ordering::Greater);
     let status = if update_available {
         "update-available"
@@ -854,6 +974,9 @@ fn inspect_target(
         update_available,
         status,
         restart_required,
+        recovery_required: false,
+        matched_latest,
+        retained,
     }
 }
 
@@ -901,19 +1024,39 @@ struct InstallOutcome {
     report: Value,
     failed: bool,
     failure: Option<String>,
+    restart_required: bool,
+    recovery_required: bool,
 }
 
 fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
-    let release = fetch_release(source, &cfg.update_keys)?;
+    let release = fetch_release(source, cfg)?;
+    let store = evidence::Store::new(cfg, source);
+    let _lock = store.lock()?;
     let current_exe = current_exe();
-    let states = inspect_targets(cfg, &release, current_exe.as_deref())?;
-    let needs_install = states
-        .iter()
-        .any(|state| state.update_available && state.error.is_none());
+    let latest = KnownRelease::from(&release);
+    let mut states = inspect_targets(cfg, &latest, current_exe.as_deref(), &store)?;
+    let mut recovery_required = states.iter().any(|state| state.recovery_required);
+    for state in &mut states {
+        if state.matched_latest && !recovery_required {
+            // Publication precedes any network download or target replacement.
+            if let Err(error) = store.write(&state.path, Some(&release.manifest), None) {
+                state.error = Some(error);
+                state.status = "error";
+                state.update_available = false;
+            } else {
+                state.retained = Some(Arc::clone(&release.manifest));
+            }
+        }
+    }
+    let needs_install = !recovery_required
+        && states
+            .iter()
+            .any(|state| state.update_available && state.error.is_none());
     let mut results = Vec::new();
     let mut failures = Vec::new();
     let mut installed = 0usize;
     let mut artifact_verified = false;
+    let mut restart_required = false;
 
     if needs_install {
         let url = format!(
@@ -928,7 +1071,7 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
                 release.artifact.size_bytes
             ));
         }
-        let digest = types::sha256_hex(&bytes);
+        let digest = hex::encode(digest::digest(&SHA256, &bytes));
         if !digest.eq_ignore_ascii_case(&release.artifact.sha256) {
             return Err(format!(
                 "downloaded artifact hash {digest} does not match manifest {}",
@@ -937,29 +1080,41 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
         }
         artifact_verified = true;
 
+        let mut applied = BTreeSet::new();
         for state in &states {
-            if !state.update_available {
-                results.push(state.json());
-                continue;
-            }
             if let Some(error) = &state.error {
                 failures.push(format!("{}: {error}", state.path.display()));
                 results.push(state.json());
                 continue;
             }
+            if !state.update_available || recovery_required {
+                results.push(state.json());
+                continue;
+            }
+            // Two initially absent spellings can resolve to the same file on
+            // Windows after the first path has been installed.
+            let identity =
+                evidence::canonical_target(&state.path).unwrap_or_else(|_| state.path.clone());
+            if applied.contains(&identity) {
+                continue;
+            }
+            let mut needs_recovery = false;
             match install_target(
-                &state.path,
+                state,
                 &bytes,
                 &release,
-                state.restart_required,
-                state.current.as_deref(),
                 &cfg.credential_env_names,
+                &store,
+                &mut needs_recovery,
             ) {
                 Ok(result) => {
                     installed += 1;
+                    restart_required |= state.restart_required;
+                    applied.insert(evidence::canonical_target(&state.path).unwrap_or(identity));
                     results.push(result);
                 }
                 Err(error) => {
+                    recovery_required |= needs_recovery;
                     failures.push(format!("{}: {error}", state.path.display()));
                     results.push(json!({
                         "path": state.path.display().to_string(),
@@ -967,6 +1122,7 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
                         "status": "error",
                         "updateAvailable": true,
                         "restartRequired": state.restart_required,
+                        "recoveryRequired": needs_recovery,
                         "error": error,
                     }));
                 }
@@ -981,7 +1137,9 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
         }
     }
 
-    let status = if !failures.is_empty() {
+    let status = if recovery_required {
+        "recovery-required"
+    } else if !failures.is_empty() {
         if installed > 0 {
             "partial"
         } else {
@@ -991,6 +1149,8 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
         "installed"
     } else if states.iter().any(|state| state.status == "unknown-version") {
         "unknown-version"
+    } else if states.iter().any(|state| state.status == "newer-local") {
+        "newer-local"
     } else {
         "up-to-date"
     };
@@ -1008,6 +1168,7 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
         "artifact": artifact_json(&release.artifact),
         "artifactVerified": artifact_verified,
         "status": status,
+        "recoveryRequired": recovery_required,
         "targets": results,
     });
     if let Some((path, error)) = write_receipt(cfg, &report) {
@@ -1024,6 +1185,8 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
     Ok(InstallOutcome {
         report,
         failed: !failures.is_empty(),
+        restart_required,
+        recovery_required,
         failure: if failures.is_empty() {
             None
         } else {
@@ -1033,20 +1196,28 @@ fn install_once(cfg: &Config, source: &str) -> JResult<InstallOutcome> {
 }
 
 fn install_target(
-    path: &Path,
+    state: &TargetState,
     bytes: &[u8],
     release: &Release,
-    restart_required: bool,
-    previous: Option<&str>,
     credential_env_names: &[String],
+    store: &evidence::Store<'_>,
+    recovery_required: &mut bool,
 ) -> JResult<Value> {
-    let name = path
+    let path = &state.path;
+    let destination = if state.restart_required {
+        path.clone()
+    } else {
+        evidence::canonical_target(path)?
+    };
+    let name = destination
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("target has no usable file name")?;
-    let parent = path.parent().ok_or("target has no parent directory")?;
-    let id = process::unique_id();
-    let candidate = parent.join(format!(".{name}.jani-update-{id}.tmp"));
+    let parent = destination
+        .parent()
+        .ok_or("target has no parent directory")?;
+    let candidate = store.staging_path(parent, name)?;
+    evidence::clear_staging(&candidate)?;
     write_candidate(&candidate, bytes)?;
     let verified = (|| -> JResult<()> {
         let mut last = String::new();
@@ -1071,23 +1242,47 @@ fn install_target(
         let _ = fs::remove_file(&candidate);
         return Err(format!("downloaded update failed verification: {error}"));
     }
-    let backup = match replace_binary(&candidate, path) {
+    let publish = (|| {
+        let size = release.artifact.size_bytes;
+        let staged = open_sized_target(&candidate, size)?;
+        if !file_digest(&staged, size)?.eq_ignore_ascii_case(&release.artifact.sha256) {
+            return Err("staged update bytes changed during verification".into());
+        }
+        drop(staged);
+        #[cfg(windows)]
+        if state.restart_required {
+            return self_replace::replace(store, path, &candidate, release, recovery_required);
+        }
+        if !state.restart_required {
+            store.write(
+                &destination,
+                state.retained.as_deref(),
+                Some(&release.manifest),
+            )?;
+        }
+        fs::rename(&candidate, &destination)
+            .map_err(|error| format!("cannot install {} ({error})", destination.display()))?;
+        Ok(None)
+    })();
+    let backup = match publish {
         Ok(backup) => backup,
         Err(error) => {
-            let _ = fs::remove_file(&candidate);
+            if !*recovery_required {
+                let _ = fs::remove_file(&candidate);
+            }
             return Err(error);
         }
     };
     Ok(json!({
         "path": path.display().to_string(),
-        "previousVersion": previous,
+        "previousVersion": state.current,
         "newVersion": release.version,
         "status": "installed",
         "updateAvailable": false,
-        "restartRequired": restart_required,
+        "restartRequired": state.restart_required,
         "sha256": release.artifact.sha256,
         "bytes": bytes.len(),
-        "backup": backup.map(|path| path.display().to_string()),
+        "backup": backup.map(|path: PathBuf| path.display().to_string()),
     }))
 }
 
@@ -1102,68 +1297,21 @@ fn write_candidate(path: &Path, bytes: &[u8]) -> JResult<()> {
     let mut file = options
         .open(path)
         .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    file.sync_all()
-        .map_err(|e| format!("cannot flush {}: {e}", path.display()))?;
+    let written = (|| -> std::io::Result<()> {
+        file.write_all(bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o755))?;
+        }
+        file.sync_all()
+    })();
     drop(file);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("cannot mark {} executable: {e}", path.display()))?;
+    if let Err(error) = written {
+        let _ = fs::remove_file(path);
+        return Err(format!("cannot stage {}: {error}", path.display()));
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn replace_binary(candidate: &Path, target: &Path) -> JResult<Option<PathBuf>> {
-    if !target.exists() {
-        fs::rename(candidate, target)
-            .map_err(|e| format!("cannot install {}: {e}", target.display()))?;
-        return Ok(None);
-    }
-    let name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("jani");
-    let backup = target.with_file_name(format!(".{name}.jani-old-{}", process::unique_id()));
-    // Windows locks the image of a running executable but still permits renaming it.
-    fs::rename(target, &backup).map_err(|e| {
-        format!(
-            "cannot move the installed binary {} aside: {e}",
-            target.display()
-        )
-    })?;
-    match fs::rename(candidate, target) {
-        Ok(()) => {
-            if fs::remove_file(&backup).is_ok() {
-                Ok(None)
-            } else {
-                Ok(Some(backup))
-            }
-        }
-        Err(error) => {
-            let restored = fs::rename(&backup, target);
-            match restored {
-                Ok(()) => Err(format!(
-                    "cannot install the verified update: {error}; the previous binary was restored"
-                )),
-                Err(restore_error) => Err(format!(
-                    "cannot install the verified update: {error}; restoring {} also failed: {restore_error}; backup kept at {}",
-                    target.display(),
-                    backup.display()
-                )),
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn replace_binary(candidate: &Path, target: &Path) -> JResult<Option<PathBuf>> {
-    fs::rename(candidate, target)
-        .map_err(|e| format!("cannot install {}: {e}", target.display()))?;
-    Ok(None)
 }
 
 fn artifact_json(artifact: &Artifact) -> Value {
@@ -1214,6 +1362,206 @@ fn print_json(value: &Value) -> JResult<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn update_fingerprints_count_bytes_and_stop_at_the_declared_size_plus_one() {
+        let bytes = b"abcd";
+        assert_eq!(
+            file_digest(&bytes[..], 4).unwrap(),
+            crate::types::sha256_hex(bytes)
+        );
+        assert!(file_digest(&bytes[..], 5)
+            .unwrap_err()
+            .contains("size changed"));
+        let mut input = std::io::Cursor::new(b"abcdefgh");
+        assert!(file_digest(&mut input, 4)
+            .unwrap_err()
+            .contains("size changed"));
+        assert_eq!(input.position(), 5);
+    }
+
+    #[test]
+    fn running_digest_is_lazy_and_memoizes_success_and_failure_for_one_poll() {
+        let root = std::env::temp_dir().join(process::unique_id());
+        fs::create_dir(&root).unwrap();
+        let path = root.join("running");
+        fs::write(&path, b"build").unwrap();
+        let running = CurrentExecutable::new(&path);
+        let expected = crate::types::sha256_hex(b"build");
+        assert!(!running.matches(4, &expected));
+        assert!(running.digest.get().is_none());
+        assert!(running.matches(5, &expected));
+        let second_poll = CurrentExecutable::new(&path);
+        fs::remove_file(&path).unwrap();
+        assert!(running.matches(5, &expected));
+        assert!(!second_poll.matches(5, &expected));
+        assert_eq!(second_poll.digest.get(), Some(&None));
+        fs::write(&path, b"build").unwrap();
+        assert!(!second_poll.matches(5, &expected));
+        assert!(CurrentExecutable::new(&path).matches(5, &expected));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remembered_release_requires_current_bytes_and_refuses_relabeling() {
+        let root = std::env::temp_dir().join(process::unique_id());
+        fs::create_dir(&root).unwrap();
+        let target = root.join("standalone");
+        fs::write(&target, b"build").unwrap();
+        let prior = KnownRelease {
+            size: 5,
+            digest: crate::types::sha256_hex(b"build"),
+            version: "9.9.2".into(),
+        };
+        let latest = KnownRelease {
+            version: "9.9.1".into(),
+            ..prior.clone()
+        };
+        assert_eq!(
+            inspected_version(&target, 5, &latest, None, [Some(&prior), None]).unwrap(),
+            VersionMatch::Retained(0)
+        );
+        let higher = KnownRelease {
+            version: "9.9.3".into(),
+            ..prior.clone()
+        };
+        assert_eq!(
+            inspected_version(&target, 5, &higher, None, [Some(&prior), None]).unwrap(),
+            VersionMatch::Retained(0)
+        );
+        fs::write(&target, b"other").unwrap();
+        assert_eq!(
+            inspected_version(&target, 5, &latest, None, [Some(&prior), None]).unwrap(),
+            VersionMatch::Unknown
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remembered_release_does_not_transfer_to_an_identical_target_at_another_path() {
+        let root = std::env::temp_dir().join(process::unique_id());
+        fs::create_dir(&root).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::write(&first, b"build").unwrap();
+        fs::copy(&first, &second).unwrap();
+        let previous = signed_fixture("9.9.2", b"build", "incumbent", &"11".repeat(32));
+        let latest = KnownRelease {
+            size: 5,
+            digest: crate::types::sha256_hex(b"other"),
+            version: "9.9.3".into(),
+        };
+        let mut cfg = Config::baseline();
+        cfg.state_dir = root.join("state");
+        cfg.update_keys = vec![fixture_key("incumbent", &"11".repeat(32))];
+        cfg.update_targets = vec![first.clone(), second];
+        let store = evidence::Store::new(&cfg, "https://releases.example");
+        let lock = store.lock().unwrap();
+        store.write(&first, Some(&previous), None).unwrap();
+        assert!(evidence::Store::new(&cfg, "https://other.example")
+            .read(&first)
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+        let states = inspect_targets(&cfg, &latest, None, &store).unwrap();
+        assert_eq!(states[0].current.as_deref(), Some("9.9.2"));
+        assert!(states[0].update_available);
+        assert_eq!(states[1].status, "unknown-version");
+        assert!(!states[1].update_available);
+        drop(lock);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepared_proofs_recognize_both_sides_of_replacement_and_apply_current_revocation() {
+        let root = std::env::temp_dir().join(process::unique_id());
+        fs::create_dir(&root).unwrap();
+        let target = root.join("standalone");
+        fs::write(&target, b"before").unwrap();
+        let incumbent = signed_fixture("9.9.1", b"before", "old", &"11".repeat(32));
+        let candidate = signed_fixture("9.9.2", b"after!", "new", &"22".repeat(32));
+        let newer = signed_fixture("9.9.3", b"newest", "new", &"22".repeat(32));
+        let latest = KnownRelease::new(&newer.version, &newer.artifacts[0]);
+        let mut cfg = Config::baseline();
+        cfg.state_dir = root.join("state");
+        cfg.update_keys = vec![
+            fixture_key("old", &"11".repeat(32)),
+            fixture_key("new", &"22".repeat(32)),
+        ];
+        cfg.update_targets = vec![target.clone()];
+        let source = "https://releases.example";
+        {
+            let store = evidence::Store::new(&cfg, source);
+            let _lock = store.lock().unwrap();
+            assert!(store.lock().unwrap_err().contains("another updater"));
+            assert!(store.read_lock().unwrap_err().contains("another updater"));
+            let pending = cfg.state_dir.join("update-proofs").join(".pending");
+            fs::write(&pending, b"abandoned write fixture").unwrap();
+            store
+                .write(&target, Some(&incumbent), Some(&candidate))
+                .unwrap();
+            assert!(!pending.exists());
+        }
+        {
+            let store = evidence::Store::new(&cfg, source);
+            let shared = store.read_lock().unwrap().unwrap();
+            assert!(store.lock().unwrap_err().contains("another updater"));
+            drop(shared);
+        }
+        let current = |cfg: &Config| {
+            inspect_targets(cfg, &latest, None, &evidence::Store::new(cfg, source))
+                .unwrap()
+                .remove(0)
+                .current
+        };
+        assert_eq!(current(&cfg).as_deref(), Some("9.9.1"));
+        cfg.revoked_keys = vec!["old".into()];
+        assert_eq!(current(&cfg), None);
+        let staged = root.join("candidate");
+        fs::write(&staged, b"after!").unwrap();
+        fs::rename(&staged, &target).unwrap();
+        assert_eq!(current(&cfg).as_deref(), Some("9.9.2"));
+        fs::write(&target, b"oops!!").unwrap();
+        assert_eq!(current(&cfg), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn fixture_key(id: &str, secret: &str) -> String {
+        format!("{id}:{}", crypto::public_key_hex(secret).unwrap())
+    }
+
+    #[test]
+    fn signed_manifest_cannot_select_between_multiple_host_artifacts() {
+        let secret = "11".repeat(32);
+        let mut sample = signed_fixture("9.9.1", b"first", "release", &secret);
+        let mut other = sample.artifacts[0].clone();
+        other.sha256 = crate::types::sha256_hex(b"other");
+        sample.artifacts.push(other);
+        sample.signature.as_mut().unwrap().value =
+            crypto::sign_hex(&secret, &sample.signing_bytes().unwrap()).unwrap();
+        let mut cfg = Config::baseline();
+        cfg.update_keys = vec![fixture_key("release", &secret)];
+        assert!(sample
+            .trusted_artifact(&cfg, &sample.tag, "test release")
+            .unwrap_err()
+            .contains("multiple artifacts"));
+    }
+
+    fn signed_fixture(version: &str, bytes: &[u8], id: &str, secret: &str) -> Manifest {
+        let mut sample = manifest();
+        let (platform, target) = host_platform().unwrap();
+        sample.platform = platform.into();
+        sample.version = version.into();
+        sample.tag = format!("v{version}");
+        sample.artifacts[0].target = target.into();
+        sample.artifacts[0].sha256 = crate::types::sha256_hex(bytes);
+        sample.artifacts[0].size_bytes = bytes.len() as u64;
+        sample.signature = Some(ManifestSignature {
+            key_id: id.into(),
+            value: crypto::sign_hex(secret, &sample.signing_bytes().unwrap()).unwrap(),
+        });
+        sample
+    }
+
     fn manifest() -> Manifest {
         Manifest {
             schema_version: MANIFEST_SCHEMA.into(),
@@ -1252,6 +1600,7 @@ mod tests {
         sample
             .verify(
                 &[format!("release-test:{public}")],
+                &[],
                 "https://releases.example",
             )
             .unwrap();
@@ -1261,6 +1610,7 @@ mod tests {
         assert!(tampered
             .verify(
                 &[format!("release-test:{public}")],
+                &[],
                 "https://releases.example"
             )
             .is_err());
@@ -1274,12 +1624,14 @@ mod tests {
         assert!(sample
             .verify(
                 &[format!("release-test:{public}")],
+                &[],
                 "https://releases.example"
             )
             .is_err());
         sample
             .verify(
                 &[format!("release-test:{wrong_public}")],
+                &[],
                 "https://releases.example",
             )
             .unwrap();
@@ -1289,7 +1641,7 @@ mod tests {
     fn release_manifest_must_be_signed_by_an_explicit_trusted_key() {
         let sample = manifest();
         let err = sample
-            .verify(&["11".repeat(32)], "https://releases.example")
+            .verify(&["11".repeat(32)], &[], "https://releases.example")
             .unwrap_err();
         assert!(err.contains("unsigned"));
     }

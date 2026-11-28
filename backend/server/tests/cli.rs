@@ -57,12 +57,12 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     let root = settings_workspace(r#"{"version":1}"#);
     let state_dir = root.join("state");
     let mut journal = Journal::open(&state_dir).unwrap();
-    let mut record = |decision: &str| {
+    let mut record = |run_id: &str, decision: &str| {
         journal
             .record(EventInput {
                 tenant_id: "tenant-1",
                 task_id: "task-test",
-                run_id: "run-test",
+                run_id,
                 invocation_id: "run",
                 actor_id: "operator",
                 worker_id: "operator",
@@ -93,7 +93,7 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
             .output()
             .unwrap()
     };
-    record("started");
+    record("run-test", "started");
     let uncertain = invoke(&["recovery", "status"]);
     assert!(
         uncertain.status.success(),
@@ -107,7 +107,8 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     );
     assert!(output.contains("\"safeToAutoReplay\": false"), "{output}");
 
-    record("completed");
+    record("run-other", "started");
+    record("run-test", "completed");
     drop(journal);
     let completed = invoke(&["recovery", "status"]);
     assert!(
@@ -116,7 +117,12 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
         String::from_utf8_lossy(&completed.stderr)
     );
     assert!(String::from_utf8_lossy(&completed.stdout).contains("recorded_model_complete"));
-    assert!(invoke(&["inspect", "run-test"]).status.success());
+    let inspection = invoke(&["inspect", "run-test"]);
+    assert!(inspection.status.success());
+    let inspected: Vec<jani_core::types::AuditEvent> =
+        serde_json::from_slice(&inspection.stdout).unwrap();
+    assert_eq!(inspected.len(), 2);
+    assert!(inspected.iter().all(|event| event.run_id == "run-test"));
     let evidence = invoke(&["evidence", "run-test"]);
     assert!(
         evidence.status.success(),
@@ -128,11 +134,17 @@ fn recovery_cli_reports_unknown_then_completed_without_model_access() {
     assert_eq!(receipt["outcomeVerified"], false);
     assert_eq!(receipt["safeToAutoReplay"], false);
 
+    let path = state_dir.join("journal.jsonl");
+    let valid = fs::read_to_string(&path).unwrap();
+    fs::write(&path, valid.replacen("run-other", "damaged-run", 1)).unwrap();
+    let refused = invoke(&["inspect", "run-test"]);
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("line 2: event digest mismatch"));
+    fs::write(&path, valid).unwrap();
+
     use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .open(state_dir.join("journal.jsonl"))
-        .unwrap();
+    let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
     writeln!(file, "{{}}").unwrap();
     drop(file);
     let corrupted = invoke(&["recovery", "status"]);

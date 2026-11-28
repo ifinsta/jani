@@ -1,7 +1,7 @@
 use crate::types::{new_id, now_unix, sha256_hex, AuditEvent, Classification};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::Path;
 
 pub const JOURNAL_FILE: &str = "journal.jsonl";
@@ -108,7 +108,7 @@ impl Journal {
             Err(e) => return Err(format!("cannot lock audit journal: {e}")),
         }
         let opened = (|| {
-            let previous_digest = validated_last_digest_from(&mut file)?;
+            let previous_digest = verify_appendable_suffix(&mut file, 0, String::new())?;
             let observed_len = file
                 .metadata()
                 .map_err(|e| format!("cannot inspect audit journal: {e}"))?
@@ -179,17 +179,25 @@ impl Journal {
     }
 
     fn append_locked(&mut self, input: EventInput<'_>) -> Result<AuditEvent, String> {
-        // Re-read the tail through the handle that holds the lock only when
-        // another writer changed the file. Opening a second handle here fails
-        // on Windows, where file locks are mandatory.
+        // Verify newly appended bytes from the last trusted chain head using
+        // the locked handle. A second handle would conflict on Windows.
         let current_len = self
             .file
             .metadata()
             .map_err(|e| format!("cannot inspect audit journal: {e}"))?
             .len();
-        if current_len != self.observed_len {
-            self.previous_digest = last_digest_from(&mut self.file)?;
+        if current_len < self.observed_len {
+            return Err("audit journal was truncated while open; refusing to append".into());
         }
+        let previous_digest = if current_len > self.observed_len {
+            verify_appendable_suffix(
+                &mut self.file,
+                self.observed_len,
+                self.previous_digest.clone(),
+            )?
+        } else {
+            self.previous_digest.clone()
+        };
         let mut event = AuditEvent {
             event_version: "1.0".into(),
             event_id: new_id("evt"),
@@ -208,7 +216,7 @@ impl Journal {
             sandbox_receipt_id: input.sandbox_receipt_id.map(str::to_string),
             data_classification: input.data_classification,
             timestamp: now_unix(),
-            previous_event_digest: self.previous_digest.clone(),
+            previous_event_digest: previous_digest,
             event_digest: String::new(),
         };
         event.event_digest = digest_for(&event)?;
@@ -253,81 +261,39 @@ fn digest_for(event: &AuditEvent) -> Result<String, String> {
     Ok(sha256_hex(&bytes))
 }
 
-fn validated_last_digest_from(file: &mut File) -> Result<String, String> {
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| format!("cannot seek audit journal: {e}"))?;
-    let mut last = String::new();
-    for line in BufReader::new(&mut *file).lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        if !line.trim().is_empty() {
-            let event: AuditEvent =
-                serde_json::from_str(&line).map_err(|e| format!("journal tail is invalid: {e}"))?;
-            last = event.event_digest;
-        }
+fn read_complete_line(reader: &mut impl BufRead, line: &mut String) -> Result<usize, String> {
+    line.clear();
+    let count = reader.read_line(line).map_err(|error| error.to_string())?;
+    if count != 0 && !line.ends_with('\n') {
+        return Err("incomplete line".into());
     }
-    Ok(last)
+    Ok(count)
 }
 
-/// Read the digest of the final non-empty event without scanning the journal
-/// prefix. The caller must own a lock on `file` so the tail cannot move.
-fn last_digest_from(file: &mut File) -> Result<String, String> {
-    let end = file
-        .seek(SeekFrom::End(0))
+fn verify_appendable_suffix(
+    file: &mut File,
+    start: u64,
+    mut previous: String,
+) -> Result<String, String> {
+    file.seek(SeekFrom::Start(start))
         .map_err(|e| format!("cannot seek audit journal: {e}"))?;
-    if end == 0 {
-        return Ok(String::new());
-    }
-    let mut position = end;
-    let mut tail = Vec::new();
-    let mut buffer = [0u8; 8192];
+    let mut reader = BufReader::new(file);
+    let mut position = start;
+    let mut line = String::new();
     loop {
-        let count = usize::try_from(position.min(buffer.len() as u64))
-            .map_err(|_| "journal tail is too large".to_string())?;
-        position -= count as u64;
-        file.seek(SeekFrom::Start(position))
-            .map_err(|e| format!("cannot seek audit journal: {e}"))?;
-        file.read_exact(&mut buffer[..count])
-            .map_err(|e| format!("cannot read audit journal tail: {e}"))?;
-        let mut combined = Vec::with_capacity(count + tail.len());
-        combined.extend_from_slice(&buffer[..count]);
-        combined.extend_from_slice(&tail);
-        tail = combined;
-
-        let mut line_start = 0;
-        let mut last = None;
-        for (index, byte) in tail.iter().enumerate() {
-            if *byte == b'\n' {
-                if tail[line_start..index]
-                    .iter()
-                    .any(|byte| !byte.is_ascii_whitespace())
-                {
-                    last = Some((line_start, index));
-                }
-                line_start = index + 1;
-            }
+        let count = read_complete_line(&mut reader, &mut line)
+            .map_err(|error| format!("invalid audit journal at byte {position}: {error}"))?;
+        if count == 0 {
+            return Ok(previous);
         }
-        if tail[line_start..]
-            .iter()
-            .any(|byte| !byte.is_ascii_whitespace())
-        {
-            last = Some((line_start, tail.len()));
+        if !line.trim().is_empty() {
+            let event: AuditEvent = serde_json::from_str(&line)
+                .map_err(|e| format!("invalid audit event at byte {position}: {e}"))?;
+            previous = verify_next(&event, &previous).map_err(|reason| {
+                format!("audit journal integrity failed at byte {position}: {reason}")
+            })?;
         }
-        if let Some((start, stop)) = last {
-            if start > 0 || position == 0 {
-                let mut line = &tail[start..stop];
-                if line.ends_with(b"\r") {
-                    line = &line[..line.len() - 1];
-                }
-                let line = std::str::from_utf8(line)
-                    .map_err(|_| "journal tail is not valid UTF-8".to_string())?;
-                let event: AuditEvent = serde_json::from_str(line)
-                    .map_err(|e| format!("journal tail is invalid: {e}"))?;
-                return Ok(event.event_digest);
-            }
-        }
-        if position == 0 {
-            return Ok(String::new());
-        }
+        position += count as u64;
     }
 }
 
@@ -352,16 +318,34 @@ pub fn read_events(path: &Path) -> Result<Vec<AuditEvent>, String> {
 
 fn read_events_from(file: &File) -> Result<Vec<AuditEvent>, String> {
     let mut events = Vec::new();
-    for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(|e| e.to_string())?;
+    visit_complete_lines(file, |index, line| {
         if line.trim().is_empty() {
-            continue;
+            return Ok(());
         }
-        let event: AuditEvent = serde_json::from_str(&line)
-            .map_err(|e| format!("journal line {} is invalid: {e}", index + 1))?;
+        let event: AuditEvent = serde_json::from_str(line)
+            .map_err(|e| format!("journal line {index} is invalid: {e}"))?;
         events.push(event);
-    }
+        Ok(())
+    })?;
     Ok(events)
+}
+
+fn visit_complete_lines(
+    file: &File,
+    mut visit: impl FnMut(usize, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    for index in 1.. {
+        if read_complete_line(&mut reader, &mut line)
+            .map_err(|error| format!("journal line {index} is invalid: {error}"))?
+            == 0
+        {
+            break;
+        }
+        visit(index, &line)?;
+    }
+    Ok(())
 }
 
 pub fn read_verified_events(path: &Path) -> Result<Vec<AuditEvent>, String> {
@@ -372,6 +356,33 @@ pub fn read_verified_events(path: &Path) -> Result<Vec<AuditEvent>, String> {
         ));
     }
     Ok(events)
+}
+
+/// Verify the whole chain while retaining only the events from one run.
+pub fn read_verified_run(path: &Path, run_id: &str) -> Result<Vec<AuditEvent>, String> {
+    let file = File::open(path).map_err(|error| format!("cannot open audit journal: {error}"))?;
+    lock_shared(&file)?;
+    let result = (|| {
+        let mut selected = Vec::new();
+        let mut previous = String::new();
+        visit_complete_lines(&file, |index, line| {
+            if line.trim().is_empty() {
+                return Ok(());
+            }
+            let event: AuditEvent = serde_json::from_str(line)
+                .map_err(|error| format!("journal line {index} is invalid: {error}"))?;
+            previous = verify_next(&event, &previous).map_err(|reason| {
+                format!("audit journal failed integrity verification at line {index}: {reason}")
+            })?;
+            if event.run_id == run_id {
+                selected.push(event);
+            }
+            Ok(())
+        })?;
+        Ok(selected)
+    })();
+    let _ = file.unlock();
+    result
 }
 
 pub fn verify_next(event: &AuditEvent, expected_prev: &str) -> Result<String, String> {
@@ -495,7 +506,34 @@ mod tests {
     }
 
     #[test]
-    fn tail_lookup_handles_large_prefixes_and_trailing_blank_lines() {
+    fn verifying_one_run_still_checks_events_from_other_runs() {
+        let dir = temp_dir();
+        let mut journal = Journal::open(&dir).unwrap();
+        journal.record(input("selected", "repo.read")).unwrap();
+        journal.record(input("other", "unrelated.read")).unwrap();
+        journal.record(input("selected", "repo.write")).unwrap();
+        drop(journal);
+        let path = dir.join(JOURNAL_FILE);
+        let selected = read_verified_run(&path, "selected").unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|event| event.action.as_str())
+                .collect::<Vec<_>>(),
+            ["repo.read", "repo.write"]
+        );
+        let corrupted = fs::read_to_string(&path)
+            .unwrap()
+            .replace("unrelated.read", "unrelated.write");
+        fs::write(&path, corrupted).unwrap();
+        assert!(read_verified_run(&path, "selected")
+            .unwrap_err()
+            .contains("line 2"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn append_verification_handles_large_prefixes_and_trailing_blank_lines() {
         let dir = temp_dir();
         let mut journal = Journal::open(&dir).unwrap();
         let event = journal.record(input("run-1", "repo.read")).unwrap();
@@ -508,7 +546,10 @@ mod tests {
         fs::write(&path, padded).unwrap();
 
         let mut file = OpenOptions::new().read(true).open(&path).unwrap();
-        assert_eq!(last_digest_from(&mut file).unwrap(), event.event_digest);
+        assert_eq!(
+            verify_appendable_suffix(&mut file, 0, String::new()).unwrap(),
+            event.event_digest
+        );
         drop(file);
 
         let mut journal = Journal::open(&dir).unwrap();
@@ -517,6 +558,72 @@ mod tests {
         assert_eq!(verify(&dir).unwrap()["ok"], true);
         assert_eq!(verify(&dir).unwrap()["events"], 2);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn writers_refuse_corrupt_prefixes_and_unverified_external_appends() {
+        let dir = temp_dir();
+        let path = dir.join(JOURNAL_FILE);
+        let mut first = Journal::open(&dir).unwrap();
+        let original = first.record(input("run-first", "repo.read")).unwrap();
+        let prefix = fs::read_to_string(&path).unwrap();
+        let mut another = Journal::open(&dir).unwrap();
+        let appended = another.record(input("run-other", "repo.read")).unwrap();
+        drop(another);
+        let valid = fs::read_to_string(&path).unwrap();
+        let invalid_suffix = valid.replacen(&appended.event_digest, &"0".repeat(64), 1);
+        fs::write(&path, &invalid_suffix).unwrap();
+        assert!(first
+            .record(input("run-rejected", "repo.read"))
+            .unwrap_err()
+            .contains("integrity failed"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid_suffix);
+
+        let invalid_prefix = valid.replacen(&original.event_digest, &"0".repeat(64), 1);
+        fs::write(&path, &invalid_prefix).unwrap();
+        assert!(Journal::open(&dir)
+            .err()
+            .unwrap()
+            .contains("integrity failed"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid_prefix);
+
+        fs::write(&path, &valid).unwrap();
+        // Failed suffix validation must not change the in-memory chain head.
+        first.record(input("run-recovered", "repo.read")).unwrap();
+        assert_eq!(verify(&dir).unwrap()["events"], 3);
+        fs::write(&path, &prefix).unwrap();
+        assert!(first
+            .record(input("run-truncated", "repo.read"))
+            .unwrap_err()
+            .contains("truncated while open"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), prefix);
+        drop(first);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn writers_and_readers_require_a_complete_record_delimiter() {
+        let dir = temp_dir();
+        let path = dir.join(JOURNAL_FILE);
+        let mut journal = Journal::open(&dir).unwrap();
+        journal.record(input("run-1", "repo.read")).unwrap();
+        drop(journal);
+        let valid = fs::read_to_string(&path).unwrap();
+        let missing_newline = valid.strip_suffix('\n').unwrap();
+        fs::write(&path, missing_newline).unwrap();
+        assert!(Journal::open(&dir)
+            .err()
+            .unwrap()
+            .contains("incomplete line"));
+        for error in [
+            verify(&dir).unwrap_err(),
+            read_verified_events(&path).unwrap_err(),
+            read_verified_run(&path, "run-1").unwrap_err(),
+        ] {
+            assert!(error.contains("journal line 1 is invalid: incomplete line"));
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), missing_newline);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

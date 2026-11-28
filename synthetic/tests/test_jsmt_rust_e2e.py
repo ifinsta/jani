@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-BIN = ROOT / "target" / "debug"
+BIN = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "debug"
 ENABLED = os.environ.get("JANI_RUST_E2E") == "1" and os.name != "nt"
 
 def openssl(*args):

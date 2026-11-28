@@ -459,15 +459,8 @@ impl Governance {
                 return Err("secret detected in model context and redaction is disabled".into());
             }
             let mut clone = message.clone();
-            if classified.secrets_found > 0 {
-                if redact_json(&mut clone) == 0 {
-                    return Err("secret redaction failed closed".into());
-                }
-                // Verify independently that no secret pattern remains.
-                let text = json_strings(&clone);
-                if redact_text(&text).1 > 0 {
-                    return Err("secret redaction failed closed".into());
-                }
+            if classified.secrets_found > 0 && !redact_checked(&mut clone) {
+                return Err("secret redaction failed closed".into());
             }
             envelopes.push(self.envelope(source, &classified));
             redacted.push(clone);
@@ -542,6 +535,22 @@ pub fn json_strings(value: &Value) -> String {
     let mut out = String::new();
     walk(value, &mut out, 0);
     out
+}
+
+fn redact_checked(value: &mut Value) -> bool {
+    redact_json(value) > 0 && redact_text(&json_strings(value)).1 == 0
+}
+
+/// Checkpoint storage redacts independently of the model egress policy.
+/// Omit the conversation if a detected secret survives redaction.
+pub fn redact_checkpoint_messages(messages: &[Value]) -> Vec<Value> {
+    let mut sanitized = messages.to_vec();
+    for message in &mut sanitized {
+        if redact_text(&json_strings(message)).1 > 0 && !redact_checked(message) {
+            return Vec::new();
+        }
+    }
+    sanitized
 }
 
 pub fn redact_json(value: &mut Value) -> usize {

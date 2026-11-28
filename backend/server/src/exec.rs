@@ -1,5 +1,7 @@
 use crate::config::{validate_relative, Config, JResult};
-use crate::process::{execute_with_scrubbed, execute_with_scrubbed_cancel, ProcessIsolation};
+use crate::process::{
+    execute_with_admission, execute_with_scrubbed, ProcessGate, ProcessIsolation,
+};
 use crate::sandbox::{SandboxManager, SandboxPlan};
 use crate::types::{NetworkPolicy, SandboxProfile, SandboxReceipt};
 use serde_json::{json, Value};
@@ -54,6 +56,7 @@ pub struct ExecGrant {
     pub preauthorized: bool,
     /// Worktree-relative build-output directories the sandbox may write.
     pub extra_writable: Vec<std::path::PathBuf>,
+    pub authority: jani_core::authority::AuthorityWindow,
 }
 
 /// Execute an allowlisted command through the selected OS sandbox backend and
@@ -88,13 +91,17 @@ pub fn run_confined(
     let manager = SandboxManager::new(cfg);
     let plan: SandboxPlan = manager.prepare(profile, network)?;
     let (mut cmd, isolation) = manager.command_with(&plan, argv, &grant.extra_writable)?;
-    let out = execute_with_scrubbed_cancel(
+    let out = execute_with_admission(
         &mut cmd,
         &cfg.root,
         timeout,
         isolation,
         &cfg.credential_env_names,
-        cancelled,
+        None,
+        ProcessGate {
+            cancelled,
+            authority: grant.authority,
+        },
     )?;
     let termination = if out.timed_out {
         Some("timeout-or-output-limit".to_string())

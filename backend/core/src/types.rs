@@ -667,6 +667,8 @@ pub struct PluginRuntime {
     pub runtime_type: String,
     #[serde(default)]
     pub artifact: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
     #[serde(default)]
     pub entrypoint: String,
 }
@@ -861,6 +863,7 @@ pub fn verification_receipt_path(
         || task_id.len() > 128
         || task_id.contains('/')
         || task_id.contains('\\')
+        || task_id.contains(':')
         || task_id.contains("..")
         || task_id.chars().any(char::is_control)
     {
@@ -874,6 +877,16 @@ pub fn verification_receipt_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_receipts_reject_nonportable_task_path_components() {
+        let state = std::path::Path::new("state");
+        assert!(verification_receipt_path(state, "C:fixture").is_err());
+        assert_eq!(
+            verification_receipt_path(state, "task-1").unwrap(),
+            state.join("verifications").join("task-1.json")
+        );
+    }
 
     #[test]
     fn classifications_are_ordered() {
@@ -949,6 +962,7 @@ mod tests {
                 runtime: PluginRuntime {
                     runtime_type: "builtin".into(),
                     artifact: String::new(),
+                    artifact_sha256: None,
                     entrypoint: "example.uppercase".into(),
                 },
                 capabilities: vec![],

@@ -112,7 +112,7 @@ The full example is [settings.example.json](schemas/settings.example.json) and t
 ## Enterprise inputs
 
 - Enterprise runs require a signed `--policy` with `--policy-key` trust roots, a signed `--identity` with `--identity-key` trust roots (separate from `--policy-key`), and a restricting `--contract`.
-- `--revoked-key KEY_ID` rejects compromised signing keys across policies, identities, plugins, and receipts even if still listed in trust roots.
+- `--revoked-key KEY_ID` rejects a signer across the configured policy, identity, plugin and verification-receipt trust lists. Known revoked IDs also deny the same public key under its other configured names. `--revoked-key sha256:HEX` pins the SHA-256 of the raw 32-byte Ed25519 public key and still works after an old ID is removed. Use distinct IDs for rotation overlap. [Key and issuer management](security/KEY_MANAGEMENT.md)
 - `--audit-anchor PATH` appends hash-chained journal digests to an external append-only anchor sink, and `--verifier-key` checks signed `VerificationReceipt` files in `jani evidence`.
 - `JANI_UPDATE_SOURCE` supports `--allow-insecure-local-update` only for explicit loopback plain-HTTP test origins.
 - A work contract and enterprise policy narrow operator scope; neither can widen it.

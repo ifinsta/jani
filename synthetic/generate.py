@@ -61,6 +61,9 @@ def case(index,seed=20261025):
       "replay":{"fault_hook":f"{d}.{fault}","case_seed":r,"executed":False}
     }
 
+def case_line(row):
+    return (json.dumps(row, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
+
 def generate(output:Path,count:int=5_000_000,shard_size:int=100_000,seed:int=20261025,quiet=False):
     if not (0<count<=20_000_000) or not (1<=shard_size<=500_000): raise ValueError("invalid size")
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
@@ -77,7 +80,7 @@ def generate(output:Path,count:int=5_000_000,shard_size:int=100_000,seed:int=202
             with gzip.GzipFile(fileobj=raw,mode="wb",compresslevel=1,mtime=0,filename="") as gz:
                 for i in range(start,end+1):
                     row=case(i,seed)
-                    gz.write((json.dumps(row,separators=(",",":"),ensure_ascii=True)+"\n").encode())
+                    gz.write(case_line(row))
                     counts[row["domain"]]+=1;faults.add(row["domain"]+"."+row["fault"])
                     decisions[row["oracle"]["decision"]]=decisions.get(row["oracle"]["decision"],0)+1
                     mutations.add(row["mutation"]);profiles.add(row["profile"])
